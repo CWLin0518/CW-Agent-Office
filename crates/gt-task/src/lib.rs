@@ -1337,7 +1337,7 @@ fn build_task_thread_summary(
     Some(TaskThreadSummary {
         task_id: task_id.to_string(),
         title: task_thread_title(messages).unwrap_or_else(|| sanitize_title(task_id)),
-        state: task_thread_state(latest.message_type.clone()),
+        state: task_thread_state(messages),
         root_message_id: first.message_id.clone(),
         latest_message_id: latest.message_id.clone(),
         latest_message_type: latest.message_type.clone(),
@@ -1355,11 +1355,29 @@ fn task_thread_title(messages: &[ChannelMessageEvent]) -> Option<String> {
         .find(|title| !title.trim().is_empty())
 }
 
-fn task_thread_state(message_type: ChannelMessageType) -> TaskThreadState {
-    match message_type {
-        ChannelMessageType::TaskInstruction => TaskThreadState::Open,
-        ChannelMessageType::Status => TaskThreadState::Replied,
-        ChannelMessageType::Handover => TaskThreadState::HandedOver,
+fn task_thread_state(messages: &[ChannelMessageEvent]) -> TaskThreadState {
+    let Some(instruction) = messages
+        .iter()
+        .find(|message| message.message_type == ChannelMessageType::TaskInstruction)
+    else {
+        return TaskThreadState::Open;
+    };
+    let assignee_id = instruction.target_agent_id.as_str();
+
+    // A reminder from the requester is still outbound traffic. Only a message
+    // authored by the original assignee proves that the assignee replied.
+    if messages.iter().any(|message| {
+        message.sender_agent_id.as_deref() == Some(assignee_id)
+            && message.message_type == ChannelMessageType::Handover
+    }) {
+        TaskThreadState::HandedOver
+    } else if messages.iter().any(|message| {
+        message.sender_agent_id.as_deref() == Some(assignee_id)
+            && message.message_type == ChannelMessageType::Status
+    }) {
+        TaskThreadState::Replied
+    } else {
+        TaskThreadState::Open
     }
 }
 
@@ -1636,7 +1654,11 @@ fn resolve_submit_sequence(
 }
 
 fn build_task_dispatch_command(markdown: &str) -> String {
-    markdown.trim().to_string()
+    // Interactive agent TUIs interpret raw CR/LF bytes as submit actions unless
+    // the text arrives through a bracketed-paste path. Task dispatch writes
+    // directly to the PTY, so normalize the complete instruction into one line
+    // and let the caller append exactly one submit sequence afterward.
+    markdown.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn build_managed_agent_reply_instruction(

@@ -1637,7 +1637,9 @@ const TERMINAL_SPAWN_ENV_WHITELIST: &[&str] = &[
 fn minimal_bootstrap_path() -> &'static str {
     if cfg!(target_os = "windows") {
         // Windows resolves executables via PATHEXT + SystemRoot; keep it simple.
-        "C:\\Windows\\System32;C:\\Windows"
+        // powershell.exe lives under System32\WindowsPowerShell\v1.0, not System32
+        // itself, so it must be listed explicitly or CreateProcessW can't find it.
+        "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\WindowsPowerShell\\v1.0"
     } else {
         "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     }

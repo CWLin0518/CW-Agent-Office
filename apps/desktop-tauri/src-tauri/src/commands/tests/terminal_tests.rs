@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::task_center::{
-    build_terminal_command_submit_chunks, build_terminal_submit_chunks,
+    build_terminal_command_submit_chunks, build_terminal_submit_chunks, terminal_chunk_delay_ms,
 };
 use crate::commands::terminal::{
     build_terminal_create_response, build_terminal_delta_response, build_terminal_kill_response,
@@ -105,6 +105,13 @@ fn build_terminal_command_submit_chunks_uses_single_submit_for_shell_commands() 
         build_terminal_command_submit_chunks("codex", "\r"),
         vec!["codex".to_string(), "\r".to_string()]
     );
+}
+
+#[test]
+fn terminal_submit_waits_for_bracketed_paste_before_pressing_enter() {
+    assert_eq!(terminal_chunk_delay_ms(0, true), 500);
+    assert_eq!(terminal_chunk_delay_ms(1, true), 150);
+    assert_eq!(terminal_chunk_delay_ms(0, false), 150);
 }
 
 #[test]

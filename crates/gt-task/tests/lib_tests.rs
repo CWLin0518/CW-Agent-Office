@@ -292,6 +292,50 @@ fn dispatch_batch_sends_raw_markdown_and_emits_events() {
 }
 
 #[test]
+fn dispatch_batch_flattens_multiline_markdown_for_interactive_agent_tuis() {
+    let service = TaskService::default();
+    service.register_runtime(AgentRuntimeRegistration {
+        workspace_id: "ws-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        station_id: "agent-1".to_string(),
+        session_id: "ts-1".to_string(),
+        tool_kind: AgentToolKind::default(),
+        resolved_cwd: None,
+        submit_sequence: None,
+        provider_session: None,
+        online: true,
+    });
+    let workspace_root = new_workspace_root();
+    let mut written_command = String::new();
+
+    let _outcome = service.dispatch_batch(
+        &TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender {
+                sender_type: DispatchSenderType::Agent,
+                agent_id: Some("manager".to_string()),
+            },
+            targets: vec!["agent-1".to_string()],
+            title: "Multiline".to_string(),
+            markdown: "First line\n\nSecond line".to_string(),
+            attachments: vec![],
+            submit_sequences: HashMap::new(),
+        },
+        &workspace_root,
+        |_session_id, command, _submit_sequence| {
+            written_command = command.to_string();
+            Ok(())
+        },
+    );
+
+    assert!(!written_command.contains(['\r', '\n']));
+    assert!(written_command.contains("First line Second line"));
+    assert!(written_command.contains("GT Office Reply"));
+
+    let _ = fs::remove_dir_all(workspace_root);
+}
+
+#[test]
 fn dispatch_batch_terminal_command_appends_real_crlf_enter() {
     let service = TaskService::default();
     service.register_runtime(AgentRuntimeRegistration {
@@ -511,6 +555,62 @@ fn list_task_threads_groups_messages_by_task_and_tracks_latest_state() {
     assert_eq!(threads[0].state, TaskThreadState::Replied);
     assert_eq!(threads[0].latest_message_type, ChannelMessageType::Status);
     assert_eq!(threads[0].latest_sender_agent_id.as_deref(), Some("worker"));
+
+    let _ = fs::remove_dir_all(workspace_root);
+}
+
+#[test]
+fn requester_status_reminder_keeps_task_thread_open() {
+    let service = TaskService::default();
+    service.register_runtime(AgentRuntimeRegistration {
+        workspace_id: "ws-1".to_string(),
+        agent_id: "worker".to_string(),
+        station_id: "worker".to_string(),
+        role_key: None,
+        session_id: "ts-worker".to_string(),
+        tool_kind: AgentToolKind::default(),
+        resolved_cwd: None,
+        submit_sequence: None,
+        provider_session: None,
+        online: true,
+    });
+
+    let workspace_root = new_workspace_root();
+    let dispatch = service.dispatch_batch(
+        &TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender {
+                sender_type: DispatchSenderType::Agent,
+                agent_id: Some("manager".to_string()),
+            },
+            targets: vec!["worker".to_string()],
+            title: "Connection test".to_string(),
+            markdown: "Reply when ready.".to_string(),
+            attachments: vec![],
+            submit_sequences: HashMap::new(),
+        },
+        &workspace_root,
+        |_, _, _| Ok(()),
+    );
+    let task_id = dispatch.response.results[0].task_id.clone();
+
+    let _ = service.publish(&ChannelPublishRequest {
+        workspace_id: "ws-1".to_string(),
+        channel: ChannelDescriptor {
+            kind: ChannelKind::Direct,
+            id: "worker".to_string(),
+        },
+        sender_agent_id: Some("manager".to_string()),
+        target_agent_ids: vec!["worker".to_string()],
+        message_type: ChannelMessageType::Status,
+        payload: json!({ "taskId": task_id, "detail": "Please reply." }),
+        idempotency_key: None,
+    });
+
+    let thread = service
+        .get_task_thread("ws-1", task_id.as_str())
+        .expect("thread should exist");
+    assert_eq!(thread.summary.state, TaskThreadState::Open);
 
     let _ = fs::remove_dir_all(workspace_root);
 }

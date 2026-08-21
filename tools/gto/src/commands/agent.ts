@@ -33,7 +33,7 @@ interface AgentCreateParams {
   promptContent?: string | null
 }
 
-interface AgentUpdateParams extends AgentCreateParams {
+interface AgentUpdateParams extends Omit<AgentCreateParams, 'roleId'> {
   agentId: string
 }
 
@@ -93,7 +93,6 @@ function toAgentUpdateParams(
     agentId,
     workspaceId,
     name: asString(payload.name, '--name'),
-    roleId: asString(payload.roleId, '--role-id'),
     tool: typeof payload.tool === 'string' ? payload.tool : null,
     workdir: typeof payload.workdir === 'string' ? payload.workdir : null,
     customWorkdir: typeof payload.customWorkdir === 'boolean' ? payload.customWorkdir : false,

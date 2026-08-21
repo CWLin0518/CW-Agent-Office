@@ -104,10 +104,24 @@ fn write_terminal_chunks(
             return Err(reason.to_string());
         }
         if index + 1 < chunks.len() {
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(terminal_chunk_delay_ms(
+                index,
+                has_command,
+            )));
         }
     }
     Ok(())
+}
+
+pub(crate) fn terminal_chunk_delay_ms(index: usize, has_command: bool) -> u64 {
+    // Codex renders long PTY writes as bracketed pasted content. Sending Enter
+    // immediately can arrive before that paste has been committed to its input
+    // editor, leaving `[Pasted Content ...]` staged instead of submitted.
+    if has_command && index == 0 {
+        500
+    } else {
+        150
+    }
 }
 
 pub(crate) fn build_terminal_submit_chunks(command: &str, submit_sequence: &str) -> Vec<String> {

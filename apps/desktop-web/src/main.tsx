@@ -12,6 +12,13 @@ applyUiPreferences(loadUiPreferences())
 // Reveal native macOS window vibrancy once the shell confirms it was applied.
 // Non-critical: on failure the app keeps its CSS-glass rendering.
 if (desktopApi.isTauriRuntime()) {
+  // Signal the backend only after the webview is ready. This starts deferred
+  // services such as the local gto bridge that publishes runtime.json for
+  // agent-to-agent communication.
+  void desktopApi.signalUiReady().catch((error) => {
+    console.error('Failed to start GT Office background services', error)
+  })
+
   desktopApi
     .nativeVibrancyStatus()
     .then((active) => {
