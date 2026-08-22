@@ -743,6 +743,11 @@ fn agent_delete_with_context<R: tauri::Runtime>(
     let response = agent_delete_with_repo(request, state, &repo, || {
         crate::commands::tool_adapter::persist_route_bindings(app, state)
     })?;
+    if response.get("deleted").and_then(Value::as_bool) == Some(true) {
+        if let Ok(workspace_root) = get_workspace_root(state, &workspace_id) {
+            let _ = resync_agent_gitignore(&workspace_root, &repo, &workspace_id);
+        }
+    }
     let _ = crate::local_bridge::refresh_directory_snapshot(app, state, &workspace_id);
     Ok(response)
 }
@@ -869,4 +874,146 @@ pub fn agent_policy_save(
         .save_agent_policy(&request.workspace_id, &request.agent_id, &request.policy)
         .map_err(to_command_error)?;
     Ok(json!({ "snapshotId": snapshot_id }))
+}
+
+const AGENT_GITIGNORE_BLOCK_START: &str =
+    "# gtoffice:agent-git-tracking:start (managed by GT Office — do not edit)";
+const AGENT_GITIGNORE_BLOCK_END: &str = "# gtoffice:agent-git-tracking:end";
+
+/// Rewrites the managed block in the workspace `.gitignore`, replacing it with
+/// one `/relative/path/` entry per currently-untracked agent workdir. Runs the
+/// full set every call (instead of patching a single line) so the block always
+/// reflects `agents.git_tracked` exactly, even if a previous write was
+/// interrupted or an agent/workdir was renamed or deleted in between.
+fn sync_agent_gitignore_block(
+    workspace_root: &Path,
+    untracked_relative_paths: &std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    let gitignore_path = workspace_root.join(".gitignore");
+    let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut in_managed_block = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed == AGENT_GITIGNORE_BLOCK_START {
+            in_managed_block = true;
+            continue;
+        }
+        if trimmed == AGENT_GITIGNORE_BLOCK_END {
+            in_managed_block = false;
+            continue;
+        }
+        if in_managed_block {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+
+    if !untracked_relative_paths.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(AGENT_GITIGNORE_BLOCK_START.to_string());
+        for path in untracked_relative_paths {
+            lines.push(format!("/{path}/"));
+        }
+        lines.push(AGENT_GITIGNORE_BLOCK_END.to_string());
+    }
+
+    if lines.is_empty() {
+        if gitignore_path.exists() {
+            std::fs::remove_file(&gitignore_path)
+                .map_err(|error| format!("AGENT_GITIGNORE_WRITE_FAILED: {error}"))?;
+        }
+        return Ok(());
+    }
+
+    let mut content = lines.join("\n");
+    content.push('\n');
+    std::fs::write(&gitignore_path, content)
+        .map_err(|error| format!("AGENT_GITIGNORE_WRITE_FAILED: {error}"))
+}
+
+/// Recomputes the full untracked-workdir set from `agents.git_tracked` and
+/// rewrites the managed `.gitignore` block to match. Shared by the toggle
+/// command and by agent deletion, so a deleted untracked agent's entry never
+/// lingers as a stray `.gitignore` line.
+fn resync_agent_gitignore(
+    workspace_root: &Path,
+    repo: &SqliteAgentRepository,
+    workspace_id: &str,
+) -> Result<(), String> {
+    let mut untracked_paths = std::collections::BTreeSet::new();
+    for agent in repo.list_agents(workspace_id).map_err(to_command_error)? {
+        if agent.git_tracked {
+            continue;
+        }
+        let workdir = agent
+            .workdir
+            .clone()
+            .unwrap_or_else(|| default_agent_workdir(&agent.name));
+        let Some(normalized) = normalize_relative_workdir(&workdir) else {
+            continue;
+        };
+        if normalized == "." {
+            continue;
+        }
+        if ensure_path_within_workspace(workspace_root, &normalized).is_ok() {
+            untracked_paths.insert(normalized);
+        }
+    }
+    sync_agent_gitignore_block(workspace_root, &untracked_paths)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGitTrackingSetRequest {
+    pub workspace_id: String,
+    pub agent_id: String,
+    pub git_tracked: bool,
+}
+
+/// Toggles whether an agent's workdir is kept out of the workspace's git
+/// history, then resyncs the managed `.gitignore` block so the file on disk
+/// can never drift from the database.
+#[tauri::command]
+pub fn agent_git_tracking_set(
+    request: AgentGitTrackingSetRequest,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    ensure_workspace_exists(&state, &request.workspace_id)?;
+    let repo = resolve_agent_repository(&app)?;
+    repo.ensure_schema().map_err(to_command_error)?;
+
+    let target = repo
+        .list_agents(&request.workspace_id)
+        .map_err(to_command_error)?
+        .into_iter()
+        .find(|agent| agent.id == request.agent_id)
+        .ok_or_else(|| "AGENT_NOT_FOUND".to_string())?;
+    let target_workdir = target
+        .workdir
+        .clone()
+        .unwrap_or_else(|| default_agent_workdir(&target.name));
+    if !request.git_tracked && normalize_relative_workdir(&target_workdir).as_deref() == Some(".") {
+        return Err("AGENT_GIT_TRACKING_ROOT_WORKDIR_UNSUPPORTED".to_string());
+    }
+
+    let updated_agent = repo
+        .set_git_tracked(
+            &request.workspace_id,
+            &request.agent_id,
+            request.git_tracked,
+        )
+        .map_err(to_command_error)?;
+
+    let workspace_root = get_workspace_root(&state, &request.workspace_id)?;
+    resync_agent_gitignore(&workspace_root, &repo, &request.workspace_id)?;
+
+    Ok(json!({ "agent": updated_agent }))
 }

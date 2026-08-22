@@ -93,6 +93,17 @@ export function buildStationTerminalCommandSubmitChunks(
   return [command, normalizedSubmitSequence]
 }
 
+// Mirrors the Rust `terminal_chunk_delay_ms` (task_center/mod.rs): Codex renders
+// long PTY writes as bracketed pasted content, so sending Enter too soon after
+// the command text arrives before the paste is committed, leaving it staged
+// instead of submitted.
+export function terminalChunkDelayMs(index: number, hasCommand: boolean): number {
+  if (hasCommand && index === 0) {
+    return 500
+  }
+  return 150
+}
+
 export function shouldMatchDetachedBridgeSession(
   runtimeSessionId: string | null | undefined,
   messageSessionId: string | null | undefined,

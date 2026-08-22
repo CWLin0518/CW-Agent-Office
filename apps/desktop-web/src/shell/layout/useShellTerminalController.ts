@@ -13,6 +13,7 @@ import {
   appendStationTerminalDebugRecord as appendStationTerminalDebugStoreRecord,
   detectAgentExecutionState,
   buildStationTerminalCommandSubmitChunks,
+  terminalChunkDelayMs,
   createTerminalChunkDecoder,
   decodeTerminalBase64Chunk,
   formatTerminalDebugBody,
@@ -3324,6 +3325,37 @@ export function useShellTerminalController({
           cwdMode: session.cwdMode,
           resolvedCwd: session.resolvedCwd,
         })
+        const launchCommand = resolveStationCliLaunchCommand(station.toolKind, station.launchCommand)
+        if (launchCommand) {
+          // Write directly to the session we just created rather than going through
+          // runStationTerminalCommand's "is this still the station's active tab"
+          // re-check: that check reads stationTerminalsRef.current[stationId] at the
+          // moment each write's IPC round-trip resolves, and other in-flight runtime
+          // sync (agent registration, session restore) can repoint that ref to a
+          // sibling tab in that window, silently dropping the submit keystroke here.
+          // We already know exactly which session we mean to type into.
+          const chunks = buildStationTerminalCommandSubmitChunks(
+            launchCommand,
+            stationSubmitSequenceRef.current[stationId] ?? '\r',
+          )
+          void (async () => {
+            for (let index = 0; index < chunks.length; index += 1) {
+              const response = await desktopApi.terminalWrite(launchWorkspaceId, session.sessionId, chunks[index])
+              if (
+                !isMatchingTerminalWorkspaceSessionResponse(response, launchWorkspaceId, session.sessionId) ||
+                !response.accepted
+              ) {
+                return
+              }
+              if (index + 1 < chunks.length) {
+                await new Promise<void>((resolve) => {
+                  window.setTimeout(resolve, terminalChunkDelayMs(index, true))
+                })
+              }
+            }
+            scheduleStationTerminalOutputRecovery(launchWorkspaceId, stationId, session.sessionId)
+          })()
+        }
         return session.sessionId
       } catch (error) {
         appendStationTerminalOutput(
@@ -3343,6 +3375,7 @@ export function useShellTerminalController({
       requestTerminalKill,
       resetStationTerminalOutput,
       resolveWorkspaceRoot,
+      scheduleStationTerminalOutputRecovery,
       setStationTerminalState,
     ],
   )
@@ -3712,7 +3745,7 @@ export function useShellTerminalController({
           }
           if (index + 1 < chunks.length) {
             await new Promise<void>((resolve) => {
-              window.setTimeout(resolve, 5)
+              window.setTimeout(resolve, terminalChunkDelayMs(index, true))
             })
           }
         }

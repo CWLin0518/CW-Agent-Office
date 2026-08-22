@@ -158,6 +158,7 @@ pub fn run() {
             agent::agent_reorder,
             agent::agent_policy_read,
             agent::agent_policy_save,
+            agent::agent_git_tracking_set,
             agentic_one::agent_install_status,
             agentic_one::install_agent,
             agentic_one::uninstall_agent,

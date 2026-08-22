@@ -83,8 +83,18 @@ pub struct AgentProfile {
     /// time (see docs/cw/04_客製化設計.md §2). Not workspace-bound, not re-synced.
     #[serde(default)]
     pub external_template_path: Option<String>,
+    /// Whether this agent's workdir should stay out of the workspace's
+    /// `.gitignore`-managed untracked block. `true` (tracked, the default) means
+    /// git sees the agent's files normally; `false` means the workdir is kept
+    /// out of version control.
+    #[serde(default = "default_git_tracked")]
+    pub git_tracked: bool,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+}
+
+fn default_git_tracked() -> bool {
+    true
 }
 
 fn normalize_tool_provider_key(tool: &str) -> &'static str {

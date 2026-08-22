@@ -934,6 +934,7 @@ export const messages = {
   'settingsModal.nav.shortcuts': { 'zh-CN': '快捷键', 'en-US': 'Keybindings' },
   'settingsModal.nav.aiProviders': { 'zh-CN': 'Agent 供应商', 'en-US': 'Agent Providers' },
   'settingsModal.nav.channels': { 'zh-CN': '外部通道', 'en-US': 'External Channels' },
+  'settingsModal.nav.agentGitTracking': { 'zh-CN': 'Agent Git 追踪', 'en-US': 'Agent Git Tracking' },
   'settingsModal.nav.about': { 'zh-CN': '关于', 'en-US': 'About' },
   'settingsModal.reset.eyebrow': { 'zh-CN': '危险操作', 'en-US': 'Danger Zone' },
   'settingsModal.reset.title': { 'zh-CN': '重置当前工作区', 'en-US': 'Reset Current Workspace' },
@@ -969,6 +970,35 @@ export const messages = {
   'settingsModal.reset.errorFallback': {
     'zh-CN': '工作区重置失败，请稍后重试。',
     'en-US': 'Workspace reset failed. Please try again.',
+  },
+  'settingsModal.agentGitTracking.title': { 'zh-CN': 'Agent Git 追踪管理', 'en-US': 'Agent Git Tracking' },
+  'settingsModal.agentGitTracking.description': {
+    'zh-CN': '勾选表示该 Agent 的工作目录会被 Git 正常追踪；取消勾选会把它加入工作区的 .gitignore，使其内容不进入版本控制。',
+    'en-US': 'Checked means the agent’s workdir is tracked by Git as normal; unchecking adds it to the workspace .gitignore so its contents stay out of version control.',
+  },
+  'settingsModal.agentGitTracking.noWorkspace': {
+    'zh-CN': '请先打开一个工作区，才能管理 Agent 的 Git 追踪状态。',
+    'en-US': 'Open a workspace before managing agent Git tracking.',
+  },
+  'settingsModal.agentGitTracking.loading': { 'zh-CN': '加载中…', 'en-US': 'Loading…' },
+  'settingsModal.agentGitTracking.empty': {
+    'zh-CN': '当前工作区还没有任何 Agent。',
+    'en-US': 'This workspace has no agents yet.',
+  },
+  'settingsModal.agentGitTracking.columnAgent': { 'zh-CN': 'Agent', 'en-US': 'Agent' },
+  'settingsModal.agentGitTracking.columnWorkdir': { 'zh-CN': '工作目录', 'en-US': 'Workdir' },
+  'settingsModal.agentGitTracking.columnTracked': { 'zh-CN': '被 Git 追踪', 'en-US': 'Tracked by Git' },
+  'settingsModal.agentGitTracking.rootWorkdirHint': {
+    'zh-CN': '该 Agent 使用工作区根目录，无法单独取消追踪。',
+    'en-US': 'This agent uses the workspace root, so it cannot be untracked on its own.',
+  },
+  'settingsModal.agentGitTracking.updateError': {
+    'zh-CN': '更新 Git 追踪状态失败，请稍后重试。',
+    'en-US': 'Failed to update Git tracking. Please try again.',
+  },
+  'settingsModal.agentGitTracking.loadError': {
+    'zh-CN': '加载 Agent 列表失败，请稍后重试。',
+    'en-US': 'Failed to load agents. Please try again.',
   },
   'settingsModal.about.summary': {
     'zh-CN': '面向 AI Coding 的跨平台桌面工作台，用统一的工作区、文件、终端、Git、Agent 供应商与外部通道管理多 Agent 协作。',

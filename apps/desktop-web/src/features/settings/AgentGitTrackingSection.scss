@@ -1,0 +1,116 @@
+@use '../../styles/tokens/responsive' as *;
+
+.agent-git-tracking-card {
+  display: grid;
+  gap: #{rem(16)};
+  padding: #{rem(24)};
+  border-radius: var(--vb-radius-lg);
+  border: var(--vb-border-width) solid color-mix(in srgb, var(--vb-border) 40%, transparent);
+  background: color-mix(in srgb, var(--vb-surface) 50%, transparent);
+  box-shadow: 0 #{rem(2)} #{rem(12)} rgba(0, 0, 0, 0.03), inset 0 rem(1) 0 rgba(255, 255, 255, 0.2);
+}
+
+.agent-git-tracking-card__copy {
+  display: grid;
+  gap: #{rem(6)};
+
+  h4 {
+    margin: 0;
+  }
+
+  p {
+    margin: 0;
+    color: var(--vb-text-muted);
+    line-height: 1.5;
+  }
+}
+
+.agent-git-tracking-card__hint {
+  margin: 0;
+  font-size: #{rem(13)};
+  color: var(--vb-text-muted);
+}
+
+.agent-git-tracking-card__error {
+  margin: 0;
+  font-size: #{rem(12)};
+  color: #af3838;
+}
+
+.agent-git-tracking-table {
+  display: grid;
+  gap: #{rem(2)};
+  border-radius: #{rem(12)};
+  overflow: hidden;
+  border: var(--vb-border-width) solid color-mix(in srgb, var(--vb-border) 40%, transparent);
+}
+
+.agent-git-tracking-table__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: #{rem(12)};
+  padding: #{rem(10)} #{rem(14)};
+  background: color-mix(in srgb, var(--vb-surface-muted) 45%, transparent);
+
+  &:nth-child(even) {
+    background: color-mix(in srgb, var(--vb-surface-muted) 65%, transparent);
+  }
+}
+
+.agent-git-tracking-table__row--head {
+  background: color-mix(in srgb, var(--vb-chip) 82%, transparent);
+  font-size: #{rem(11)};
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vb-text-muted);
+}
+
+.agent-git-tracking-table__name {
+  font-weight: 600;
+  color: var(--vb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-git-tracking-table__workdir {
+  font-family: var(--vb-font-mono, monospace);
+  font-size: #{rem(12)};
+  color: var(--vb-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-git-tracking-table__checkbox-cell {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.agent-git-tracking-checkbox {
+  display: inline-flex;
+  align-items: center;
+
+  input[type='checkbox'] {
+    width: #{rem(16)};
+    height: #{rem(16)};
+    cursor: pointer;
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+  }
+}
+
+@media (max-width: #{rem(720)}) {
+  .agent-git-tracking-table__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .agent-git-tracking-table__workdir {
+    display: none;
+  }
+}

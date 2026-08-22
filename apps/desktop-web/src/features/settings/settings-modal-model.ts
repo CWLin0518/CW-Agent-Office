@@ -1,6 +1,6 @@
 import { t, type Locale } from '../../shell/i18n/ui-locale.js'
 
-export type SettingsTab = 'general' | 'shortcuts' | 'ai' | 'channels' | 'about'
+export type SettingsTab = 'general' | 'shortcuts' | 'ai' | 'channels' | 'agentGitTracking' | 'about'
 
 export interface SettingsTabItem {
   id: SettingsTab
@@ -53,6 +53,7 @@ export function buildSettingsTabItems(locale: Locale): SettingsTabItem[] {
     { id: 'shortcuts', label: t(locale, 'settingsModal.nav.shortcuts') },
     { id: 'ai', label: t(locale, 'settingsModal.nav.aiProviders') },
     { id: 'channels', label: t(locale, 'settingsModal.nav.channels') },
+    { id: 'agentGitTracking', label: t(locale, 'settingsModal.nav.agentGitTracking') },
     { id: 'about', label: t(locale, 'settingsModal.nav.about') },
   ]
 }

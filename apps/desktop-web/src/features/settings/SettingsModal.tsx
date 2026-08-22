@@ -3,6 +3,7 @@ import { DisplayPreferences } from './DisplayPreferences'
 import { TaskDispatchPreferences } from './TaskDispatchPreferences'
 import { UpdatePreferences } from './UpdatePreferences'
 import { WorkspaceResetSection } from './WorkspaceResetSection'
+import { AgentGitTrackingSection } from './AgentGitTrackingSection'
 import { AiProvidersSection } from './ai-providers'
 import { useAppUpdate } from './useAppUpdate'
 import { t, type Locale } from '@shell/i18n/ui-locale'
@@ -61,11 +62,12 @@ interface SettingsModalProps {
   onSkipAppUpdateVersion: (value: string | null) => void
 }
 
-const SETTINGS_TAB_ICONS: Record<SettingsTab, 'settings' | 'command' | 'sparkles' | 'channels' | 'info'> = {
+const SETTINGS_TAB_ICONS: Record<SettingsTab, 'settings' | 'command' | 'sparkles' | 'channels' | 'git' | 'info'> = {
   general: 'settings',
   shortcuts: 'command',
   ai: 'sparkles',
   channels: 'channels',
+  agentGitTracking: 'git',
   about: 'info',
 }
 
@@ -209,6 +211,12 @@ export function SettingsModal({
         return (
           <div className="settings-pane-section">
             <AiProvidersSection locale={locale} workspaceId={workspaceId} />
+          </div>
+        )
+      case 'agentGitTracking':
+        return (
+          <div className="settings-pane-section">
+            <AgentGitTrackingSection locale={locale} workspaceId={workspaceId} />
           </div>
         )
       case 'about':

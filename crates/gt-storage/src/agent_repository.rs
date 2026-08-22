@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS agents (
   state TEXT NOT NULL, employee_no TEXT, policy_snapshot_id TEXT,
   launch_command TEXT, order_index INTEGER NOT NULL DEFAULT 0,
   parent_agent_id TEXT, external_template_path TEXT,
+  git_tracked INTEGER NOT NULL DEFAULT 1,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (id, workspace_id)
 );
@@ -149,6 +150,10 @@ impl AgentRepository for SqliteAgentRepository {
             "ALTER TABLE agents ADD COLUMN external_template_path TEXT",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN git_tracked INTEGER NOT NULL DEFAULT 1",
+            [],
+        );
         conn.execute_batch(AGENT_LINKS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
@@ -172,7 +177,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn list_agents(&self, workspace_id: &str) -> AgentResult<Vec<AgentProfile>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         let rows = stmt
             .query_map(params![workspace_id], |row| {
@@ -193,10 +198,11 @@ impl AgentRepository for SqliteAgentRepository {
                     order_index: row.get(11)?,
                     parent_agent_id: row.get(12)?,
                     external_template_path: row.get(13)?,
+                    git_tracked: row.get::<_, i32>(14)? != 0,
                     prompt_file_name: None,
                     prompt_file_relative_path: None,
-                    created_at_ms: row.get(14)?,
-                    updated_at_ms: row.get(15)?,
+                    created_at_ms: row.get(15)?,
+                    updated_at_ms: row.get(16)?,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -251,6 +257,32 @@ impl AgentRepository for SqliteAgentRepository {
         self.list_agents(&input.workspace_id)?
             .into_iter()
             .find(|agent| agent.id == input.agent_id)
+            .ok_or(AgentError::Storage {
+                message: "updated agent was not found".to_string(),
+            })
+    }
+
+    fn set_git_tracked(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        tracked: bool,
+    ) -> AgentResult<AgentProfile> {
+        let conn = self.connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE agents SET git_tracked = ?1, updated_at_ms = ?2 WHERE workspace_id = ?3 AND id = ?4",
+                params![if tracked { 1 } else { 0 }, Self::now_ms(), workspace_id, agent_id],
+            )
+            .map_err(|error| AgentError::Storage { message: error.to_string() })?;
+        if updated == 0 {
+            return Err(AgentError::InvalidArgument {
+                message: "agent_id not found".to_string(),
+            });
+        }
+        self.list_agents(workspace_id)?
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
             .ok_or(AgentError::Storage {
                 message: "updated agent was not found".to_string(),
             })

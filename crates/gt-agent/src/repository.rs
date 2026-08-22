@@ -55,6 +55,15 @@ pub trait AgentRepository: Send + Sync {
     fn update_agent(&self, input: UpdateAgentInput) -> AgentResult<AgentProfile>;
     fn delete_agent(&self, workspace_id: &str, agent_id: &str) -> AgentResult<bool>;
     fn reorder_agents(&self, workspace_id: &str, ordered_ids: Vec<String>) -> AgentResult<()>;
+    /// Sets `agents.git_tracked` directly, independent of `update_agent`'s
+    /// full-row overwrite, so toggling this flag never clobbers unrelated
+    /// fields concurrent edits may have changed.
+    fn set_git_tracked(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        tracked: bool,
+    ) -> AgentResult<AgentProfile>;
 }
 
 /// Backed by `agent_policy_snapshots` (docs/cw/04_客製化設計.md §3): every save

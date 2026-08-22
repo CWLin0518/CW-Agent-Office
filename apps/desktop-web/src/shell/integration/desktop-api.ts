@@ -1886,6 +1886,7 @@ export interface AgentProfile {
   orderIndex: number
   parentAgentId?: string | null
   externalTemplatePath?: string | null
+  gitTracked: boolean
   createdAtMs: number
   updatedAtMs: number
 }
@@ -2036,6 +2037,16 @@ export interface AgentPolicySaveRequest {
 
 export interface AgentPolicySaveResponse {
   snapshotId: string
+}
+
+export interface AgentGitTrackingSetRequest {
+  workspaceId: string
+  agentId: string
+  gitTracked: boolean
+}
+
+export interface AgentGitTrackingSetResponse {
+  agent: AgentProfile
 }
 
 export interface AgentRuntimeRegisterRequest {
@@ -4434,6 +4445,15 @@ export const desktopApi = {
         workspaceId: request.workspaceId,
         agentId: request.agentId,
         policy: request.policy,
+      },
+    })
+  },
+  agentGitTrackingSet(request: AgentGitTrackingSetRequest) {
+    return invokeCommand<AgentGitTrackingSetResponse>('agent_git_tracking_set', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+        gitTracked: request.gitTracked,
       },
     })
   },
