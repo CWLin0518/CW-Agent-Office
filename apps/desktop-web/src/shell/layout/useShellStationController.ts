@@ -131,6 +131,7 @@ export function useShellStationController({
             promptEnabled: input.promptEnabled,
             promptContent: input.promptContent,
             launchCommand: input.launchCommand,
+            externalTemplatePath: input.externalTemplatePath,
           })
           await loadStationsFromDatabase(activeWorkspaceId)
           setIsStationManageOpen(false)

@@ -20,6 +20,7 @@ import { t } from '@shell/i18n/ui-locale'
 import { AppIcon } from '@shell/ui/icons'
 import {
   StationXtermTerminal,
+  SessionTabBar,
   type AgentExecutionState,
   type StationTerminalSink,
   type StationTerminalSinkBindingHandler,
@@ -99,6 +100,7 @@ interface StationCardProps {
   station: AgentStation
   active: boolean
   runtime?: StationTerminalRuntime
+  sessionTabs?: string[]
   taskSignal?: StationTaskSignal
   channelBotBindings?: StationChannelBotBindingSummary[]
   isFullscreen?: boolean
@@ -117,6 +119,9 @@ interface StationCardProps {
     request: import('@features/session').SessionRelaunchRequest,
   ) => void
   onForceCloseTerminal?: (stationId: string) => void
+  onSwitchSessionTab?: (stationId: string, sessionId: string) => void
+  onCloseSessionTab?: (stationId: string, sessionId: string) => void
+  onNewSessionTab?: (stationId: string) => void
   onSendInputData: (stationId: string, data: string) => void
   onResizeTerminal: (stationId: string, cols: number, rows: number) => void
   onBindTerminalSink: StationTerminalSinkBindingHandler
@@ -147,6 +152,7 @@ function StationCardView({
   station,
   active,
   runtime,
+  sessionTabs,
   taskSignal,
   isFullscreen,
   isFullscreenMode,
@@ -160,6 +166,9 @@ function StationCardView({
   onLaunchCliAgent,
   onSessionRelaunch,
   onForceCloseTerminal,
+  onSwitchSessionTab,
+  onCloseSessionTab,
+  onNewSessionTab,
   onSendInputData,
   onResizeTerminal,
   onBindTerminalSink,
@@ -668,6 +677,16 @@ function StationCardView({
       </header>
       {shouldRenderTerminal ? (
         <>
+          {onNewSessionTab ? (
+            <SessionTabBar
+              locale={locale}
+              sessionTabs={sessionTabs ?? (runtime?.sessionId ? [runtime.sessionId] : [])}
+              activeSessionId={runtime?.sessionId ?? null}
+              onSwitchTab={(sessionId) => onSwitchSessionTab?.(station.id, sessionId)}
+              onCloseTab={(sessionId) => onCloseSessionTab?.(station.id, sessionId)}
+              onAddTab={() => onNewSessionTab(station.id)}
+            />
+          ) : null}
           <StationXtermTerminal
             locale={locale}
             workspaceId={workspaceId}
@@ -729,6 +748,15 @@ function areStationChannelBindingsEqual(
   return true
 }
 
+function areSessionTabListsEqual(prev: string[] | undefined, next: string[] | undefined): boolean {
+  const prevTabs = prev ?? []
+  const nextTabs = next ?? []
+  if (prevTabs.length !== nextTabs.length) {
+    return false
+  }
+  return prevTabs.every((sessionId, index) => sessionId === nextTabs[index])
+}
+
 function areStationCardPropsEqual(prev: StationCardProps, next: StationCardProps): boolean {
   return (
     prev.locale === next.locale &&
@@ -749,6 +777,10 @@ function areStationCardPropsEqual(prev: StationCardProps, next: StationCardProps
     prev.workspaceCwd === next.workspaceCwd &&
     prev.onSessionRelaunch === next.onSessionRelaunch &&
     prev.onForceCloseTerminal === next.onForceCloseTerminal &&
+    prev.onSwitchSessionTab === next.onSwitchSessionTab &&
+    prev.onCloseSessionTab === next.onCloseSessionTab &&
+    prev.onNewSessionTab === next.onNewSessionTab &&
+    areSessionTabListsEqual(prev.sessionTabs, next.sessionTabs) &&
     prev.onSendInputData === next.onSendInputData &&
     prev.onResizeTerminal === next.onResizeTerminal &&
     prev.onBindTerminalSink === next.onBindTerminalSink &&

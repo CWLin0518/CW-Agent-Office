@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 
-import { desktopApi } from '@shell/integration/desktop-api'
+import { desktopApi, createDefaultAgentPolicy, type AgentPolicy } from '@shell/integration/desktop-api'
+import { pickFile } from '@shell/integration/directory-picker'
 import { t, type Locale } from '@shell/i18n/ui-locale'
 import { AppIcon } from '@shell/ui/icons'
 import { trapModalTabFocus } from '@/components/modal/modal-focus-trap'
@@ -79,6 +80,13 @@ export function StationManageModal({
 }: StationManageModalProps) {
   const formDialogRef = useRef<HTMLElement | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
+  // Bumped every time the modal resets its form state (open/editingStation
+  // changes below). Async handlers that aren't already covered by a
+  // useEffect cleanup (handlePickExternalTemplatePath/handleLoadExternalTemplate)
+  // capture this at call time and check it's unchanged before applying a
+  // result, so a slow load from a closed/reopened/edit-target-switched modal
+  // can't clobber a different agent's form state.
+  const modalSessionRef = useRef(0)
   const [name, setName] = useState('')
   const [provider, setProvider] = useState<ManagedAgentProvider>('codex')
   const [workdir, setWorkdir] = useState('')
@@ -88,6 +96,14 @@ export function StationManageModal({
   const [promptEnabled, setPromptEnabled] = useState(false)
   const [promptDraftMode, setPromptDraftMode] = useState<'auto' | 'manual'>('auto')
   const [promptPrefillLoading, setPromptPrefillLoading] = useState(false)
+  const [externalTemplatePath, setExternalTemplatePath] = useState('')
+  const [externalTemplateLoading, setExternalTemplateLoading] = useState(false)
+  const [externalTemplateError, setExternalTemplateError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'general' | 'permissions'>('general')
+  const [policy, setPolicy] = useState<AgentPolicy>(createDefaultAgentPolicy())
+  const [policyLoading, setPolicyLoading] = useState(false)
+  const [policySaving, setPolicySaving] = useState(false)
+  const [policyError, setPolicyError] = useState<string | null>(null)
   const [availableProviders, setAvailableProviders] = useState<
     ReturnType<typeof resolveAvailableAgentProviders>
   >([])
@@ -113,6 +129,7 @@ export function StationManageModal({
     if (!open) {
       return
     }
+    modalSessionRef.current += 1
     const initialWorkdir = editingStation?.workdir?.trim() || buildDefaultAgentWorkdir(copy.defaultName)
     setName(editingStation?.name ?? '')
     setProvider(resolveManagedProviderKey(editingStation?.tool))
@@ -123,6 +140,12 @@ export function StationManageModal({
     setPromptEnabled(editingStation?.promptEnabled ?? false)
     setPromptDraftMode(editingStation ? 'manual' : 'auto')
     setPromptPrefillLoading(false)
+    setExternalTemplatePath('')
+    setExternalTemplateLoading(false)
+    setExternalTemplateError(null)
+    setActiveTab('general')
+    setPolicy(createDefaultAgentPolicy())
+    setPolicyError(null)
     setLaunchCommandHistory(loadLaunchCommandHistory())
   }, [copy.defaultName, editingStation, open])
 
@@ -199,6 +222,87 @@ export function StationManageModal({
   }, [editingStation, open, workspaceId])
 
   useEffect(() => {
+    if (!open || !workspaceId || !editingStation || !desktopApi.isTauriRuntime()) {
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      setPolicyLoading(true)
+      try {
+        const response = await desktopApi.agentPolicyRead({
+          workspaceId,
+          agentId: editingStation.id,
+        })
+        if (!cancelled) {
+          setPolicy(response.policy)
+        }
+      } catch {
+        if (!cancelled) {
+          setPolicy(createDefaultAgentPolicy())
+        }
+      } finally {
+        if (!cancelled) {
+          setPolicyLoading(false)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [editingStation, open, workspaceId])
+
+  const handleSavePolicy = useCallback(() => {
+    if (!workspaceId || !editingStation) {
+      return
+    }
+    void (async () => {
+      setPolicySaving(true)
+      setPolicyError(null)
+      try {
+        await desktopApi.agentPolicySave({
+          workspaceId,
+          agentId: editingStation.id,
+          policy,
+        })
+      } catch (error) {
+        setPolicyError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setPolicySaving(false)
+      }
+    })()
+  }, [editingStation, policy, workspaceId])
+
+  const parsePolicyListValue = (rawValue: string): string[] =>
+    rawValue
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+
+  const updateFileSystemDeniedPrefixes = useCallback((rawValue: string) => {
+    const values = parsePolicyListValue(rawValue)
+    setPolicy((previous) => ({
+      ...previous,
+      fileSystem: { ...previous.fileSystem, deniedPathPrefixes: values },
+    }))
+  }, [])
+
+  const updateShellDeniedCommands = useCallback((rawValue: string) => {
+    const values = parsePolicyListValue(rawValue)
+    setPolicy((previous) => ({
+      ...previous,
+      shell: { ...previous.shell, deniedCommands: values },
+    }))
+  }, [])
+
+  const updateGitDeniedSubcommands = useCallback((rawValue: string) => {
+    const values = parsePolicyListValue(rawValue)
+    setPolicy((previous) => ({
+      ...previous,
+      git: { ...previous.git, deniedSubcommands: values },
+    }))
+  }, [])
+
+  useEffect(() => {
     if (!open || isEdit) {
       setPromptPrefillLoading(false)
       return
@@ -255,6 +359,48 @@ export function StationManageModal({
       cancelled = true
     }
   }, [activePromptWorkdir, customWorkdirEnabled, isEdit, open, promptDraftMode, provider, workspaceId])
+
+  const handlePickExternalTemplatePath = useCallback(() => {
+    const session = modalSessionRef.current
+    void (async () => {
+      const selected = await pickFile()
+      if (selected && modalSessionRef.current === session) {
+        setExternalTemplatePath(selected)
+        setExternalTemplateError(null)
+      }
+    })()
+  }, [])
+
+  const handleLoadExternalTemplate = useCallback(() => {
+    const path = externalTemplatePath.trim()
+    if (!path || !desktopApi.isTauriRuntime()) {
+      return
+    }
+    const session = modalSessionRef.current
+    void (async () => {
+      setExternalTemplateLoading(true)
+      setExternalTemplateError(null)
+      try {
+        const response = await desktopApi.agentReadExternalTemplate({ externalTemplatePath: path })
+        if (modalSessionRef.current !== session) {
+          return
+        }
+        setPromptDraftMode('manual')
+        setPromptEnabled(true)
+        setPromptContent(response.content)
+      } catch (error) {
+        if (modalSessionRef.current === session) {
+          setExternalTemplateError(
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+      } finally {
+        if (modalSessionRef.current === session) {
+          setExternalTemplateLoading(false)
+        }
+      }
+    })()
+  }, [externalTemplatePath])
 
   const handleFormModalKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -332,7 +478,33 @@ export function StationManageModal({
             </button>
           </header>
 
-          <section className="station-form-grid">
+          {isEdit && (
+            <div className="station-form-tab-bar" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'general'}
+                className={`station-form-tab${activeTab === 'general' ? ' active' : ''}`}
+                onClick={() => setActiveTab('general')}
+              >
+                {locale === 'zh-CN' ? '一般' : 'General'}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'permissions'}
+                className={`station-form-tab${activeTab === 'permissions' ? ' active' : ''}`}
+                onClick={() => setActiveTab('permissions')}
+              >
+                {locale === 'zh-CN' ? '权限' : 'Permissions'}
+              </button>
+            </div>
+          )}
+
+          <section
+            className="station-form-grid"
+            style={activeTab === 'permissions' ? { display: 'none' } : undefined}
+          >
             <label className="station-form-field">
               <span>{locale === 'zh-CN' ? 'Agent 名称' : 'Agent Name'}</span>
               <input
@@ -517,6 +689,62 @@ export function StationManageModal({
               )}
             </div>
 
+            {!isEdit && (
+              <div className="station-form-field station-form-span-2 station-form-surface">
+                <span>
+                  {locale === 'zh-CN' ? '从外部路径载入范本' : 'Load template from external path'}
+                </span>
+                <p>
+                  {locale === 'zh-CN'
+                    ? '可选：从工作区外的本机文件读取内容作为初始系统提示词。仅在创建时读取一次，之后不会自动同步。'
+                    : 'Optional: read an initial system prompt from a local file outside this workspace. Read once at creation only — it will not stay in sync afterward.'}
+                </p>
+                <div className="station-form-workdir-row">
+                  <input
+                    type="text"
+                    value={externalTemplatePath}
+                    disabled={saving || externalTemplateLoading}
+                    placeholder={locale === 'zh-CN' ? '本机文件路径' : 'Local file path'}
+                    onChange={(event) => {
+                      setExternalTemplatePath(event.target.value)
+                      setExternalTemplateError(null)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="station-form-workdir-picker"
+                    aria-label={locale === 'zh-CN' ? '选择文件' : 'Select File'}
+                    title={locale === 'zh-CN' ? '选择文件' : 'Select File'}
+                    disabled={saving || externalTemplateLoading}
+                    onClick={handlePickExternalTemplatePath}
+                  >
+                    <AppIcon name="file-text" className="vb-icon" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="station-form-btn"
+                    disabled={saving || externalTemplateLoading || !externalTemplatePath.trim()}
+                    onClick={handleLoadExternalTemplate}
+                  >
+                    {externalTemplateLoading
+                      ? locale === 'zh-CN'
+                        ? '载入中…'
+                        : 'Loading…'
+                      : locale === 'zh-CN'
+                        ? '载入'
+                        : 'Load'}
+                  </button>
+                </div>
+                {externalTemplateError && (
+                  <p className="station-form-error-text">
+                    {locale === 'zh-CN'
+                      ? `载入失败：${externalTemplateError}`
+                      : `Failed to load: ${externalTemplateError}`}
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="station-form-field station-form-span-2">
               <div className="station-form-heading-row">
                 <span>{locale === 'zh-CN' ? '系统提示词' : 'System Prompt'}</span>
@@ -554,7 +782,165 @@ export function StationManageModal({
             </div>
           </section>
 
+          {isEdit && activeTab === 'permissions' && (
+            <section className="station-form-grid">
+              {policyLoading ? (
+                <p>{locale === 'zh-CN' ? '正在载入权限设定…' : 'Loading permissions…'}</p>
+              ) : (
+                <>
+                  <div className="station-form-field station-form-span-2 station-form-surface">
+                    <span>{locale === 'zh-CN' ? '文件系统' : 'File System'}</span>
+                    <p>
+                      {locale === 'zh-CN'
+                        ? '禁止访问的路径前缀，每行一个。'
+                        : 'Denied path prefixes, one per line.'}
+                    </p>
+                    <textarea
+                      rows={3}
+                      disabled={policySaving}
+                      value={policy.fileSystem.deniedPathPrefixes.join('\n')}
+                      onChange={(event) =>
+                        updateFileSystemDeniedPrefixes(event.target.value)
+                      }
+                    />
+                  </div>
+
+                  <div className="station-form-field station-form-span-2 station-form-surface">
+                    <span>{locale === 'zh-CN' ? 'Shell / 终端机' : 'Shell / Terminal'}</span>
+                    <p>
+                      {locale === 'zh-CN'
+                        ? '禁止启动的 shell/指令名称，每行一个（例如 powershell）。'
+                        : 'Denied shell/launch command names, one per line (e.g. powershell).'}
+                    </p>
+                    <textarea
+                      rows={3}
+                      disabled={policySaving}
+                      value={policy.shell.deniedCommands.join('\n')}
+                      onChange={(event) =>
+                        updateShellDeniedCommands(event.target.value)
+                      }
+                    />
+                  </div>
+
+                  <div className="station-form-field station-form-span-2 station-form-surface">
+                    <span>{locale === 'zh-CN' ? 'Git / VCS' : 'Git / VCS'}</span>
+                    <p>
+                      {locale === 'zh-CN'
+                        ? '此类别目前只会被保存，尚未接上实际拦截点（Git 面板操作没有 Agent 身份可供比对），设定暂不生效。'
+                        : 'Saved but not yet enforced — the Git panel has no agent identity to check against at its call sites, so this category has no real hook yet.'}
+                    </p>
+                    <textarea
+                      rows={2}
+                      disabled={policySaving}
+                      value={policy.git.deniedSubcommands.join('\n')}
+                      onChange={(event) =>
+                        updateGitDeniedSubcommands(event.target.value)
+                      }
+                    />
+                  </div>
+
+                  <div className="station-form-field station-form-span-2">
+                    <span>{locale === 'zh-CN' ? 'Agent（调用 / 建立子 Agent）' : 'Agent (Invoke / Spawn)'}</span>
+                    <label className="station-form-checkbox">
+                      <input
+                        type="checkbox"
+                        disabled={policySaving}
+                        checked={policy.agent.allowGtoSend}
+                        onChange={(event) =>
+                          setPolicy((previous) => ({
+                            ...previous,
+                            agent: { ...previous.agent, allowGtoSend: event.target.checked },
+                          }))
+                        }
+                      />
+                      <span>{locale === 'zh-CN' ? '允许使用 gto send' : 'Allow gto send'}</span>
+                    </label>
+                    <label className="station-form-checkbox">
+                      <input
+                        type="checkbox"
+                        disabled={policySaving}
+                        checked={policy.agent.allowSubagentSpawn}
+                        onChange={(event) =>
+                          setPolicy((previous) => ({
+                            ...previous,
+                            agent: { ...previous.agent, allowSubagentSpawn: event.target.checked },
+                          }))
+                        }
+                      />
+                      <span>
+                        {locale === 'zh-CN' ? '允许被建立为子 Agent' : 'Allow being spawned as a subagent'}
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="station-form-field station-form-span-2 station-form-surface">
+                    <span>{locale === 'zh-CN' ? '执行限制' : 'Execution'}</span>
+                    <label className="station-form-field">
+                      <span>
+                        {locale === 'zh-CN'
+                          ? '单次派送最大并发目标数'
+                          : 'Max concurrent targets per dispatch'}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        disabled={policySaving}
+                        value={policy.execution.maxConcurrency ?? ''}
+                        onChange={(event) => {
+                          const parsed = event.target.value.trim() === '' ? null : Number(event.target.value)
+                          setPolicy((previous) => ({
+                            ...previous,
+                            execution: {
+                              ...previous.execution,
+                              maxConcurrency: parsed === null || Number.isNaN(parsed) ? null : parsed,
+                            },
+                          }))
+                        }}
+                      />
+                    </label>
+                    <p>
+                      {locale === 'zh-CN'
+                        ? '超时时间与最大步数目前只会被保存，尚未有任务生命周期机制可供比对，设定暂不生效。'
+                        : 'Timeout and max steps are saved but not yet enforced — there is no task-lifecycle tracking yet to measure elapsed time or step count against.'}
+                    </p>
+                  </div>
+
+                  <div className="station-form-field station-form-span-2 station-form-surface">
+                    <span>{locale === 'zh-CN' ? '即将支援' : 'Coming Soon'}</span>
+                    <p>
+                      {locale === 'zh-CN'
+                        ? 'Network、Tool/MCP、Database、Secrets、Model、Budget、Package、Infrastructure、Authentication、External Actions、Logging/Memory、Human Approval'
+                        : 'Network, Tool/MCP, Database, Secrets, Model, Budget, Package, Infrastructure, Authentication, External Actions, Logging/Memory, Human Approval'}
+                    </p>
+                  </div>
+
+                  {policyError && (
+                    <p className="station-form-error-text">
+                      {locale === 'zh-CN' ? `保存失败：${policyError}` : `Failed to save: ${policyError}`}
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
           <footer className="station-form-actions">
+            {isEdit && activeTab === 'permissions' && (
+              <button
+                type="button"
+                className="station-form-btn"
+                disabled={policySaving || policyLoading}
+                onClick={handleSavePolicy}
+              >
+                {policySaving
+                  ? locale === 'zh-CN'
+                    ? '保存中…'
+                    : 'Saving…'
+                  : locale === 'zh-CN'
+                    ? '保存权限'
+                    : 'Save Permissions'}
+              </button>
+            )}
             {isEdit && onDelete && (
               <button
                 type="button"
@@ -579,44 +965,47 @@ export function StationManageModal({
             >
               {locale === 'zh-CN' ? '取消' : 'Cancel'}
             </button>
-            <button
-              type="button"
-              className="station-form-btn"
-              disabled={submitDisabled}
-              onClick={() => {
-                const payload = {
-                  name: name.trim() || copy.defaultName,
-                  tool: provider,
-                  workdir: customWorkdirEnabled ? workdir.trim() : defaultWorkdir,
-                  customWorkdir: customWorkdirEnabled,
-                  promptEnabled,
-                  promptContent: promptEnabled ? promptContent : '',
-                  launchCommand: launchCommand.trim() || null,
-                }
-                if (launchCommand.trim() && launchCommand.trim() !== provider) {
-                  const updatedHistory = recordLaunchCommand(provider, launchCommand.trim())
-                  setLaunchCommandHistory(updatedHistory)
-                }
-                if (editingStation) {
-                  void onSubmit({ id: editingStation.id, ...payload })
-                  return
-                }
-                void onSubmit(payload)
-              }}
-            >
-              <AppIcon name={isEdit ? 'check' : 'plus'} className="vb-icon" aria-hidden="true" />
-              <span>
-                {saving
-                  ? locale === 'zh-CN'
-                    ? '提交中...'
-                    : 'Saving...'
-                  : isEdit
+            {(!isEdit || activeTab === 'general') && (
+              <button
+                type="button"
+                className="station-form-btn"
+                disabled={submitDisabled}
+                onClick={() => {
+                  const payload = {
+                    name: name.trim() || copy.defaultName,
+                    tool: provider,
+                    workdir: customWorkdirEnabled ? workdir.trim() : defaultWorkdir,
+                    customWorkdir: customWorkdirEnabled,
+                    promptEnabled,
+                    promptContent: promptEnabled ? promptContent : '',
+                    launchCommand: launchCommand.trim() || null,
+                    externalTemplatePath: !isEdit && externalTemplatePath.trim() ? externalTemplatePath.trim() : null,
+                  }
+                  if (launchCommand.trim() && launchCommand.trim() !== provider) {
+                    const updatedHistory = recordLaunchCommand(provider, launchCommand.trim())
+                    setLaunchCommandHistory(updatedHistory)
+                  }
+                  if (editingStation) {
+                    void onSubmit({ id: editingStation.id, ...payload })
+                    return
+                  }
+                  void onSubmit(payload)
+                }}
+              >
+                <AppIcon name={isEdit ? 'check' : 'plus'} className="vb-icon" aria-hidden="true" />
+                <span>
+                  {saving
                     ? locale === 'zh-CN'
-                      ? '保存'
-                      : 'Save'
-                    : copy.submitLabel}
-              </span>
-            </button>
+                      ? '提交中...'
+                      : 'Saving...'
+                    : isEdit
+                      ? locale === 'zh-CN'
+                        ? '保存'
+                        : 'Save'
+                      : copy.submitLabel}
+                </span>
+              </button>
+            )}
           </footer>
         </section>
       </div>

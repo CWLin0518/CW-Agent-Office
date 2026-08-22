@@ -1884,6 +1884,8 @@ export interface AgentProfile {
   promptFileRelativePath?: string | null
   launchCommand?: string | null
   orderIndex: number
+  parentAgentId?: string | null
+  externalTemplatePath?: string | null
   createdAtMs: number
   updatedAtMs: number
 }
@@ -1905,10 +1907,19 @@ export interface AgentCreateRequest {
   promptFileName?: string | null
   promptContent?: string | null
   launchCommand?: string | null
+  externalTemplatePath?: string | null
 }
 
 export interface AgentCreateResponse {
   agent: AgentProfile
+}
+
+export interface AgentReadExternalTemplateRequest {
+  externalTemplatePath: string
+}
+
+export interface AgentReadExternalTemplateResponse {
+  content: string
 }
 
 export interface AgentUpdateRequest {
@@ -1964,6 +1975,67 @@ export interface AgentPromptReadResponse {
 export interface AgentReorderRequest {
   workspaceId: string
   orderedAgentIds: string[]
+}
+
+// Mirrors crates/gt-agent/src/policy.rs — Phase A of docs/cw/04_客製化設計.md §3.
+export interface AgentFileSystemPolicy {
+  deniedPathPrefixes: string[]
+}
+
+export interface AgentShellPolicy {
+  deniedCommands: string[]
+}
+
+export interface AgentGitPolicy {
+  deniedSubcommands: string[]
+}
+
+export interface AgentInvokePolicy {
+  allowGtoSend: boolean
+  allowSubagentSpawn: boolean
+}
+
+export interface AgentExecutionPolicy {
+  timeoutSeconds?: number | null
+  maxSteps?: number | null
+  maxConcurrency?: number | null
+}
+
+export interface AgentPolicy {
+  fileSystem: AgentFileSystemPolicy
+  shell: AgentShellPolicy
+  git: AgentGitPolicy
+  agent: AgentInvokePolicy
+  execution: AgentExecutionPolicy
+}
+
+export function createDefaultAgentPolicy(): AgentPolicy {
+  return {
+    fileSystem: { deniedPathPrefixes: [] },
+    shell: { deniedCommands: [] },
+    git: { deniedSubcommands: [] },
+    agent: { allowGtoSend: true, allowSubagentSpawn: true },
+    execution: { timeoutSeconds: null, maxSteps: null, maxConcurrency: null },
+  }
+}
+
+export interface AgentPolicyReadRequest {
+  workspaceId: string
+  agentId: string
+}
+
+export interface AgentPolicyReadResponse {
+  policy: AgentPolicy
+}
+
+export interface AgentPolicySaveRequest {
+  workspaceId: string
+  agentId: string
+  policy: AgentPolicy
+}
+
+export interface AgentPolicySaveResponse {
+  snapshotId: string
 }
 
 export interface AgentRuntimeRegisterRequest {
@@ -2558,6 +2630,7 @@ type RuntimeWindowController = {
   minimize: () => Promise<void>
   close: () => Promise<void>
   onResized: (handler: () => void) => Promise<() => void>
+  onMoved: (handler: () => void) => Promise<() => void>
 }
 
 let cachedInvoke: InvokeFn | null = null
@@ -2668,6 +2741,11 @@ export const desktopApi = {
   },
   systemPickDirectory(defaultPath?: string | null) {
     return invokeCommand<string | null>('system_pick_directory', {
+      defaultPath: defaultPath ?? null,
+    })
+  },
+  systemPickFile(defaultPath?: string | null) {
+    return invokeCommand<string | null>('system_pick_file', {
       defaultPath: defaultPath ?? null,
     })
   },
@@ -4287,6 +4365,14 @@ export const desktopApi = {
         promptFileName: request.promptFileName ?? null,
         promptContent: request.promptContent ?? null,
         launchCommand: request.launchCommand ?? null,
+        externalTemplatePath: request.externalTemplatePath ?? null,
+      },
+    })
+  },
+  agentReadExternalTemplate(request: AgentReadExternalTemplateRequest) {
+    return invokeCommand<AgentReadExternalTemplateResponse>('agent_read_external_template', {
+      request: {
+        externalTemplatePath: request.externalTemplatePath,
       },
     })
   },
@@ -4331,6 +4417,23 @@ export const desktopApi = {
       request: {
         workspaceId: request.workspaceId,
         orderedAgentIds: request.orderedAgentIds,
+      },
+    })
+  },
+  agentPolicyRead(request: AgentPolicyReadRequest) {
+    return invokeCommand<AgentPolicyReadResponse>('agent_policy_read', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+      },
+    })
+  },
+  agentPolicySave(request: AgentPolicySaveRequest) {
+    return invokeCommand<AgentPolicySaveResponse>('agent_policy_save', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+        policy: request.policy,
       },
     })
   },
@@ -4422,6 +4525,18 @@ export const desktopApi = {
     try {
       const window = await getWindowController()
       const unlisten = await window.onResized(onResized)
+      return createSafeAsyncCleanup([unlisten])
+    } catch {
+      return () => {}
+    }
+  },
+  async subscribeWindowMoved(onMoved: () => void): Promise<() => void> {
+    if (!isTauriRuntime()) {
+      return () => {}
+    }
+    try {
+      const window = await getWindowController()
+      const unlisten = await window.onMoved(onMoved)
       return createSafeAsyncCleanup([unlisten])
     } catch {
       return () => {}

@@ -254,6 +254,7 @@ export interface ShellTerminalController {
   // State
   stationTerminals: Record<string, StationTerminalRuntime>
   setStationTerminals: Dispatch<SetStateAction<Record<string, StationTerminalRuntime>>>
+  stationSessionTabs: Record<string, string[]>
   toolCommandsByStationId: Record<string, ToolCommandSummary[]>
   isBatchLaunchingAgents: boolean
   pendingStationActionSheet: { station: AgentStation; action: StationActionDescriptor } | null
@@ -279,6 +280,9 @@ export interface ShellTerminalController {
   setStationTerminalState: (stationId: string, patch: Partial<StationTerminalRuntime>) => void
   clearStationUnread: (stationId: string) => void
   ensureStationTerminalSession: (stationId: string) => Promise<string | null>
+  createAdditionalStationTerminalSession: (stationId: string) => Promise<string | null>
+  switchStationTerminalSessionTab: (stationId: string, targetSessionId: string) => void
+  closeStationTerminalSessionTab: (stationId: string, sessionId: string) => Promise<void>
   launchStationTerminal: (stationId: string) => Promise<void>
   sendStationTerminalInput: (stationId: string, input: string) => void
   handleStationTerminalInput: (stationId: string, data: string) => void
@@ -385,6 +389,18 @@ export function useShellTerminalController({
   const [stationTerminals, setStationTerminals] = useState<Record<string, StationTerminalRuntime>>(
     () => createInitialStationTerminals(initialStations),
   )
+  // Session ids live for a station, in creation order. The entry that matches
+  // `stationTerminals[stationId].sessionId` is the one currently displayed;
+  // siblings keep running in the background until their tab is closed. Additive
+  // to `stationTerminals` on purpose — see docs/cw/04_客製化設計.md §4.
+  // Known scope boundary (P1): unlike stationTerminals, this is not captured
+  // into workspaceTerminalCacheRef's WorkspaceTerminalSessionDocument or
+  // persisted via workspace-terminal-session-store.ts, so the tab list does not
+  // survive an app restart (a single session is still restored per station).
+  // It is not reset on workspace switch either — that's intentional, since
+  // switching workspaces never kills PTYs (see suspendWorkspaceTerminalSessions),
+  // so a station's sibling tabs really are still alive when you switch back.
+  const [stationSessionTabs, setStationSessionTabs] = useState<Record<string, string[]>>({})
   const [toolCommandsByStationId, setToolCommandsByStationId] = useState<Record<string, ToolCommandSummary[]>>({})
   const [pendingStationActionSheet, setPendingStationActionSheet] = useState<{
     station: AgentStation
@@ -399,6 +415,7 @@ export function useShellTerminalController({
 
   // ── Refs ──────────────────────────────────────────────────────────────
   const stationTerminalsRef = useRef(stationTerminals)
+  const stationSessionTabsRef = useRef(stationSessionTabs)
   const sessionStationRef = useRef<Record<string, string>>({})
   const terminalSessionSeqRef = useRef<Record<string, number>>({})
   const terminalOutputQueueRef = useRef<Record<string, Promise<void>>>({})
@@ -551,6 +568,10 @@ export function useShellTerminalController({
   useEffect(() => {
     stationTerminalsRef.current = stationTerminals
   }, [stationTerminals])
+
+  useEffect(() => {
+    stationSessionTabsRef.current = stationSessionTabs
+  }, [stationSessionTabs])
 
   // ── Detached projection helpers ───────────────────────────────────────
   const hasDetachedProjectionTargets = useCallback(() => {
@@ -3212,6 +3233,259 @@ export function useShellTerminalController({
     ],
   )
 
+  // ── Additional station terminal session (tab bar "+") ──────────────────
+  // Unlike ensureStationTerminalSession this never short-circuits on an
+  // existing session — it always launches a fresh PTY and appends it as a new
+  // tab. Only ever invoked from an explicit click on the currently active
+  // station's tab bar, so (unlike the single-flight path above, which also
+  // serves background/auto-launch callers) it does not need the
+  // cross-workspace race caching — a plain "did the active workspace change
+  // while we awaited terminalCreate" guard is enough.
+  const createAdditionalStationTerminalSession = useCallback(
+    async (stationId: string): Promise<string | null> => {
+      if (!activeWorkspaceId) {
+        appendStationTerminalOutput(stationId, t(locale, 'system.bindWorkspace'))
+        return null
+      }
+      if (!desktopApi.isTauriRuntime()) {
+        appendStationTerminalOutput(stationId, t(locale, 'system.webPreviewNoPty'))
+        return null
+      }
+      const launchWorkspaceId = activeWorkspaceId
+      try {
+        const station = stationsRef.current.find((item) => item.id === stationId)
+        if (!station) {
+          return null
+        }
+        const workspaceRoot = await resolveWorkspaceRoot(launchWorkspaceId)
+        if (!workspaceRoot) {
+          return null
+        }
+        const launchesFromWorkspaceRoot = isWorkspaceRootWorkdir(station.agentWorkdirRel)
+        if (!launchesFromWorkspaceRoot) {
+          await desktopApi.fsCreateDir(launchWorkspaceId, station.agentWorkdirRel)
+        }
+        const agentWorkspaceCwd = resolveAgentWorkdirAbs(workspaceRoot, station.agentWorkdirRel)
+        const terminalEnv = {
+          GTO_WORKSPACE_ID: activeWorkspaceId,
+          GTO_AGENT_ID: station.id,
+          GTO_STATION_ID: station.id,
+        }
+        const session = await desktopApi.terminalCreate(launchWorkspaceId, {
+          cwd: launchesFromWorkspaceRoot ? null : agentWorkspaceCwd,
+          cwdMode: launchesFromWorkspaceRoot ? 'workspace_root' : 'custom',
+          env: terminalEnv,
+          agentToolKind: normalizeStationToolKind(station.tool),
+          injectProviderEnv: false,
+          loginShell: false,
+        })
+        if (activeWorkspaceIdRef.current !== launchWorkspaceId) {
+          // The user switched workspaces while the PTY was still spinning up —
+          // there is no tab bar left to show it in, so just kill it.
+          void requestTerminalKill({
+            sessionId: session.sessionId,
+            signal: 'KILL',
+            reason: 'dropped-additional-session-workspace-changed',
+            stationId,
+            workspaceId: launchWorkspaceId,
+          }).catch(() => {
+            // Best-effort: an orphaned dev-only PTY is not worth surfacing an error for.
+          })
+          return null
+        }
+        sessionStationRef.current[session.sessionId] = stationId
+        terminalSessionSeqRef.current[session.sessionId] = 0
+        ensureTerminalSessionVisible(launchWorkspaceId, session.sessionId)
+        setStationSessionTabs((previous) => {
+          const existingTabs = previous[stationId] ?? []
+          const currentActiveSessionId = stationTerminalsRef.current[stationId]?.sessionId
+          const seeded =
+            currentActiveSessionId && !existingTabs.includes(currentActiveSessionId)
+              ? [...existingTabs, currentActiveSessionId]
+              : existingTabs
+          return {
+            ...previous,
+            [stationId]: [...seeded, session.sessionId],
+          }
+        })
+        delete stationTerminalRestoreStateRef.current[stationId]
+        resetStationTerminalOutput(
+          stationId,
+          `${t(locale, 'system.terminalLaunched')}${t(locale, 'system.terminalSessionInfo', {
+            sessionId: session.sessionId,
+            cwd: session.resolvedCwd,
+          })}`,
+        )
+        setStationTerminalState(stationId, {
+          sessionId: session.sessionId,
+          stateRaw: 'running',
+          unreadCount: 0,
+          shell: session.shell,
+          cwdMode: session.cwdMode,
+          resolvedCwd: session.resolvedCwd,
+        })
+        return session.sessionId
+      } catch (error) {
+        appendStationTerminalOutput(
+          stationId,
+          t(locale, 'system.launchFailed', {
+            detail: describeError(error),
+          }),
+        )
+        return null
+      }
+    },
+    [
+      activeWorkspaceId,
+      appendStationTerminalOutput,
+      ensureTerminalSessionVisible,
+      locale,
+      requestTerminalKill,
+      resetStationTerminalOutput,
+      resolveWorkspaceRoot,
+      setStationTerminalState,
+    ],
+  )
+
+  // Switches which of a station's already-live sessions is displayed. The
+  // sibling session keeps running server-side; this just repoints
+  // stationTerminals[stationId].sessionId, which the existing xterm
+  // mount/rebind effect (StationXtermTerminal) already treats as "session
+  // changed" and re-hydrates from the backend the same way session restore
+  // after an app restart already does today.
+  const switchStationTerminalSessionTab = useCallback(
+    (stationId: string, targetSessionId: string) => {
+      const tabs = stationSessionTabsRef.current[stationId] ?? []
+      if (!tabs.includes(targetSessionId)) {
+        return
+      }
+      if (stationTerminalsRef.current[stationId]?.sessionId === targetSessionId) {
+        return
+      }
+      setStationTerminalState(stationId, {
+        sessionId: targetSessionId,
+        stateRaw: 'running',
+        unreadCount: 0,
+      })
+    },
+    [setStationTerminalState],
+  )
+
+  // Closes one tab's session. If it is the last live tab for the station this
+  // degrades to the same "idle" runtime shape forceCloseStationTerminal's
+  // confirmed kill path produces; otherwise the station switches to a
+  // sibling tab and keeps running.
+  const closeStationTerminalSessionTab = useCallback(
+    async (stationId: string, sessionId: string) => {
+      const workspaceId = activeWorkspaceIdRef.current
+      try {
+        if (desktopApi.isTauriRuntime()) {
+          await requestTerminalKill({
+            sessionId,
+            signal: 'KILL',
+            reason: 'session-tab-closed',
+            stationId,
+            workspaceId,
+          })
+        }
+      } catch (error) {
+        const detail = describeError(error)
+        if (!isTerminalSessionBindingInvalid(detail)) {
+          appendStationTerminalOutput(
+            stationId,
+            t(locale, 'system.killFailed', { detail }),
+          )
+          return
+        }
+      }
+
+      delete sessionStationRef.current[sessionId]
+      delete terminalSessionSeqRef.current[sessionId]
+      delete terminalOutputQueueRef.current[sessionId]
+      delete terminalSessionVisibilityRef.current[sessionId]
+      delete terminalChunkDecoderBySessionRef.current[sessionId]
+
+      const remainingTabs = (stationSessionTabsRef.current[stationId] ?? []).filter(
+        (tab) => tab !== sessionId,
+      )
+      setStationSessionTabs((previous) => ({
+        ...previous,
+        [stationId]: remainingTabs,
+      }))
+
+      const wasActive = stationTerminalsRef.current[stationId]?.sessionId === sessionId
+      if (!wasActive) {
+        // setStationTerminalState (which persists the workspace terminal cache
+        // document) is never called on this branch since the displayed session
+        // didn't change — persist explicitly so a later workspace switch away
+        // and back doesn't resurrect this now-killed session's mapping.
+        if (workspaceId) {
+          const document = workspaceTerminalCacheRef.current[workspaceId]
+          if (document) {
+            removeWorkspaceTerminalSessionBinding(document, sessionId, 'exited')
+          }
+        }
+        persistActiveWorkspaceTerminalDocument()
+        return
+      }
+
+      const nextActiveSessionId = remainingTabs[remainingTabs.length - 1] ?? null
+      if (nextActiveSessionId) {
+        setStationTerminalState(stationId, {
+          sessionId: nextActiveSessionId,
+          stateRaw: 'running',
+          unreadCount: 0,
+        })
+        return
+      }
+
+      // No tabs left — this station has no active terminal, same end state as
+      // forceCloseStationTerminal's confirmed kill path.
+      delete stationSubmitSequenceRef.current[stationId]
+      delete stationTerminalRestoreStateRef.current[stationId]
+      stationTerminalInputControllerRef.current?.clear(stationId)
+      disposeParkedStationTerminalHost(workspaceId, stationId)
+      if (workspaceId) {
+        const document = workspaceTerminalCacheRef.current[workspaceId]
+        if (document) {
+          removeWorkspaceTerminalSessionBinding(document, sessionId, 'exited')
+          const closedRuntime = document.stationTerminals[stationId]
+          if (closedRuntime) {
+            document.stationTerminals[stationId] = {
+              ...closedRuntime,
+              sessionId: null,
+              stateRaw: 'idle',
+              shell: null,
+              cwdMode: 'workspace_root',
+              resolvedCwd: null,
+            }
+          }
+        }
+        void desktopApi.agentRuntimeUnregister(workspaceId, stationId).catch(() => {
+          // Runtime sync will reconcile if a later session is started.
+        })
+      }
+      const station = stationsRef.current.find((entry) => entry.id === stationId)
+      resetStationTerminalOutput(stationId, station ? getStationIdleBanner(station) : undefined)
+      setStationTerminalState(stationId, {
+        sessionId: null,
+        stateRaw: 'idle',
+        unreadCount: 0,
+        shell: null,
+        cwdMode: 'workspace_root',
+        resolvedCwd: null,
+      })
+    },
+    [
+      appendStationTerminalOutput,
+      locale,
+      persistActiveWorkspaceTerminalDocument,
+      requestTerminalKill,
+      resetStationTerminalOutput,
+      setStationTerminalState,
+    ],
+  )
+
   const focusStationTerminal = useCallback(async (stationId: string): Promise<boolean> => {
     return focusStationTerminalSinkWithFrameRetry({
       maxRetryFrames: STATION_TERMINAL_FOCUS_MAX_RETRY_FRAMES,
@@ -4372,57 +4646,69 @@ export function useShellTerminalController({
   const cleanupRemovedStationRuntimeState = useCallback(
     async (stationId: string, workspaceId: string | null) => {
       const runtime = stationTerminalsRef.current[stationId]
-      const mappedSessionId =
-        Object.entries(sessionStationRef.current).find(([, mappedStationId]) => mappedStationId === stationId)?.[0] ??
-        null
-      const targetSessionId = runtime?.sessionId ?? mappedSessionId
-      if (targetSessionId && desktopApi.isTauriRuntime()) {
-        try {
-          const response = await requestTerminalKill({
-            sessionId: targetSessionId,
-            signal: 'TERM',
-            reason: 'removed-station-runtime-cleanup',
+      const mappedSessionIds = Object.entries(sessionStationRef.current)
+        .filter(([, mappedStationId]) => mappedStationId === stationId)
+        .map(([sessionId]) => sessionId)
+      // A station can now be showing several live tabs (see stationSessionTabs) —
+      // every one of them owns a real backend PTY that must be killed here, not
+      // just the currently-active session, or removing/force-closing a station
+      // with 2+ open tabs leaks the others.
+      const targetSessionIds = Array.from(
+        new Set([
+          ...(runtime?.sessionId ? [runtime.sessionId] : []),
+          ...(stationSessionTabsRef.current[stationId] ?? []),
+          ...mappedSessionIds,
+        ]),
+      )
+      let anyKillFailed = false
+      for (const targetSessionId of targetSessionIds) {
+        if (desktopApi.isTauriRuntime()) {
+          try {
+            const response = await requestTerminalKill({
+              sessionId: targetSessionId,
+              signal: 'TERM',
+              reason: 'removed-station-runtime-cleanup',
+              stationId,
+              workspaceId,
+            })
+            if (!workspaceId || !isMatchingTerminalWorkspaceSessionResponse(response, workspaceId, targetSessionId)) {
+              // A stale/mismatched response for this one session must not abandon
+              // the remaining sessions mid-loop — that would strand their already
+              // in-flight or already-killed siblings as untracked "ghost" tabs.
+              anyKillFailed = true
+              continue
+            }
+            if (!response.killed) {
+              appendStationTerminalOutput(
+                stationId,
+                t(locale, 'system.killFailed', {
+                  detail: TERMINAL_KILL_REJECTED_DETAIL,
+                }),
+              )
+              anyKillFailed = true
+            }
+          } catch (error) {
+            const detail = describeError(error)
+            if (!isTerminalSessionBindingInvalid(detail)) {
+              appendStationTerminalOutput(
+                stationId,
+                t(locale, 'system.killFailed', {
+                  detail,
+                }),
+              )
+              anyKillFailed = true
+            }
+          }
+        } else {
+          appendStationTerminalOutput(
             stationId,
-            workspaceId,
-          })
-          if (!workspaceId || !isMatchingTerminalWorkspaceSessionResponse(response, workspaceId, targetSessionId)) {
-            return false
-          }
-          if (!response.killed) {
-            appendStationTerminalOutput(
-              stationId,
-              t(locale, 'system.killFailed', {
-                detail: TERMINAL_KILL_REJECTED_DETAIL,
-              }),
-            )
-            return false
-          }
-        } catch (error) {
-          const detail = describeError(error)
-          if (!isTerminalSessionBindingInvalid(detail)) {
-            appendStationTerminalOutput(
-              stationId,
-              t(locale, 'system.killFailed', {
-                detail,
-              }),
-            )
-            return false
-          }
+            t(locale, 'system.killSkippedNoRuntime', {
+              sessionId: targetSessionId,
+            }),
+          )
         }
-      } else if (targetSessionId) {
-        appendStationTerminalOutput(
-          stationId,
-          t(locale, 'system.killSkippedNoRuntime', {
-            sessionId: targetSessionId,
-          }),
-        )
-      } else if (runtime?.sessionId) {
-        appendStationTerminalOutput(
-          stationId,
-          t(locale, 'system.killFailed', {
-            detail: runtime.sessionId,
-          }),
-        )
+      }
+      if (anyKillFailed) {
         return false
       }
 
@@ -4434,20 +4720,21 @@ export function useShellTerminalController({
         cwdMode: 'workspace_root',
         resolvedCwd: null,
       })
-
-      Object.entries(sessionStationRef.current).forEach(([sessionId, mappedStationId]) => {
-        if (mappedStationId === stationId) {
-          delete sessionStationRef.current[sessionId]
-          delete terminalSessionSeqRef.current[sessionId]
-          delete terminalOutputQueueRef.current[sessionId]
-          delete terminalSessionVisibilityRef.current[sessionId]
+      setStationSessionTabs((previous) => {
+        if (!(stationId in previous)) {
+          return previous
         }
+        const next = { ...previous }
+        delete next[stationId]
+        return next
       })
-      if (targetSessionId) {
+
+      for (const targetSessionId of targetSessionIds) {
         delete sessionStationRef.current[targetSessionId]
         delete terminalSessionSeqRef.current[targetSessionId]
         delete terminalOutputQueueRef.current[targetSessionId]
         delete terminalSessionVisibilityRef.current[targetSessionId]
+        delete terminalChunkDecoderBySessionRef.current[targetSessionId]
       }
       stationTerminalInputControllerRef.current?.clear(stationId)
       delete stationTerminalRestoreStateRef.current[stationId]
@@ -4563,66 +4850,101 @@ export function useShellTerminalController({
     }
     setForceCloseConfirmPendingId(null)
     const runtime = stationTerminalsRef.current[stationId]
-    const sessionId = runtime?.sessionId ?? null
-    if (!sessionId) {
+    const activeSessionId = runtime?.sessionId ?? null
+    if (!activeSessionId) {
       return
     }
-    recordStationLifecycleDiagnostic(stationId, sessionId, 'force-close-confirm', 'kill-request')
+    recordStationLifecycleDiagnostic(stationId, activeSessionId, 'force-close-confirm', 'kill-request')
     const station = stationsRef.current.find((entry) => entry.id === stationId)
 
     const workspaceId = activeWorkspaceIdRef.current
-    try {
-      if (desktopApi.isTauriRuntime()) {
-        const response = await requestTerminalKill({
-          sessionId,
-          signal: 'KILL',
-          reason: 'force-close-confirmed',
-          stationId,
-          workspaceId,
-        })
-        if (!workspaceId || !isMatchingTerminalWorkspaceSessionResponse(response, workspaceId, sessionId)) {
-          return
+    // A station can be showing several open tabs (see stationSessionTabs) — force
+    // closing must kill every one of them, not just the currently active tab, or
+    // the sibling tabs' PTYs leak and their stale ids resurface on the next
+    // "New Session" click (see cleanupRemovedStationRuntimeState for the same fix).
+    const mappedSessionIds = Object.entries(sessionStationRef.current)
+      .filter(([, mappedStationId]) => mappedStationId === stationId)
+      .map(([sessionId]) => sessionId)
+    const targetSessionIds = Array.from(
+      new Set([
+        activeSessionId,
+        ...(stationSessionTabsRef.current[stationId] ?? []),
+        ...mappedSessionIds,
+      ]),
+    )
+
+    for (const sessionId of targetSessionIds) {
+      try {
+        if (desktopApi.isTauriRuntime()) {
+          const response = await requestTerminalKill({
+            sessionId,
+            signal: 'KILL',
+            reason: 'force-close-confirmed',
+            stationId,
+            workspaceId,
+          })
+          if (!workspaceId || !isMatchingTerminalWorkspaceSessionResponse(response, workspaceId, sessionId)) {
+            // A stale/mismatched response for this one session must not abandon
+            // the remaining sessions mid-loop — see cleanupRemovedStationRuntimeState
+            // for the same fix and rationale.
+            continue
+          }
+          if (!response.killed) {
+            appendStationTerminalOutput(
+              stationId,
+              t(locale, 'system.killFailed', {
+                detail: TERMINAL_KILL_REJECTED_DETAIL,
+              }),
+            )
+            continue
+          }
         }
-        if (!response.killed) {
+      } catch (error) {
+        const detail = describeError(error)
+        if (!isTerminalSessionBindingInvalid(detail)) {
           appendStationTerminalOutput(
             stationId,
             t(locale, 'system.killFailed', {
-              detail: TERMINAL_KILL_REJECTED_DETAIL,
+              detail,
             }),
           )
-          return
+          continue
         }
       }
-    } catch (error) {
-      const detail = describeError(error)
-      if (!isTerminalSessionBindingInvalid(detail)) {
-        appendStationTerminalOutput(
-          stationId,
-          t(locale, 'system.killFailed', {
-            detail,
-          }),
-        )
-        return
+
+      delete sessionStationRef.current[sessionId]
+      delete terminalSessionSeqRef.current[sessionId]
+      delete terminalOutputQueueRef.current[sessionId]
+      delete terminalSessionVisibilityRef.current[sessionId]
+      delete terminalChunkDecoderBySessionRef.current[sessionId]
+
+      if (workspaceId) {
+        const document = workspaceTerminalCacheRef.current[workspaceId]
+        if (document) {
+          // Persist idle (not killed/exited chrome) so warm restore returns to history.
+          removeWorkspaceTerminalSessionBinding(document, sessionId, 'exited')
+        }
       }
     }
 
-    delete sessionStationRef.current[sessionId]
-    delete terminalSessionSeqRef.current[sessionId]
-    delete terminalOutputQueueRef.current[sessionId]
-    delete terminalSessionVisibilityRef.current[sessionId]
-    delete terminalChunkDecoderBySessionRef.current[sessionId]
     delete stationSubmitSequenceRef.current[stationId]
     delete stationTerminalRestoreStateRef.current[stationId]
     stationTerminalInputControllerRef.current?.clear(stationId)
     // Closing the agent must not leave a parked live buffer that presentation
     // can resurrect as a "running" terminal after a workspace switch.
     disposeParkedStationTerminalHost(workspaceId, stationId)
+    setStationSessionTabs((previous) => {
+      if (!(stationId in previous)) {
+        return previous
+      }
+      const next = { ...previous }
+      delete next[stationId]
+      return next
+    })
 
     if (workspaceId) {
       const document = workspaceTerminalCacheRef.current[workspaceId]
       if (document) {
-        // Persist idle (not killed/exited chrome) so warm restore returns to history.
-        removeWorkspaceTerminalSessionBinding(document, sessionId, 'exited')
         const closedRuntime = document.stationTerminals[stationId]
         if (closedRuntime) {
           document.stationTerminals[stationId] = {
@@ -5040,6 +5362,7 @@ export function useShellTerminalController({
     // State
     stationTerminals,
     setStationTerminals,
+    stationSessionTabs,
     toolCommandsByStationId,
     isBatchLaunchingAgents,
     pendingStationActionSheet,
@@ -5065,6 +5388,9 @@ export function useShellTerminalController({
     setStationTerminalState,
     clearStationUnread,
     ensureStationTerminalSession,
+    createAdditionalStationTerminalSession,
+    switchStationTerminalSessionTab,
+    closeStationTerminalSessionTab,
     launchStationTerminal,
     sendStationTerminalInput,
     handleStationTerminalInput,

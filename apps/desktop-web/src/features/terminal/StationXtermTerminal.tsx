@@ -15,7 +15,7 @@ import { resolveTerminalDocument } from './station-terminal-document-scope'
 import '@xterm/xterm/css/xterm.css'
 import './StationXtermTerminal.scss'
 import type { ITheme, Terminal as XtermTerminal } from '@xterm/xterm'
-import type { RenderedScreenSnapshot } from '@shell/integration/desktop-api'
+import { desktopApi, type RenderedScreenSnapshot } from '@shell/integration/desktop-api'
 import { t, type Locale } from '@shell/i18n/ui-locale'
 import {
   consumeDeferredMacOsXtermEcho,
@@ -1778,6 +1778,24 @@ function StationXtermTerminalView({
         hostDocument.addEventListener('visibilitychange', handleVisibilityChange)
         hostDocument.addEventListener('transitionend', handleTransitionSettled, true)
         hostDocument.addEventListener('animationend', handleTransitionSettled, true)
+        // Dragging the native window emits neither a DOM `resize` nor `visibilitychange`
+        // event, yet Windows/WebView2 can leave the WebGL glyph atlas visibly corrupted
+        // (garbled or missing text) until something forces a repaint. Tauri's native
+        // "moved" event is the only signal available for that case, so route it through
+        // the same viewport-wake recovery path as resize/focus.
+        let unsubscribeWindowMoved: (() => void) | null = null
+        void desktopApi.subscribeWindowMoved(() => {
+          if (!active) {
+            return
+          }
+          scheduleViewportWake('window-moved')
+        }).then((unlisten) => {
+          if (!active) {
+            unlisten()
+            return
+          }
+          unsubscribeWindowMoved = unlisten
+        })
         removeViewportWakeListeners = () => {
           for (const timeoutId of viewportWakeTimeoutIdsByDelay.values()) {
             hostWindow.clearTimeout(timeoutId)
@@ -1789,6 +1807,8 @@ function StationXtermTerminalView({
           hostDocument.removeEventListener('visibilitychange', handleVisibilityChange)
           hostDocument.removeEventListener('transitionend', handleTransitionSettled, true)
           hostDocument.removeEventListener('animationend', handleTransitionSettled, true)
+          unsubscribeWindowMoved?.()
+          unsubscribeWindowMoved = null
         }
         if (typeof IntersectionObserver !== 'undefined') {
           viewportVisibilityObserver = new IntersectionObserver((entries) => {

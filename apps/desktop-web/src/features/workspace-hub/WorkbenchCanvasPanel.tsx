@@ -84,6 +84,7 @@ interface WorkbenchCanvasPanelProps {
   roleFilter?: string
   activeGlobalStationId: string
   terminalByStation: Record<string, WorkbenchStationRuntime>
+  stationSessionTabs?: Record<string, string[]>
   taskSignalByStationId: Partial<Record<string, StationTaskSignal>>
   channelBotBindingsByStationId?: Record<string, StationChannelBotBindingSummary[]>
   dropActive?: boolean
@@ -103,6 +104,9 @@ interface WorkbenchCanvasPanelProps {
     request: import('@features/session').SessionRelaunchRequest,
   ) => void
   onForceCloseTerminal?: (stationId: string) => void
+  onSwitchSessionTab?: (stationId: string, sessionId: string) => void
+  onCloseSessionTab?: (stationId: string, sessionId: string) => void
+  onNewSessionTab?: (stationId: string) => void
   onSendInputData: (stationId: string, data: string) => void
   onResizeTerminal: (stationId: string, cols: number, rows: number) => void
   onBindTerminalSink: StationTerminalSinkBindingHandler
@@ -468,6 +472,7 @@ function WorkbenchCanvasPanelView({
   roleFilter = 'all',
   activeGlobalStationId,
   terminalByStation,
+  stationSessionTabs = {},
   taskSignalByStationId,
   channelBotBindingsByStationId = {},
   dropActive = false,
@@ -484,6 +489,9 @@ function WorkbenchCanvasPanelView({
   onLaunchCliAgent,
   onSessionRelaunch,
   onForceCloseTerminal,
+  onSwitchSessionTab,
+  onCloseSessionTab,
+  onNewSessionTab,
   onSendInputData,
   onResizeTerminal,
   onBindTerminalSink,
@@ -1394,6 +1402,7 @@ function WorkbenchCanvasPanelView({
             station={station}
             active={station.id === renderedActiveStationId}
             runtime={terminalByStation[station.id]}
+            sessionTabs={stationSessionTabs[station.id]}
             taskSignal={taskSignalByStationId[station.id]}
             channelBotBindings={channelBotBindingsByStationId[station.id]}
             isFullscreen={Boolean(options?.fullscreen)}
@@ -1420,6 +1429,9 @@ function WorkbenchCanvasPanelView({
             onLaunchCliAgent={onLaunchCliAgent}
             onSessionRelaunch={onSessionRelaunch}
             onForceCloseTerminal={onForceCloseTerminal}
+            onSwitchSessionTab={onSwitchSessionTab}
+            onCloseSessionTab={onCloseSessionTab}
+            onNewSessionTab={onNewSessionTab}
             onSendInputData={onSendInputData}
             onResizeTerminal={onResizeTerminal}
             onBindTerminalSink={onBindTerminalSink}
@@ -1455,6 +1467,9 @@ function WorkbenchCanvasPanelView({
       taskbarGhostAnimation,
       onBindTerminalSink,
       onForceCloseTerminal,
+      onSwitchSessionTab,
+      onCloseSessionTab,
+      onNewSessionTab,
       onLaunchCliAgent,
       onLaunchStationTerminal,
       onSessionRelaunch,
@@ -1474,6 +1489,7 @@ function WorkbenchCanvasPanelView({
       stationDropPlacement,
       taskSignalByStationId,
       terminalByStation,
+      stationSessionTabs,
       workspaceTransitioning,
     ],
   )

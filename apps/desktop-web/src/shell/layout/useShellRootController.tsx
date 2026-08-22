@@ -308,6 +308,7 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
 
   const {
     stationTerminals,
+    stationSessionTabs,
     workspaceTerminalCacheRef,
     toolCommandsByStationId,
     isBatchLaunchingAgents,
@@ -323,6 +324,9 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
     handleStationDeleteCleanupConfirm,
     bindStationTerminalSink,
     ensureStationTerminalSession,
+    createAdditionalStationTerminalSession,
+    switchStationTerminalSessionTab,
+    closeStationTerminalSessionTab,
     launchStationTerminal,
     handleStationTerminalInput,
     submitStationTerminal,
@@ -1233,6 +1237,7 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
     stations,
     activeStationId,
     terminalByStation: terminalByStationForPresentation,
+    stationSessionTabs,
     agentRunningByStationId: stationAgentRunningById,
     taskSignalByStationId: externalChannelController.stationTaskSignals,
     channelBotBindingsByStationId,
@@ -1245,6 +1250,13 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
       void relaunchGtoSession(stationId, request)
     },
     onForceCloseTerminal: forceCloseStationTerminal,
+    onSwitchSessionTab: switchStationTerminalSessionTab,
+    onCloseSessionTab: (stationId: string, sessionId: string) => {
+      void closeStationTerminalSessionTab(stationId, sessionId)
+    },
+    onNewSessionTab: (stationId: string) => {
+      void createAdditionalStationTerminalSession(stationId)
+    },
     onSendInputData: handleStationTerminalInput,
     onResizeTerminal: resizeStationTerminal,
     onBindTerminalSink: bindStationTerminalSink,

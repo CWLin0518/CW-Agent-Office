@@ -1,9 +1,9 @@
 use crate::sqlite::SqliteStorage;
 use gt_agent::{
-    AgentError, AgentProfile, AgentRepository, AgentResult, AgentScope, AgentState,
-    CreateAgentInput, UpdateAgentInput,
+    AgentError, AgentPolicy, AgentPolicyRepository, AgentProfile, AgentRepository, AgentResult,
+    AgentScope, AgentState, CreateAgentInput, UpdateAgentInput,
 };
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 #[derive(Debug, Clone)]
 pub struct SqliteAgentRepository {
@@ -30,6 +30,9 @@ impl SqliteAgentRepository {
             })
     }
 
+    // NOTE: only clears `agents`. `agent_links`/`agent_policy_snapshots` have no FK
+    // cascade, so once P3/P4 start writing rows into those tables, extend this to
+    // delete them by workspace_id too or a workspace reset will orphan them.
     pub fn reset_workspace_state_in_tx(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -103,9 +106,32 @@ CREATE TABLE IF NOT EXISTS agents (
   custom_workdir INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT 'station',
   state TEXT NOT NULL, employee_no TEXT, policy_snapshot_id TEXT,
   launch_command TEXT, order_index INTEGER NOT NULL DEFAULT 0,
+  parent_agent_id TEXT, external_template_path TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (id, workspace_id)
 );
+"#;
+
+const AGENT_LINKS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_links (
+  id TEXT NOT NULL PRIMARY KEY, workspace_id TEXT NOT NULL,
+  from_agent_id TEXT NOT NULL, to_agent_id TEXT NOT NULL,
+  kind TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_links_workspace
+  ON agent_links(workspace_id, created_at_ms DESC);
+"#;
+
+const AGENT_POLICY_SNAPSHOTS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_policy_snapshots (
+  id TEXT NOT NULL PRIMARY KEY, workspace_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL, policy_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_policy_snapshots_agent
+  ON agent_policy_snapshots(workspace_id, agent_id, created_at_ms DESC);
 "#;
 
 impl AgentRepository for SqliteAgentRepository {
@@ -115,7 +141,22 @@ impl AgentRepository for SqliteAgentRepository {
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
             })?;
-        Self::migrate_legacy_schema(&conn)
+        Self::migrate_legacy_schema(&conn)?;
+        // Additive columns for DBs created before this field existed. Run after the
+        // legacy rebuild above so a rebuilt table still picks these up.
+        let _ = conn.execute("ALTER TABLE agents ADD COLUMN parent_agent_id TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN external_template_path TEXT",
+            [],
+        );
+        conn.execute_batch(AGENT_LINKS_SCHEMA)
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        conn.execute_batch(AGENT_POLICY_SNAPSHOTS_SCHEMA)
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })
     }
 
     fn reset_workspace_state(&self, workspace_id: &str) -> AgentResult<()> {
@@ -131,7 +172,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn list_agents(&self, workspace_id: &str) -> AgentResult<Vec<AgentProfile>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         let rows = stmt
             .query_map(params![workspace_id], |row| {
@@ -150,10 +191,12 @@ impl AgentRepository for SqliteAgentRepository {
                     policy_snapshot_id: row.get(9)?,
                     launch_command: row.get(10)?,
                     order_index: row.get(11)?,
+                    parent_agent_id: row.get(12)?,
+                    external_template_path: row.get(13)?,
                     prompt_file_name: None,
                     prompt_file_relative_path: None,
-                    created_at_ms: row.get(12)?,
-                    updated_at_ms: row.get(13)?,
+                    created_at_ms: row.get(14)?,
+                    updated_at_ms: row.get(15)?,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -186,7 +229,7 @@ impl AgentRepository for SqliteAgentRepository {
             .unwrap_or(1)
         });
         let now = Self::now_ms();
-        conn.execute("INSERT INTO agents (id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13)", params![id, input.workspace_id, input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.scope.as_str(), input.state.as_str(), input.employee_no, input.launch_command, order_index, now, now])
+        conn.execute("INSERT INTO agents (id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15)", params![id, input.workspace_id, input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.scope.as_str(), input.state.as_str(), input.employee_no, input.launch_command, order_index, input.parent_agent_id, input.external_template_path, now, now])
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         self.list_agents(&input.workspace_id)?
             .into_iter()
@@ -237,5 +280,336 @@ impl AgentRepository for SqliteAgentRepository {
         tx.commit().map_err(|error| AgentError::Storage {
             message: error.to_string(),
         })
+    }
+}
+
+impl AgentPolicyRepository for SqliteAgentRepository {
+    fn save_agent_policy(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        policy: &AgentPolicy,
+    ) -> AgentResult<String> {
+        let policy_json = policy.to_json().map_err(|error| AgentError::InvalidArgument {
+            message: format!("invalid policy: {error}"),
+        })?;
+        let mut conn = self.connection()?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Self::now_ms();
+        let tx = conn.transaction().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        tx.execute(
+            "INSERT INTO agent_policy_snapshots (id, workspace_id, agent_id, policy_json, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, workspace_id, agent_id, policy_json, now],
+        )
+        .map_err(|error| AgentError::Storage { message: error.to_string() })?;
+        let updated = tx
+            .execute(
+                "UPDATE agents SET policy_snapshot_id = ?1, updated_at_ms = ?2 WHERE workspace_id = ?3 AND id = ?4",
+                params![id, now, workspace_id, agent_id],
+            )
+            .map_err(|error| AgentError::Storage { message: error.to_string() })?;
+        if updated == 0 {
+            return Err(AgentError::InvalidArgument {
+                message: "agent_id not found".to_string(),
+            });
+        }
+        tx.commit().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        Ok(id)
+    }
+
+    fn get_agent_policy(&self, workspace_id: &str, agent_id: &str) -> AgentResult<AgentPolicy> {
+        let conn = self.connection()?;
+        let policy_json: Option<String> = conn
+            .query_row(
+                "SELECT policy_json FROM agent_policy_snapshots WHERE workspace_id = ?1 AND agent_id = ?2 ORDER BY created_at_ms DESC LIMIT 1",
+                params![workspace_id, agent_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| AgentError::Storage { message: error.to_string() })?;
+        match policy_json {
+            Some(json) => AgentPolicy::from_json(&json).map_err(|error| AgentError::Storage {
+                message: format!("corrupt policy snapshot: {error}"),
+            }),
+            None => Ok(AgentPolicy::default()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod p0_migration_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct ScratchDb {
+        path: PathBuf,
+    }
+
+    impl ScratchDb {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gt-storage-p0-test-{name}-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            Self { path }
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    /// Pre-P0 `agents` schema, hand-copied from this file's history: no
+    /// `parent_agent_id`/`external_template_path` columns.
+    const LEGACY_AGENT_SCHEMA: &str = r#"
+    CREATE TABLE agents (
+      id TEXT NOT NULL, workspace_id TEXT NOT NULL, name TEXT NOT NULL,
+      tool TEXT NOT NULL DEFAULT 'codex', workdir TEXT,
+      custom_workdir INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT 'station',
+      state TEXT NOT NULL, employee_no TEXT, policy_snapshot_id TEXT,
+      launch_command TEXT, order_index INTEGER NOT NULL DEFAULT 0,
+      created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (id, workspace_id)
+    );
+    "#;
+
+    #[test]
+    fn ensure_schema_migrates_pre_existing_db_without_data_loss_and_is_idempotent() {
+        let scratch = ScratchDb::new("migrate");
+        {
+            let conn = rusqlite::Connection::open(&scratch.path).expect("open legacy db");
+            conn.execute_batch(LEGACY_AGENT_SCHEMA)
+                .expect("create legacy schema");
+            conn.execute(
+                "INSERT INTO agents (id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, created_at_ms, updated_at_ms) VALUES ('legacy-1', 'ws-1', 'Legacy Agent', 'codex', '.', 0, 'station', 'ready', NULL, NULL, NULL, 1, 1, 1)",
+                [],
+            )
+            .expect("insert legacy row");
+        }
+
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("first ensure_schema");
+        // Idempotency: a second call must not error on "duplicate column".
+        repo.ensure_schema().expect("second ensure_schema");
+
+        let agents = repo.list_agents("ws-1").expect("list agents");
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, "legacy-1");
+        assert_eq!(agents[0].parent_agent_id, None);
+        assert_eq!(agents[0].external_template_path, None);
+
+        let conn = repo.connection().expect("connection");
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('agent_links', 'agent_policy_snapshots')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(table_count, 2);
+    }
+
+    #[test]
+    fn create_agent_round_trips_parent_agent_id_and_external_template_path() {
+        let scratch = ScratchDb::new("roundtrip");
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+
+        repo.create_agent(CreateAgentInput {
+            workspace_id: "ws-1".to_string(),
+            agent_id: Some("agent-with-parent".to_string()),
+            name: "Child".to_string(),
+            tool: "codex".to_string(),
+            workdir: Some(".".to_string()),
+            custom_workdir: false,
+            scope: AgentScope::Station,
+            employee_no: None,
+            state: AgentState::Ready,
+            launch_command: None,
+            order_index: None,
+            parent_agent_id: Some("agent-parent".to_string()),
+            external_template_path: Some("/tmp/template.md".to_string()),
+        })
+        .expect("create agent with parent/template");
+
+        repo.create_agent(CreateAgentInput {
+            workspace_id: "ws-1".to_string(),
+            agent_id: Some("agent-without-parent".to_string()),
+            name: "Root".to_string(),
+            tool: "codex".to_string(),
+            workdir: Some(".".to_string()),
+            custom_workdir: false,
+            scope: AgentScope::Station,
+            employee_no: None,
+            state: AgentState::Ready,
+            launch_command: None,
+            order_index: None,
+            parent_agent_id: None,
+            external_template_path: None,
+        })
+        .expect("create agent without parent/template");
+
+        let agents = repo.list_agents("ws-1").expect("list agents");
+        let with_parent = agents
+            .iter()
+            .find(|agent| agent.id == "agent-with-parent")
+            .expect("agent-with-parent present");
+        assert_eq!(
+            with_parent.parent_agent_id.as_deref(),
+            Some("agent-parent")
+        );
+        assert_eq!(
+            with_parent.external_template_path.as_deref(),
+            Some("/tmp/template.md")
+        );
+
+        let without_parent = agents
+            .iter()
+            .find(|agent| agent.id == "agent-without-parent")
+            .expect("agent-without-parent present");
+        assert_eq!(without_parent.parent_agent_id, None);
+        assert_eq!(without_parent.external_template_path, None);
+    }
+}
+
+#[cfg(test)]
+mod p3_agent_policy_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct ScratchDb {
+        path: PathBuf,
+    }
+
+    impl ScratchDb {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gt-storage-p3-test-{name}-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            Self { path }
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    fn repo_with_one_agent(scratch: &ScratchDb, agent_id: &str) -> SqliteAgentRepository {
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+        repo.create_agent(CreateAgentInput {
+            workspace_id: "ws-1".to_string(),
+            agent_id: Some(agent_id.to_string()),
+            name: "Agent".to_string(),
+            tool: "codex".to_string(),
+            workdir: Some(".".to_string()),
+            custom_workdir: false,
+            scope: AgentScope::Station,
+            employee_no: None,
+            state: AgentState::Ready,
+            launch_command: None,
+            order_index: None,
+            parent_agent_id: None,
+            external_template_path: None,
+        })
+        .expect("create agent");
+        repo
+    }
+
+    #[test]
+    fn agent_with_no_snapshot_returns_default_permissive_policy() {
+        let scratch = ScratchDb::new("no-snapshot");
+        let repo = repo_with_one_agent(&scratch, "agent-1");
+
+        let policy = repo
+            .get_agent_policy("ws-1", "agent-1")
+            .expect("get_agent_policy");
+        assert_eq!(policy, AgentPolicy::default());
+    }
+
+    #[test]
+    fn save_agent_policy_round_trips_and_repoints_snapshot_id() {
+        let scratch = ScratchDb::new("round-trip");
+        let repo = repo_with_one_agent(&scratch, "agent-1");
+
+        let mut policy_v1 = AgentPolicy::default();
+        policy_v1.shell.denied_commands.push("powershell".to_string());
+        policy_v1.execution.max_concurrency = Some(2);
+        policy_v1.agent.allow_gto_send = false;
+        let snapshot_v1 = repo
+            .save_agent_policy("ws-1", "agent-1", &policy_v1)
+            .expect("save policy v1");
+
+        let read_back_v1 = repo
+            .get_agent_policy("ws-1", "agent-1")
+            .expect("get policy v1");
+        assert_eq!(read_back_v1, policy_v1);
+
+        let agent = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-1")
+            .expect("agent-1 present");
+        assert_eq!(agent.policy_snapshot_id.as_deref(), Some(snapshot_v1.as_str()));
+
+        // A second save must append a new snapshot, not overwrite the first —
+        // agent_policy_snapshots is meant to stay an auditable history.
+        let mut policy_v2 = AgentPolicy::default();
+        policy_v2.execution.max_concurrency = Some(5);
+        let snapshot_v2 = repo
+            .save_agent_policy("ws-1", "agent-1", &policy_v2)
+            .expect("save policy v2");
+        assert_ne!(snapshot_v1, snapshot_v2);
+
+        let read_back_v2 = repo
+            .get_agent_policy("ws-1", "agent-1")
+            .expect("get policy v2");
+        assert_eq!(read_back_v2, policy_v2);
+
+        let agent = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-1")
+            .expect("agent-1 present");
+        assert_eq!(agent.policy_snapshot_id.as_deref(), Some(snapshot_v2.as_str()));
+
+        let conn = repo.connection().expect("connection");
+        let snapshot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_policy_snapshots WHERE workspace_id = 'ws-1' AND agent_id = 'agent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count snapshots");
+        assert_eq!(snapshot_count, 2, "old snapshot must not be overwritten");
+    }
+
+    #[test]
+    fn save_agent_policy_fails_for_unknown_agent() {
+        let scratch = ScratchDb::new("unknown-agent");
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+
+        let result = repo.save_agent_policy("ws-1", "does-not-exist", &AgentPolicy::default());
+        assert!(result.is_err(), "saving a policy for an unknown agent must fail");
     }
 }

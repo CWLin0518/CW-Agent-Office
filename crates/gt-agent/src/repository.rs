@@ -1,4 +1,4 @@
-use crate::{AgentProfile, AgentScope, AgentState};
+use crate::{AgentPolicy, AgentProfile, AgentScope, AgentState};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -27,6 +27,10 @@ pub struct CreateAgentInput {
     pub state: AgentState,
     pub launch_command: Option<String>,
     pub order_index: Option<i32>,
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
+    #[serde(default)]
+    pub external_template_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,4 +55,23 @@ pub trait AgentRepository: Send + Sync {
     fn update_agent(&self, input: UpdateAgentInput) -> AgentResult<AgentProfile>;
     fn delete_agent(&self, workspace_id: &str, agent_id: &str) -> AgentResult<bool>;
     fn reorder_agents(&self, workspace_id: &str, ordered_ids: Vec<String>) -> AgentResult<()>;
+}
+
+/// Backed by `agent_policy_snapshots` (docs/cw/04_客製化設計.md §3): every save
+/// appends a new immutable snapshot row and repoints `agents.policy_snapshot_id`
+/// at it, rather than overwriting a row in place, so past policy states stay
+/// auditable.
+pub trait AgentPolicyRepository: Send + Sync {
+    /// Returns the new snapshot id.
+    fn save_agent_policy(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        policy: &AgentPolicy,
+    ) -> AgentResult<String>;
+
+    /// Returns `AgentPolicy::default()` (fully permissive) when the agent has
+    /// no snapshot yet, so agents created before this feature existed behave
+    /// unchanged.
+    fn get_agent_policy(&self, workspace_id: &str, agent_id: &str) -> AgentResult<AgentPolicy>;
 }

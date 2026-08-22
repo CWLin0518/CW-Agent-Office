@@ -1,6 +1,7 @@
 use gt_abstractions::{
-    AbstractionError, AbstractionResult, CommandPolicyEvaluator, TerminalCreateRequest,
-    TerminalCwdMode, TerminalProvider, TerminalSession, WorkspaceId, WorkspaceService,
+    AbstractionError, AbstractionResult, AgentPolicyProvider, AllowAllAgentPolicyProvider,
+    CommandPolicyEvaluator, TerminalCreateRequest, TerminalCwdMode, TerminalProvider,
+    TerminalSession, WorkspaceId, WorkspaceService,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
@@ -344,6 +345,80 @@ fn select_current_process(
         .or_else(|| processes.iter().max_by_key(|process| process.pid).cloned())
 }
 
+/// `GTO_AGENT_ID` is set by the frontend on every `terminalCreate` call
+/// (`useShellTerminalController.ts`) alongside `GTO_WORKSPACE_ID`/`GTO_STATION_ID` —
+/// there is no dedicated field on `TerminalCreateRequest` for it, so this is
+/// the only way session creation knows which agent is asking. See
+/// `gt_abstractions::AgentPolicyProvider` for why Phase A policy lookups
+/// (docs/cw/04_客製化設計.md §3) need this instead of only workspace_id.
+fn extract_agent_id(request: &TerminalCreateRequest) -> Option<&str> {
+    request.env.get("GTO_AGENT_ID").map(String::as_str)
+}
+
+fn normalize_command_name(value: &str) -> String {
+    let trimmed = value.trim();
+    Path::new(trimmed)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase()
+}
+
+fn check_agent_file_system_policy(
+    provider: &Arc<RwLock<Arc<dyn AgentPolicyProvider>>>,
+    workspace_id: &WorkspaceId,
+    agent_id: Option<&str>,
+    path: &Path,
+) -> AbstractionResult<()> {
+    let Some(agent_id) = agent_id else {
+        return Ok(());
+    };
+    let evaluator = provider
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|_| Arc::new(AllowAllAgentPolicyProvider));
+    let policy = evaluator.policy_for(workspace_id, agent_id);
+    let path_string = path.to_string_lossy();
+    for denied_prefix in &policy.file_system.denied_path_prefixes {
+        let denied_prefix = denied_prefix.trim();
+        if !denied_prefix.is_empty() && path_string.starts_with(denied_prefix) {
+            return Err(AbstractionError::AccessDenied {
+                message: format!(
+                    "AGENT_POLICY_PATH_DENIED: agent '{agent_id}' policy denies path prefix '{denied_prefix}' (requested '{path_string}')"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_agent_shell_policy(
+    provider: &Arc<RwLock<Arc<dyn AgentPolicyProvider>>>,
+    workspace_id: &WorkspaceId,
+    agent_id: Option<&str>,
+    shell_name: &str,
+) -> AbstractionResult<()> {
+    let Some(agent_id) = agent_id else {
+        return Ok(());
+    };
+    let evaluator = provider
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|_| Arc::new(AllowAllAgentPolicyProvider));
+    let policy = evaluator.policy_for(workspace_id, agent_id);
+    let normalized_shell = normalize_command_name(shell_name);
+    for denied in &policy.shell.denied_commands {
+        if !denied.trim().is_empty() && normalize_command_name(denied) == normalized_shell {
+            return Err(AbstractionError::AccessDenied {
+                message: format!(
+                    "AGENT_POLICY_SHELL_DENIED: agent '{agent_id}' policy denies command '{shell_name}'"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct InMemoryTerminalProvider<W, P>
 where
@@ -352,6 +427,7 @@ where
 {
     workspace_service: W,
     policy_evaluator: P,
+    agent_policy_provider: Arc<RwLock<Arc<dyn AgentPolicyProvider>>>,
     session_sequence: Arc<AtomicU64>,
     sessions: Arc<RwLock<HashMap<String, TerminalSession>>>,
 }
@@ -365,8 +441,18 @@ where
         Self {
             workspace_service,
             policy_evaluator,
+            agent_policy_provider: Arc::new(RwLock::new(Arc::new(AllowAllAgentPolicyProvider))),
             session_sequence: Arc::new(AtomicU64::new(0)),
             sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Late-bound because the concrete storage-backed provider (app layer)
+    /// isn't constructible until the Tauri `AppHandle` exists, which is after
+    /// this provider is already constructed and shared via `AppState`.
+    pub fn set_agent_policy_provider(&self, provider: Arc<dyn AgentPolicyProvider>) {
+        if let Ok(mut guard) = self.agent_policy_provider.write() {
+            *guard = provider;
         }
     }
 
@@ -389,8 +475,31 @@ where
         root: &Path,
         request: &TerminalCreateRequest,
     ) -> AbstractionResult<PathBuf> {
+        let agent_id = extract_agent_id(request);
         match request.cwd_mode {
-            TerminalCwdMode::WorkspaceRoot => Ok(root.to_path_buf()),
+            TerminalCwdMode::WorkspaceRoot => {
+                // Previously exempt from `can_access_path` entirely — the
+                // most common cwd mode was silently bypassing the policy
+                // check that `Custom` mode enforced below it.
+                if !self
+                    .policy_evaluator
+                    .can_access_path(&request.workspace_id, root)
+                {
+                    return Err(AbstractionError::AccessDenied {
+                        message: format!(
+                            "SECURITY_PATH_DENIED: policy denied terminal cwd '{}'",
+                            root.display()
+                        ),
+                    });
+                }
+                check_agent_file_system_policy(
+                    &self.agent_policy_provider,
+                    &request.workspace_id,
+                    agent_id,
+                    root,
+                )?;
+                Ok(root.to_path_buf())
+            }
             TerminalCwdMode::Custom => {
                 let requested =
                     request
@@ -436,6 +545,12 @@ where
                         ),
                     });
                 }
+                check_agent_file_system_policy(
+                    &self.agent_policy_provider,
+                    &request.workspace_id,
+                    agent_id,
+                    &canonical_path,
+                )?;
 
                 Ok(canonical_path)
             }
@@ -928,6 +1043,7 @@ where
 {
     workspace_service: W,
     policy_evaluator: P,
+    agent_policy_provider: Arc<RwLock<Arc<dyn AgentPolicyProvider>>>,
     session_sequence: Arc<AtomicU64>,
     sessions: Arc<Mutex<HashMap<String, PtySessionRuntime>>>,
     event_sender: Sender<TerminalRuntimeEvent>,
@@ -983,12 +1099,22 @@ where
         Self {
             workspace_service,
             policy_evaluator,
+            agent_policy_provider: Arc::new(RwLock::new(Arc::new(AllowAllAgentPolicyProvider))),
             session_sequence: Arc::new(AtomicU64::new(0)),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             event_sender,
             event_receiver: Arc::new(Mutex::new(Some(event_receiver))),
             _mux_runtime: mux_runtime,
             mux_sender,
+        }
+    }
+
+    /// Late-bound because the concrete storage-backed provider (app layer)
+    /// isn't constructible until the Tauri `AppHandle` exists, which is after
+    /// this provider is already constructed and shared via `AppState`.
+    pub fn set_agent_policy_provider(&self, provider: Arc<dyn AgentPolicyProvider>) {
+        if let Ok(mut guard) = self.agent_policy_provider.write() {
+            *guard = provider;
         }
     }
 
@@ -1291,8 +1417,30 @@ where
         root: &Path,
         request: &TerminalCreateRequest,
     ) -> AbstractionResult<PathBuf> {
+        let agent_id = extract_agent_id(request);
         match request.cwd_mode {
-            TerminalCwdMode::WorkspaceRoot => Ok(root.to_path_buf()),
+            TerminalCwdMode::WorkspaceRoot => {
+                // Previously exempt from `can_access_path` entirely — see the
+                // matching fix/comment on InMemoryTerminalProvider::resolve_cwd.
+                if !self
+                    .policy_evaluator
+                    .can_access_path(&request.workspace_id, root)
+                {
+                    return Err(AbstractionError::AccessDenied {
+                        message: format!(
+                            "SECURITY_PATH_DENIED: policy denied terminal cwd '{}'",
+                            root.display()
+                        ),
+                    });
+                }
+                check_agent_file_system_policy(
+                    &self.agent_policy_provider,
+                    &request.workspace_id,
+                    agent_id,
+                    root,
+                )?;
+                Ok(root.to_path_buf())
+            }
             TerminalCwdMode::Custom => {
                 let requested =
                     request
@@ -1337,6 +1485,12 @@ where
                         ),
                     });
                 }
+                check_agent_file_system_policy(
+                    &self.agent_policy_provider,
+                    &request.workspace_id,
+                    agent_id,
+                    &canonical_path,
+                )?;
 
                 Ok(canonical_path)
             }
@@ -1354,6 +1508,12 @@ where
         let workspace_root = canonicalize_existing_directory(Path::new(&context.root))?;
         let resolved_cwd = self.resolve_cwd(&workspace_root, &request)?;
         let shell_name = resolve_shell_name(request.shell.as_deref());
+        check_agent_shell_policy(
+            &self.agent_policy_provider,
+            &request.workspace_id,
+            extract_agent_id(&request),
+            &shell_name,
+        )?;
 
         let pty_system = native_pty_system();
         let pair = pty_system

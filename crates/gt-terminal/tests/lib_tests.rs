@@ -1,16 +1,31 @@
 use gt_abstractions::{
-    AbstractionError, AllowAllPolicyEvaluator, TerminalCreateRequest, TerminalCwdMode,
-    TerminalProvider, WorkspaceService,
+    AbstractionError, AgentPolicyProvider, AllowAllPolicyEvaluator, TerminalCreateRequest,
+    TerminalCwdMode, TerminalProvider, WorkspaceId, WorkspaceService,
 };
+use gt_agent::AgentPolicy;
 use gt_terminal::{InMemoryTerminalProvider, PtyTerminalProvider, TerminalRuntimeEvent};
 use gt_workspace::InMemoryWorkspaceService;
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+/// Always returns the same fixed policy, regardless of workspace/agent id —
+/// enough to exercise the Phase A file-system/shell enforcement added to
+/// gt-terminal without needing a real storage-backed provider.
+struct FixedAgentPolicyProvider {
+    policy: AgentPolicy,
+}
+
+impl AgentPolicyProvider for FixedAgentPolicyProvider {
+    fn policy_for(&self, _workspace_id: &WorkspaceId, _agent_id: &str) -> AgentPolicy {
+        self.policy.clone()
+    }
+}
 
 struct TempDir {
     path: PathBuf,
@@ -144,6 +159,107 @@ fn custom_mode_rejects_path_outside_workspace() {
     match error {
         AbstractionError::AccessDenied { message } => {
             assert!(message.contains("TERMINAL_CWD_OUTSIDE_WORKSPACE"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn agent_policy_denies_workspace_root_path_matching_denied_prefix() {
+    let workspace_dir = TempDir::create("gtoffice-terminal-policy-ws");
+    let (_workspace_service, provider, workspace_id) =
+        create_provider_with_workspace(&workspace_dir.path);
+
+    let canonical_root = normalize_test_path(&workspace_dir.path.canonicalize().expect("canonical root"))
+        .to_string_lossy()
+        .to_string();
+    let mut policy = AgentPolicy::default();
+    policy.file_system.denied_path_prefixes.push(canonical_root);
+    provider.set_agent_policy_provider(Arc::new(FixedAgentPolicyProvider { policy }));
+
+    let mut env = BTreeMap::new();
+    env.insert("GTO_AGENT_ID".to_string(), "agent-under-test".to_string());
+
+    let result = provider.create_session(TerminalCreateRequest {
+        workspace_id: workspace_id.into(),
+        shell: None,
+        cwd: None,
+        cwd_mode: TerminalCwdMode::WorkspaceRoot,
+        env,
+        agent_tool_kind: None,
+        login_shell: None,
+    });
+
+    let error = result.expect_err("should deny path matching agent policy");
+    match error {
+        AbstractionError::AccessDenied { message } => {
+            assert!(message.contains("AGENT_POLICY_PATH_DENIED"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn agent_policy_is_not_consulted_without_an_agent_id() {
+    let workspace_dir = TempDir::create("gtoffice-terminal-policy-no-agent");
+    let (_workspace_service, provider, workspace_id) =
+        create_provider_with_workspace(&workspace_dir.path);
+
+    let canonical_root = normalize_test_path(&workspace_dir.path.canonicalize().expect("canonical root"))
+        .to_string_lossy()
+        .to_string();
+    let mut policy = AgentPolicy::default();
+    policy.file_system.denied_path_prefixes.push(canonical_root);
+    provider.set_agent_policy_provider(Arc::new(FixedAgentPolicyProvider { policy }));
+
+    // No GTO_AGENT_ID in env this time — the agent-policy layer has nothing
+    // to key off, so it must not block a session that has no agent identity.
+    let session = provider
+        .create_session(TerminalCreateRequest {
+            workspace_id: workspace_id.into(),
+            shell: None,
+            cwd: None,
+            cwd_mode: TerminalCwdMode::WorkspaceRoot,
+            env: BTreeMap::new(),
+            agent_tool_kind: None,
+            login_shell: None,
+        })
+        .expect("create session without an agent id should not be policy-gated");
+    assert!(provider.has_session(&session.session_id));
+}
+
+#[test]
+fn pty_provider_denies_shell_command_matching_agent_policy() {
+    let workspace_dir = TempDir::create("gtoffice-terminal-pty-shell-policy");
+    let workspace_service = InMemoryWorkspaceService::new();
+    let workspace = workspace_service
+        .open(&workspace_dir.path)
+        .expect("open workspace");
+    let provider = PtyTerminalProvider::new(workspace_service, AllowAllPolicyEvaluator);
+
+    let mut policy = AgentPolicy::default();
+    policy.shell.denied_commands.push("bash".to_string());
+    provider.set_agent_policy_provider(Arc::new(FixedAgentPolicyProvider { policy }));
+
+    let mut env = BTreeMap::new();
+    env.insert("GTO_AGENT_ID".to_string(), "agent-under-test".to_string());
+
+    // Denial happens before the native PTY is opened, so this is safe to run
+    // on every platform (no real process gets spawned either way).
+    let result = provider.create_session(TerminalCreateRequest {
+        workspace_id: workspace.workspace_id.clone(),
+        shell: Some("/bin/bash".to_string()),
+        cwd: None,
+        cwd_mode: TerminalCwdMode::WorkspaceRoot,
+        env,
+        agent_tool_kind: None,
+        login_shell: None,
+    });
+
+    let error = result.expect_err("should deny shell command matching agent policy");
+    match error {
+        AbstractionError::AccessDenied { message } => {
+            assert!(message.contains("AGENT_POLICY_SHELL_DENIED"));
         }
         other => panic!("unexpected error: {other:?}"),
     }

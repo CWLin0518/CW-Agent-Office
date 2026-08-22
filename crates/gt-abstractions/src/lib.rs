@@ -311,6 +311,29 @@ pub trait CommandPolicyEvaluator: Send + Sync {
     fn can_access_path(&self, workspace_id: &WorkspaceId, path: &Path) -> bool;
 }
 
+/// Phase A per-agent policy lookup (docs/cw/04_客製化設計.md §3). Kept as its
+/// own trait rather than folded into `CommandPolicyEvaluator` because it needs
+/// an `agent_id` the older trait's callers don't uniformly have, and because
+/// the concrete implementation (backed by `agent_policy_snapshots`) lives at
+/// the app layer where storage is available, injected here as a trait object
+/// so lower crates (gt-terminal, gt-task, ...) don't need a storage
+/// dependency.
+pub trait AgentPolicyProvider: Send + Sync {
+    fn policy_for(&self, workspace_id: &WorkspaceId, agent_id: &str) -> gt_agent::AgentPolicy;
+}
+
+/// Fully permissive fallback — used wherever no concrete policy-backed
+/// provider has been wired up (tests, mocks, and as the default before
+/// `with_agent_policy_provider` is called).
+#[derive(Debug, Clone, Default)]
+pub struct AllowAllAgentPolicyProvider;
+
+impl AgentPolicyProvider for AllowAllAgentPolicyProvider {
+    fn policy_for(&self, _workspace_id: &WorkspaceId, _agent_id: &str) -> gt_agent::AgentPolicy {
+        gt_agent::AgentPolicy::default()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct MockTerminalProvider {
     counter: Arc<RwLock<u64>>,

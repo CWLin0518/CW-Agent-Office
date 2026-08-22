@@ -111,6 +111,7 @@ interface WorkbenchCanvasProps {
   containers: WorkbenchContainerModel[]
   activeStationId: string
   terminalByStation: Record<string, WorkbenchStationRuntime>
+  stationSessionTabs?: Record<string, string[]>
   taskSignalByStationId: Partial<Record<string, StationTaskSignal>>
   channelBotBindingsByStationId?: Record<string, StationChannelBotBindingSummary[]>
   pinnedWorkbenchContainerId?: string | null
@@ -123,6 +124,9 @@ interface WorkbenchCanvasProps {
     request: import('@features/session').SessionRelaunchRequest,
   ) => void
   onForceCloseTerminal?: (stationId: string) => void
+  onSwitchSessionTab?: (stationId: string, sessionId: string) => void
+  onCloseSessionTab?: (stationId: string, sessionId: string) => void
+  onNewSessionTab?: (stationId: string) => void
   onSendInputData: (stationId: string, data: string) => void
   onResizeTerminal: (stationId: string, cols: number, rows: number) => void
   onBindTerminalSink: StationTerminalSinkBindingHandler
@@ -369,6 +373,7 @@ function WorkbenchCanvasView({
   containers,
   activeStationId,
   terminalByStation,
+  stationSessionTabs,
   taskSignalByStationId,
   channelBotBindingsByStationId = {},
   pinnedWorkbenchContainerId = null,
@@ -378,6 +383,9 @@ function WorkbenchCanvasView({
   onLaunchCliAgent,
   onSessionRelaunch,
   onForceCloseTerminal,
+  onSwitchSessionTab,
+  onCloseSessionTab,
+  onNewSessionTab,
   onSendInputData,
   onResizeTerminal,
   onBindTerminalSink,
@@ -813,6 +821,7 @@ function WorkbenchCanvasView({
                     roleFilter={roleFilter}
                     activeGlobalStationId={activeStationId}
                     terminalByStation={terminalByStation}
+                    stationSessionTabs={stationSessionTabs}
                     taskSignalByStationId={taskSignalByStationId}
                     channelBotBindingsByStationId={channelBotBindingsByStationId}
                     dropActive={dragTargetContainerId === container.id}
@@ -836,6 +845,9 @@ function WorkbenchCanvasView({
                     onLaunchCliAgent={onLaunchCliAgent}
                     onSessionRelaunch={onSessionRelaunch}
                     onForceCloseTerminal={onForceCloseTerminal}
+                    onSwitchSessionTab={onSwitchSessionTab}
+                    onCloseSessionTab={onCloseSessionTab}
+                    onNewSessionTab={onNewSessionTab}
             onSendInputData={onSendInputData}
             onResizeTerminal={onResizeTerminal}
                     onBindTerminalSink={onBindTerminalSink}
@@ -926,6 +938,7 @@ function WorkbenchCanvasView({
                     roleFilter={roleFilter}
                     activeGlobalStationId={activeStationId}
                     terminalByStation={terminalByStation}
+                    stationSessionTabs={stationSessionTabs}
                     taskSignalByStationId={taskSignalByStationId}
                     channelBotBindingsByStationId={channelBotBindingsByStationId}
                     dropActive={dragTargetContainerId === container.id}
@@ -948,6 +961,9 @@ function WorkbenchCanvasView({
                     onLaunchCliAgent={onLaunchCliAgent}
                     onSessionRelaunch={onSessionRelaunch}
                     onForceCloseTerminal={onForceCloseTerminal}
+                    onSwitchSessionTab={onSwitchSessionTab}
+                    onCloseSessionTab={onCloseSessionTab}
+                    onNewSessionTab={onNewSessionTab}
             onSendInputData={onSendInputData}
             onResizeTerminal={onResizeTerminal}
                     onBindTerminalSink={onBindTerminalSink}

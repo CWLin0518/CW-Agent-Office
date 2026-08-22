@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use gt_abstractions::{WorkspaceId, WorkspaceService};
 use gt_agent::{
-    default_agent_workdir, prompt_file_name_for_tool, AgentProfile, AgentRepository, AgentScope,
-    AgentState, CreateAgentInput, UpdateAgentInput,
+    default_agent_workdir, prompt_file_name_for_tool, AgentPolicy, AgentPolicyRepository,
+    AgentProfile, AgentRepository, AgentScope, AgentState, CreateAgentInput, UpdateAgentInput,
 };
 use gt_storage::{SqliteAgentRepository, SqliteStorage};
 use serde::Deserialize;
@@ -306,6 +306,27 @@ pub(crate) fn write_prompt_file(
     Ok(Some((file_name, relative_path)))
 }
 
+/// Reads the content at an arbitrary local filesystem path, deliberately
+/// *without* the workspace-bound checks `ensure_path_within_workspace` does —
+/// this path is expected to live outside the workspace (docs/cw/04_客製化設計.md §2).
+/// Only existence/file-ness is validated; system error text is never passed
+/// through to the caller.
+pub(crate) fn read_external_template_content(path: &str) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("AGENT_EXTERNAL_TEMPLATE_PATH_INVALID".to_string());
+    }
+    let candidate = Path::new(trimmed);
+    if !candidate.exists() {
+        return Err("AGENT_EXTERNAL_TEMPLATE_NOT_FOUND".to_string());
+    }
+    if !candidate.is_file() {
+        return Err("AGENT_EXTERNAL_TEMPLATE_NOT_A_FILE".to_string());
+    }
+    std::fs::read_to_string(candidate)
+        .map_err(|_error| "AGENT_EXTERNAL_TEMPLATE_READ_FAILED".to_string())
+}
+
 fn delete_prompt_file(workspace_root: &Path, relative_path: &str) -> Result<(), String> {
     let absolute_path = ensure_path_within_workspace(workspace_root, relative_path)?;
     match std::fs::remove_file(absolute_path) {
@@ -386,6 +407,8 @@ pub struct AgentCreateRequest {
     pub prompt_file_name: Option<String>,
     pub prompt_content: Option<String>,
     pub launch_command: Option<String>,
+    #[serde(default)]
+    pub external_template_path: Option<String>,
 }
 
 pub(crate) fn agent_create_with_repo(
@@ -404,6 +427,40 @@ pub(crate) fn agent_create_with_repo(
     )?;
     ensure_path_within_workspace(workspace_root, &workdir)?;
 
+    let requested_external_template_path = request
+        .external_template_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    // Materialize the external template's content up front, before touching
+    // storage, so a bad path fails the whole create instead of requiring a
+    // rollback. Only read it when it will actually be used: prompt writing is
+    // enabled and the caller didn't already supply explicit prompt content
+    // (e.g. the UI's "load from external path" flow pre-fills promptContent
+    // client-side so a user's edits after loading are respected here, not
+    // silently overwritten by re-reading the file). `external_template_path`
+    // is only persisted on the agent record when it was actually the source
+    // of the written content — otherwise it would misrepresent provenance
+    // (e.g. prompt writing disabled, or the user typed content by hand
+    // without clicking "Load") for a field future stages may treat as "this
+    // is where the content came from".
+    let (prompt_content, external_template_path) = if prompt_enabled {
+        match request.prompt_content.as_deref().map(str::trim) {
+            Some(content) if !content.is_empty() => (request.prompt_content.clone(), None),
+            _ => match requested_external_template_path.as_deref() {
+                Some(path) => (
+                    Some(read_external_template_content(path)?),
+                    requested_external_template_path.clone(),
+                ),
+                None => (request.prompt_content.clone(), None),
+            },
+        }
+    } else {
+        (request.prompt_content.clone(), None)
+    };
+
     let input = CreateAgentInput {
         workspace_id: request.workspace_id.clone(),
         agent_id: request.agent_id,
@@ -416,6 +473,8 @@ pub(crate) fn agent_create_with_repo(
         state: agent_state,
         launch_command: request.launch_command,
         order_index: None,
+        parent_agent_id: None,
+        external_template_path,
     };
 
     let agent = repo.create_agent(input).map_err(to_command_error)?;
@@ -425,7 +484,7 @@ pub(crate) fn agent_create_with_repo(
             workdir.as_str(),
             tool.as_str(),
             request.prompt_file_name.as_deref(),
-            request.prompt_content,
+            prompt_content,
         ) {
             let _ = repo.delete_agent(&request.workspace_id, &agent.id);
             return Err(error);
@@ -457,6 +516,23 @@ pub fn agent_create(
     app: AppHandle,
 ) -> Result<Value, String> {
     agent_create_with_context(request, state.inner(), &app)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReadExternalTemplateRequest {
+    pub external_template_path: String,
+}
+
+/// Lets the "load from external path" UI preview a template's content before
+/// the user commits to creating the agent. Not workspace-scoped on purpose —
+/// see read_external_template_content.
+#[tauri::command]
+pub fn agent_read_external_template(
+    request: AgentReadExternalTemplateRequest,
+) -> Result<Value, String> {
+    let content = read_external_template_content(&request.external_template_path)?;
+    Ok(json!({ "content": content }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -742,4 +818,55 @@ pub fn agent_reorder(
     repo.reorder_agents(&request.workspace_id, request.ordered_agent_ids)
         .map_err(to_command_error)?;
     Ok(json!({ "reordered": true }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPolicyReadRequest {
+    pub workspace_id: String,
+    pub agent_id: String,
+}
+
+/// Phase A (docs/cw/04_客製化設計.md §3): returns `AgentPolicy::default()`
+/// (fully permissive) when the agent has no snapshot yet, so a brand new
+/// agent's permissions tab shows an accurate "nothing restricted" state
+/// rather than an error.
+#[tauri::command]
+pub fn agent_policy_read(
+    request: AgentPolicyReadRequest,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    ensure_workspace_exists(&state, &request.workspace_id)?;
+    let repo = resolve_agent_repository(&app)?;
+    repo.ensure_schema().map_err(to_command_error)?;
+    let policy = repo
+        .get_agent_policy(&request.workspace_id, &request.agent_id)
+        .map_err(to_command_error)?;
+    Ok(json!({ "policy": policy }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPolicySaveRequest {
+    pub workspace_id: String,
+    pub agent_id: String,
+    pub policy: AgentPolicy,
+}
+
+/// Appends a new immutable snapshot and repoints `agents.policy_snapshot_id`
+/// at it — never overwrites a prior snapshot in place (docs/cw/04_客製化設計.md §3).
+#[tauri::command]
+pub fn agent_policy_save(
+    request: AgentPolicySaveRequest,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    ensure_workspace_exists(&state, &request.workspace_id)?;
+    let repo = resolve_agent_repository(&app)?;
+    repo.ensure_schema().map_err(to_command_error)?;
+    let snapshot_id = repo
+        .save_agent_policy(&request.workspace_id, &request.agent_id, &request.policy)
+        .map_err(to_command_error)?;
+    Ok(json!({ "snapshotId": snapshot_id }))
 }

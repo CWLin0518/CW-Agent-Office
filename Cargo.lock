@@ -1938,6 +1938,7 @@ name = "gt-abstractions"
 version = "0.7.5"
 dependencies = [
  "anyhow",
+ "gt-agent",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2118,6 +2119,8 @@ name = "gt-task"
 version = "0.7.5"
 dependencies = [
  "anyhow",
+ "gt-abstractions",
+ "gt-agent",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2141,6 +2144,7 @@ version = "0.7.5"
 dependencies = [
  "anyhow",
  "gt-abstractions",
+ "gt-agent",
  "gt-terminal-core",
  "gt-workspace",
  "portable-pty",

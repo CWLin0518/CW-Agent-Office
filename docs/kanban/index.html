@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GT Office 改版規劃看板</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: white;
+            padding: 24px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        header h1 {
+            font-size: 28px;
+            margin-bottom: 16px;
+            color: #1a1a1a;
+        }
+
+        header .subtitle {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 16px;
+        }
+
+        .requirements {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 12px;
+        }
+
+        .requirement-item {
+            background: #f9f9f9;
+            padding: 12px;
+            border-left: 4px solid #4a90e2;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .requirement-item strong {
+            color: #4a90e2;
+        }
+
+        .kanban-section {
+            margin-bottom: 32px;
+        }
+
+        .kanban-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1a1a1a;
+            padding: 0 8px;
+        }
+
+        .kanban-board {
+            display: flex;
+            gap: 16px;
+            overflow-x: auto;
+            padding-bottom: 16px;
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+
+        .kanban-column {
+            flex-shrink: 0;
+            width: 280px;
+            background: #f5f7fa;
+            border-radius: 6px;
+            padding: 12px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .column-header {
+            font-weight: 600;
+            font-size: 14px;
+            color: #1a1a1a;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #4a90e2;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            transition: box-shadow 0.2s;
+        }
+
+        .card:hover {
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+
+        .card-title {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 8px;
+            color: #1a1a1a;
+        }
+
+        .card-description {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        .card-status {
+            display: inline-block;
+            background: #fff3cd;
+            color: #856404;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .card-status.completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .card-status.in-progress {
+            background: #cce5ff;
+            color: #004085;
+        }
+
+        .card-findings {
+            font-size: 11px;
+            color: #856404;
+            background: #fff8e6;
+            border-left: 3px solid #f0ad4e;
+            padding: 6px 8px;
+            margin-top: 8px;
+            border-radius: 4px;
+            line-height: 1.5;
+        }
+
+        .decisions-section {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            margin-top: 32px;
+        }
+
+        .decisions-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .decisions-header h2 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #1a1a1a;
+            margin-right: 12px;
+        }
+
+        .decision-badge {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .decision-date {
+            display: inline-block;
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            margin-left: 12px;
+        }
+
+        .decisions-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+        }
+
+        .decision-item {
+            background: #f1f8f5;
+            border-left: 4px solid #28a745;
+            padding: 16px;
+            border-radius: 6px;
+        }
+
+        .decision-number {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 28px;
+            font-weight: 600;
+            margin-right: 8px;
+            font-size: 12px;
+        }
+
+        .decision-question {
+            font-weight: 600;
+            font-size: 13px;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+        }
+
+        .decision-resolution {
+            font-weight: 600;
+            font-size: 13px;
+            color: #2e7d32;
+            margin-bottom: 8px;
+        }
+
+        .decision-context {
+            font-size: 12px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #1a1a1a;
+                color: #e0e0e0;
+            }
+
+            header, .kanban-board, .decisions-section {
+                background: #2a2a2a;
+                color: #e0e0e0;
+            }
+
+            header h1, .kanban-title, .column-header, .card-title, .decisions-header h2 {
+                color: #ffffff;
+            }
+
+            .requirement-item, .kanban-column {
+                background: #333;
+            }
+
+            .card {
+                background: #2a2a2a;
+                border-color: #444;
+            }
+
+            .requirement-item {
+                border-left-color: #4a90e2;
+            }
+
+            .decision-item {
+                background: #2a3a2a;
+                border-left-color: #28a745;
+            }
+
+            .decision-date {
+                background: #1a3a1a;
+                color: #4ade80;
+            }
+
+            .decision-resolution {
+                color: #4ade80;
+            }
+
+            .card-description, .requirement-item, .decision-context, header .subtitle {
+                color: #b0b0b0;
+            }
+
+            .card-status.completed {
+                background: #1a3a1a;
+                color: #4ade80;
+            }
+
+            .card-status.in-progress {
+                background: #1a2a3a;
+                color: #6ab0ff;
+            }
+
+            .card-findings {
+                background: #3a3018;
+                color: #f0c674;
+                border-left-color: #d69e2e;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 頁面標題與需求總覽 -->
+        <header>
+            <h1>GT Office 改版規劃看板</h1>
+            <p class="subtitle">基於《04 客製化設計》文件 | 更新於 2026-08-22：P0～P3 已完成並通過 code review + 操作測試</p>
+            <div class="requirements">
+                <div class="requirement-item">
+                    <strong>需求 1:</strong> 節點式 Agent 協作畫布（Grasshopper 風格）
+                </div>
+                <div class="requirement-item">
+                    <strong>需求 2:</strong> Agent 外部存放路徑 + 跨專案呼叫多 Agent 系統
+                </div>
+                <div class="requirement-item">
+                    <strong>需求 3:</strong> 新增 Agent 的「權限」分頁（17 類權限）
+                </div>
+                <div class="requirement-item">
+                    <strong>需求 4:</strong> 終端機 New Session 按鈕
+                </div>
+                <div class="requirement-item">
+                    <strong>需求 5:</strong> 為未來更多 LLM CLI 預留相容性
+                </div>
+                <div class="requirement-item">
+                    <strong>需求 6:</strong> 終端機渲染修復 + 遊戲化辦公室首頁
+                </div>
+            </div>
+        </header>
+
+        <!-- Kanban 看板 -->
+        <div class="kanban-section">
+            <div class="kanban-title">分階段路線圖</div>
+            <div class="kanban-board">
+                <!-- P0 -->
+                <div class="kanban-column">
+                    <div class="column-header">P0</div>
+                    <div class="card">
+                        <div class="card-title">資料模型地基</div>
+                        <div class="card-description">
+                            已建立 `parent_agent_id`、`external_template_path`（ADD COLUMN）、`agent_links`、`agent_policy_snapshots` 兩張新表（含索引），並產出 PRD 對齊調研（05_PRD對齊調研.md）。新增遷移安全性回歸測試（模擬既有資料庫升級）。
+                        </div>
+                        <div class="card-status completed">✓ 已完成</div>
+                        <div class="card-findings">
+                            Code review：APPROVE，無 Critical/Important。已依建議補上索引與 reset_workspace_state_in_tx 的前瞻註記。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- P1 -->
+                <div class="kanban-column">
+                    <div class="column-header">P1</div>
+                    <div class="card">
+                        <div class="card-title">終端機 New Session 按鈕</div>
+                        <div class="card-description">
+                            已新增 SessionTabBar 元件與 stationSessionTabs 狀態層，接到實際會渲染的 StationCard.tsx（原設計文件指向的 TerminalStationPane.tsx 其實是死碼，已修正接點）。切換分頁沿用既有的 session 重綁機制，不需改動 host pool。
+                        </div>
+                        <div class="card-status completed">✓ 已完成</div>
+                        <div class="card-findings">
+                            Code review 抓到 Critical：刪除/強制關閉多分頁 station 會漏殺其他分頁的 PTY 行程並殘留幽靈分頁，已修復並二次驗證通過。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- P2 -->
+                <div class="kanban-column">
+                    <div class="column-header">P2</div>
+                    <div class="card">
+                        <div class="card-title">Agent 外部範本路徑</div>
+                        <div class="card-description">
+                            已實裝 `agent_read_external_template` command（存在性+可讀性檢查，不做 workspace 邊界檢查）、原生選檔對話框（system_pick_file）、StationManageModal 建立流程新增「從外部路徑載入範本」欄位。gt-security 實際上沒有路徑驗證邏輯，改用獨立小函式驗證。
+                        </div>
+                        <div class="card-status completed">✓ 已完成</div>
+                        <div class="card-findings">
+                            Code review 抓到 Important：Modal 關閉/切換時的非同步過期狀態競態、以及 external_template_path 未實際使用時仍被誤記錄的 provenance 問題，均已修復。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- P3 -->
+                <div class="kanban-column">
+                    <div class="column-header">P3</div>
+                    <div class="card">
+                        <div class="card-title">權限分頁 Phase A</div>
+                        <div class="card-description">
+                            File System、Shell/Terminal、Agent（gto send + 建立子 Agent）、Execution（並發數上限）四類已真的接上執行面並有測試覆蓋。Git/VCS 與 Execution 的逾時/最大步數改為誠實標註「尚未生效」——調查發現 Git 呼叫路徑上沒有 Agent 身份可比對，任務派送也沒有生命週期追蹤機制，硬做假開關會違背「假權限比不做更危險」的原則。新增 StationManageModal「權限」分頁 UI（僅編輯既有 Agent 時顯示）。
+                        </div>
+                        <div class="card-status completed">✓ 已完成</div>
+                        <div class="card-findings">
+                            Code review 抓到 Critical：權限分頁上兩個各自獨立的儲存按鈕，其中一個會悄悄丟棄剛輸入的權限設定，已修成每個分頁只留一個儲存動作。另修正批次建立 Agent 遇拒絕會整批失敗且不回報部分成功的問題。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- P4 -->
+                <div class="kanban-column">
+                    <div class="column-header">P4</div>
+                    <div class="card">
+                        <div class="card-title">Agent Canvas MVP</div>
+                        <div class="card-description">
+                            先做唯讀的節點圖，畫出現有 Station + 實際 `gto` 派發產生的 derived 連線。MVP 先不做手畫線和 subagent，降低風險。驗收標準包含 Agent 狀態資料層對齊 PRD。
+                        </div>
+                        <div class="card-status">待開始</div>
+                    </div>
+                </div>
+
+                <!-- P4.5 -->
+                <div class="kanban-column">
+                    <div class="column-header">P4.5</div>
+                    <div class="card">
+                        <div class="card-title">Agent Canvas 加強</div>
+                        <div class="card-description">
+                            手畫 authored 連線、畫布上建立 subagent。此時可以把 P3 的 Agent 權限開關升級成依 edge 授權。前一步驗證過畫布可用後再加互動。
+                        </div>
+                        <div class="card-status">待開始</div>
+                    </div>
+                </div>
+
+                <!-- P5 -->
+                <div class="kanban-column">
+                    <div class="column-header">P5</div>
+                    <div class="card">
+                        <div class="card-title">Provider Descriptor 重構</div>
+                        <div class="card-description">
+                            對 `agent_installer.rs` 大改，用 Provider Descriptor 結構取代兩選一 enum，含決策 6 的版本鎖機制。風險最高但不再是他人前置依賴，後面再啃。
+                        </div>
+                        <div class="card-status">待開始</div>
+                    </div>
+                </div>
+
+                <!-- 6.1 可平行 -->
+                <div class="kanban-column">
+                    <div class="column-header">6.1 (可平行)</div>
+                    <div class="card">
+                        <div class="card-title">終端機渲染破圖除錯</div>
+                        <div class="card-description">
+                            擴充 `TerminalDebugPanel` 的擷取範圍，記錄診斷資訊。獨立問題，不依賴也不被依賴其他階段。隨時可平行進行。
+                        </div>
+                        <div class="card-status">待開始</div>
+                    </div>
+                </div>
+
+                <!-- 6.2 未來不排期 -->
+                <div class="kanban-column">
+                    <div class="column-header">6.2 (未來/不排期)</div>
+                    <div class="card">
+                        <div class="card-title">遊戲化辦公室首頁</div>
+                        <div class="card-description">
+                            未來項目，每個專案是一間辦公室，Agent 是員工。本次只需把資料層留通用（與 agent-canvas 共享 Agent 狀態），畫面留待之後。
+                        </div>
+                        <div class="card-status">未排期</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 已拍板決策 -->
+        <div class="decisions-section">
+            <div class="decisions-header">
+                <h2>已拍板決策</h2>
+                <span class="decision-badge">7 項決策已定案</span>
+                <span class="decision-date">2026-08-22</span>
+            </div>
+            <div class="decisions-list">
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">1</span>
+                        <span class="decision-question">第 1 節連線語意</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 兩者都要（authored + derived）
+                    </div>
+                    <div class="decision-context">
+                        落地方式：derived 先在 P4 做，authored 排到 P4.5。derived 連線資料來源既有、風險低；authored 連線牽涉存取控制與使用者互動設計。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">2</span>
+                        <span class="decision-question">第 2 節外部路徑是否跨機器同步</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 不用，本機路徑就好
+                    </div>
+                    <div class="decision-context">
+                        外部 Agent 路徑只需支援本機檔案系統路徑，不做跨機器同步或雲端功能。簡化設計範圍，現階段不支援分散式共享。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">3</span>
+                        <span class="decision-question">第 3 節 17 類權限 Phase B 優先度</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 不急，按順序開發
+                    </div>
+                    <div class="decision-context">
+                        Phase B（Network / Tool / Database / Secrets 等）不需要為特定類別插隊。按文件裡判斷的順序開發即可。Phase A 五類優先實裝。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">4</span>
+                        <span class="decision-question">與 PRD 對齊（Runtime Snapshot/Lifecycle State）</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 採方案 (a)，P0 先對齊
+                    </div>
+                    <div class="decision-context">
+                        P4（agent-canvas）動工前，P0 階段先花一輪對照 `AGENT_RUNTIME_UPGRADE_PRD.md` 的 Runtime Snapshot/Lifecycle State 雛形。結論記錄下來再動工，不刻意繞開。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">5</span>
+                        <span class="decision-question">第 2 節 Agent Definition/Instance 雙層架構</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 不做，採較小方案
+                    </div>
+                    <div class="decision-context">
+                        v1 在 `AgentProfile` 加 `external_template_path` 欄位即可。不做正式的雙層架構。之後如果發現需要範本版本管理、多專案分享等需求，再另外評估演化。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">6</span>
+                        <span class="decision-question">第 5 節外部 Provider 防護程度</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ v1 做版本鎖，簽名先留白
+                    </div>
+                    <div class="decision-context">
+                        v1 就做版本鎖（content hash 比對 + 檔案有變時強制 preview/confirm）。完整簽章驗證因需先決定金鑰/信任模型，schema 先保留欄位，不在 v1 做驗證邏輯。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">7</span>
+                        <span class="decision-question">第 2 節跨 Workspace 執行位置</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 不存在跨 workspace 執行
+                    </div>
+                    <div class="decision-context">
+                        Agent 一律在使用者目前所在的 workspace 內建立與執行。不新建承接用的 workspace，也不需要 local bridge 做跨 workspace 轉發。「我在哪個專案的介面，Agent 就在那個介面」。
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -2,12 +2,12 @@ use gt_abstractions::{
     AbstractionError, TerminalCreateRequest, TerminalCwdMode, TerminalProvider, WorkspaceId,
     WorkspaceService,
 };
-use gt_agent::AgentRepository;
+use gt_agent::{AgentPolicyRepository, AgentRepository};
 use gt_storage::{SqliteAgentRepository, SqliteStorage};
 use gt_task::{
     AgentRuntimeRegistration, AgentToolKind, ChannelAckEvent, ChannelMessageEvent,
-    ChannelPublishRequest, TaskDispatchBatchRequest, TaskDispatchProgressEvent,
-    TaskGetThreadRequest, TaskListThreadsRequest,
+    ChannelPublishRequest, DispatchSenderType, TaskDispatchBatchRequest,
+    TaskDispatchProgressEvent, TaskGetThreadRequest, TaskListThreadsRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -581,6 +581,39 @@ fn build_directory_snapshot<R: tauri::Runtime>(
     }))
 }
 
+/// Phase A "Agent" category (docs/cw/04_客製化設計.md §3): v1 is a plain
+/// switch on whether an agent may `gto send` at all, not yet scoped to which
+/// target it's sending to (that upgrade to edge-scoped authorization is P4.5,
+/// once agent-canvas authored edges exist). Returns `Ok(())` for a human
+/// sender or an agent sender with no policy on record (fully permissive
+/// default, matching pre-P3 behavior).
+fn ensure_agent_allowed_to_dispatch(
+    app: &AppHandle,
+    workspace_id: &str,
+    sender_type: &DispatchSenderType,
+    sender_agent_id: Option<&str>,
+) -> Result<(), BridgeError> {
+    let (DispatchSenderType::Agent, Some(sender_agent_id)) = (sender_type, sender_agent_id) else {
+        return Ok(());
+    };
+    if sender_agent_id.trim().is_empty() {
+        return Ok(());
+    }
+    let Ok(repo) = resolve_agent_repository(app) else {
+        return Ok(());
+    };
+    let policy = repo
+        .get_agent_policy(workspace_id, sender_agent_id)
+        .unwrap_or_default();
+    if !policy.agent.allow_gto_send {
+        return Err(BridgeError::new(
+            "AGENT_POLICY_GTO_SEND_DENIED",
+            format!("agent '{sender_agent_id}' policy denies gto send"),
+        ));
+    }
+    Ok(())
+}
+
 fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Value, BridgeError> {
     let request: TaskDispatchBatchRequest = serde_json::from_value(params).map_err(|error| {
         BridgeError::new(
@@ -607,6 +640,13 @@ fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Va
             "markdown must not be empty",
         ));
     }
+
+    ensure_agent_allowed_to_dispatch(
+        app,
+        &request.workspace_id,
+        &request.sender.sender_type,
+        request.sender.agent_id.as_deref(),
+    )?;
 
     let workspace_root = state
         .workspace_root_path(&request.workspace_id)
@@ -773,7 +813,28 @@ fn dev_bootstrap_agents(
     let submit_sequence = request.submit_sequence.unwrap_or_else(|| "\r".to_string());
 
     let mut bootstrapped_agents = Vec::with_capacity(targets.len());
+    let mut skipped_agents = Vec::new();
     for agent_id in targets {
+        // Phase A "Agent" category (docs/cw/04_客製化設計.md §3): this bridge
+        // method has no "who is requesting this" identity of its own (unlike
+        // dispatch_batch's DispatchSender), so the check here is on each
+        // target's own record — is *this* agent allowed to be spawned this
+        // way — rather than a separate caller's policy. A denial skips only
+        // this target and continues the batch (matching dispatch_batch's
+        // per-target reporting) rather than aborting the whole call, which
+        // would otherwise leave any already-bootstrapped agents from earlier
+        // in this same batch silently unreported and re-bootstrapped on retry.
+        let target_policy = repo
+            .get_agent_policy(workspace.workspace_id.as_str(), &agent_id)
+            .unwrap_or_default();
+        if !target_policy.agent.allow_subagent_spawn {
+            skipped_agents.push(json!({
+                "agentId": agent_id,
+                "reason": "AGENT_POLICY_SUBAGENT_SPAWN_DENIED",
+            }));
+            continue;
+        }
+
         let terminal_env =
             build_agent_terminal_env(workspace.workspace_id.as_str(), &agent_id, &agent_id);
         let terminal_env = augment_terminal_env_for_agent(
@@ -838,6 +899,7 @@ fn dev_bootstrap_agents(
         "shell": shell_name,
         "cwdMode": bootstrap_cwd_mode_label(&cwd_mode),
         "agents": bootstrapped_agents,
+        "skippedAgents": skipped_agents,
     }))
 }
 

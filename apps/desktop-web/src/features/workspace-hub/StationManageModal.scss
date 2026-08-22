@@ -163,6 +163,41 @@
   }
 }
 
+.station-form-error-text {
+  margin: 0;
+  font-size: rem(12);
+  line-height: 1.5;
+  color: var(--vb-error);
+}
+
+.station-form-tab-bar {
+  display: flex;
+  gap: rem(4);
+  padding: 0 rem(24);
+  border-bottom: rem(1) solid color-mix(in srgb, var(--vb-border) 60%, transparent);
+}
+
+.station-form-tab {
+  padding: rem(8) rem(4);
+  margin-bottom: rem(-1);
+  border: 0;
+  border-bottom: rem(2) solid transparent;
+  background: transparent;
+  color: var(--vb-text-muted);
+  font-size: rem(13);
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--vb-text);
+  }
+
+  &.active {
+    color: var(--vb-text);
+    border-bottom-color: var(--vb-accent);
+  }
+}
+
 .station-form-inline-row {
   display: flex;
   gap: rem(8);

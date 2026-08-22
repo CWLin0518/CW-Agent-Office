@@ -1,3 +1,4 @@
+mod agent_policy_provider;
 mod app_state;
 mod channel_adapter_runtime;
 mod channel_sinks;
@@ -54,6 +55,20 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let state = app.state::<app_state::AppState>();
+            // AppState::default() constructs terminal_provider/task_service before an
+            // AppHandle exists, so they start with the fully-permissive
+            // AllowAllAgentPolicyProvider — bind the real storage-backed one now that
+            // app_data_dir() is resolvable (docs/cw/04_客製化設計.md §3, P3 Phase A).
+            if let Ok(base_dir) = app.path().app_data_dir() {
+                let policy_provider: std::sync::Arc<dyn gt_abstractions::AgentPolicyProvider> =
+                    std::sync::Arc::new(agent_policy_provider::SqliteAgentPolicyProvider::new(
+                        base_dir,
+                    ));
+                state
+                    .terminal_provider
+                    .set_agent_policy_provider(policy_provider.clone());
+                state.task_service.set_agent_policy_provider(policy_provider);
+            }
             let receiver = state.terminal_provider.take_event_receiver().map_err(|error| {
                 format!(
                     "failed to subscribe terminal runtime events during setup: {}",
@@ -139,7 +154,10 @@ pub fn run() {
             agent::agent_update,
             agent::agent_delete,
             agent::agent_prompt_read,
+            agent::agent_read_external_template,
             agent::agent_reorder,
+            agent::agent_policy_read,
+            agent::agent_policy_save,
             agentic_one::agent_install_status,
             agentic_one::install_agent,
             agentic_one::uninstall_agent,
@@ -297,6 +315,7 @@ pub fn run() {
             security::security_health,
             system::system_gto_doctor,
             system::system_pick_directory,
+            system::system_pick_file,
             system::system_confirm,
             system::system_signal_ui_ready,
             system::system_native_vibrancy_status,

@@ -1,3 +1,4 @@
+use gt_abstractions::{AgentPolicyProvider, AllowAllAgentPolicyProvider, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -449,6 +450,7 @@ struct TaskServiceState {
 pub struct TaskService {
     state: Arc<RwLock<TaskServiceState>>,
     id_counter: Arc<AtomicU64>,
+    agent_policy_provider: Arc<RwLock<Arc<dyn AgentPolicyProvider>>>,
 }
 
 impl Default for TaskService {
@@ -456,11 +458,22 @@ impl Default for TaskService {
         Self {
             state: Arc::new(RwLock::new(TaskServiceState::default())),
             id_counter: Arc::new(AtomicU64::new(0)),
+            agent_policy_provider: Arc::new(RwLock::new(Arc::new(AllowAllAgentPolicyProvider))),
         }
     }
 }
 
 impl TaskService {
+    /// Late-bound because the concrete storage-backed provider (app layer)
+    /// isn't constructible until the Tauri `AppHandle` exists, which is after
+    /// `AppState::default()` already constructed this `TaskService` — see
+    /// `gt_terminal`'s identical pattern for the same reason.
+    pub fn set_agent_policy_provider(&self, provider: Arc<dyn AgentPolicyProvider>) {
+        if let Ok(mut guard) = self.agent_policy_provider.write() {
+            *guard = provider;
+        }
+    }
+
     pub fn list_messages(
         &self,
         workspace_id: &str,
@@ -1125,8 +1138,56 @@ impl TaskService {
         let mut message_events = Vec::new();
         let mut ack_events = Vec::new();
 
-        for target_agent_id in normalize_agent_ids(&request.targets) {
+        // Execution policy (docs/cw/04_客製化設計.md §3, P3 Phase A): the only
+        // limit enforceable at this hook point with existing infrastructure is
+        // max_concurrency, capping how many distinct targets one dispatch_batch
+        // call from a given sending agent may address. `timeout_seconds` and
+        // `max_steps` are intentionally NOT enforced here — this dispatch is a
+        // fire-and-forget terminal write with no task-lifecycle tracking
+        // (no notion of "elapsed time" or "a step" exists anywhere in this
+        // service to measure them against), so faking that check would be
+        // exactly the "假權限" the design doc warns against. They stay in the
+        // policy schema for whenever a real task-lifecycle layer exists to
+        // back them (see docs/cw/05_PRD對齊調研.md on Runtime Snapshot).
+        let max_concurrency = match (&sender.sender_type, sender.agent_id.as_deref()) {
+            (DispatchSenderType::Agent, Some(sender_agent_id)) if !sender_agent_id.is_empty() => {
+                let evaluator = self
+                    .agent_policy_provider
+                    .read()
+                    .map(|guard| guard.clone())
+                    .unwrap_or_else(|_| Arc::new(AllowAllAgentPolicyProvider));
+                evaluator
+                    .policy_for(&WorkspaceId::new(request.workspace_id.clone()), sender_agent_id)
+                    .execution
+                    .max_concurrency
+            }
+            _ => None,
+        };
+
+        for (target_index, target_agent_id) in normalize_agent_ids(&request.targets).into_iter().enumerate() {
             let task_id = self.next_id("task");
+
+            if let Some(max_concurrency) = max_concurrency {
+                if target_index >= max_concurrency as usize {
+                    let detail = "AGENT_POLICY_CONCURRENCY_EXCEEDED".to_string();
+                    results.push(TaskDispatchTargetResult {
+                        target_agent_id: target_agent_id.clone(),
+                        task_id: task_id.clone(),
+                        status: TaskDispatchStatus::Failed,
+                        detail: Some(detail.clone()),
+                        task_file_path: None,
+                    });
+                    progress_events.push(TaskDispatchProgressEvent {
+                        batch_id: batch_id.clone(),
+                        workspace_id: request.workspace_id.clone(),
+                        target_agent_id,
+                        task_id,
+                        status: TaskDispatchProgressStatus::Failed,
+                        detail: Some(detail),
+                    });
+                    continue;
+                }
+            }
             progress_events.push(TaskDispatchProgressEvent {
                 batch_id: batch_id.clone(),
                 workspace_id: request.workspace_id.clone(),
@@ -1701,4 +1762,116 @@ fn enrich_dispatch_markdown(
 
 pub fn module_name() -> &'static str {
     "gt-task"
+}
+
+#[cfg(test)]
+mod p3_execution_policy_tests {
+    use super::*;
+    use gt_agent::AgentPolicy;
+
+    struct FixedAgentPolicyProvider {
+        policy: AgentPolicy,
+    }
+
+    impl AgentPolicyProvider for FixedAgentPolicyProvider {
+        fn policy_for(&self, _workspace_id: &WorkspaceId, _agent_id: &str) -> AgentPolicy {
+            self.policy.clone()
+        }
+    }
+
+    fn register_target(service: &TaskService, workspace_id: &str, agent_id: &str) {
+        service.register_runtime(AgentRuntimeRegistration {
+            workspace_id: workspace_id.to_string(),
+            agent_id: agent_id.to_string(),
+            station_id: agent_id.to_string(),
+            session_id: format!("session-{agent_id}"),
+            tool_kind: AgentToolKind::Unknown,
+            resolved_cwd: None,
+            submit_sequence: None,
+            provider_session: None,
+            online: true,
+        });
+    }
+
+    #[test]
+    fn max_concurrency_caps_targets_dispatched_from_a_policy_bound_sender() {
+        let service = TaskService::default();
+        let mut policy = AgentPolicy::default();
+        policy.execution.max_concurrency = Some(1);
+        service.set_agent_policy_provider(Arc::new(FixedAgentPolicyProvider { policy }));
+
+        register_target(&service, "ws-1", "agent-a");
+        register_target(&service, "ws-1", "agent-b");
+
+        let request = TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender {
+                sender_type: DispatchSenderType::Agent,
+                agent_id: Some("agent-sender".to_string()),
+            },
+            targets: vec!["agent-a".to_string(), "agent-b".to_string()],
+            title: "test".to_string(),
+            markdown: "do the thing".to_string(),
+            attachments: Vec::new(),
+            submit_sequences: HashMap::new(),
+        };
+
+        let outcome = service.dispatch_batch(&request, Path::new("."), |_, _, _| Ok(()));
+
+        assert_eq!(outcome.response.results.len(), 2);
+        let sent_count = outcome
+            .response
+            .results
+            .iter()
+            .filter(|result| result.status == TaskDispatchStatus::Sent)
+            .count();
+        assert_eq!(sent_count, 1, "only max_concurrency targets should be sent");
+        let denied = outcome
+            .response
+            .results
+            .iter()
+            .find(|result| result.status == TaskDispatchStatus::Failed)
+            .expect("one target should be policy-denied");
+        assert_eq!(
+            denied.detail.as_deref(),
+            Some("AGENT_POLICY_CONCURRENCY_EXCEEDED")
+        );
+    }
+
+    #[test]
+    fn human_sender_is_not_subject_to_agent_execution_policy() {
+        let service = TaskService::default();
+        let mut policy = AgentPolicy::default();
+        policy.execution.max_concurrency = Some(1);
+        service.set_agent_policy_provider(Arc::new(FixedAgentPolicyProvider { policy }));
+
+        register_target(&service, "ws-1", "agent-a");
+        register_target(&service, "ws-1", "agent-b");
+
+        let request = TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender {
+                sender_type: DispatchSenderType::Human,
+                agent_id: None,
+            },
+            targets: vec!["agent-a".to_string(), "agent-b".to_string()],
+            title: "test".to_string(),
+            markdown: "do the thing".to_string(),
+            attachments: Vec::new(),
+            submit_sequences: HashMap::new(),
+        };
+
+        let outcome = service.dispatch_batch(&request, Path::new("."), |_, _, _| Ok(()));
+
+        let sent_count = outcome
+            .response
+            .results
+            .iter()
+            .filter(|result| result.status == TaskDispatchStatus::Sent)
+            .count();
+        assert_eq!(
+            sent_count, 2,
+            "a human-initiated dispatch has no agent policy to enforce"
+        );
+    }
 }

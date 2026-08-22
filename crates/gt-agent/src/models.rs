@@ -75,6 +75,14 @@ pub struct AgentProfile {
     pub prompt_file_relative_path: Option<String>,
     pub launch_command: Option<String>,
     pub order_index: i32,
+    /// Points at the `AgentProfile.id` of the agent that created this one via the
+    /// (future) agent-canvas "new subagent" action. `None` for top-level agents.
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
+    /// Local filesystem path an agent's prompt content was seeded from at creation
+    /// time (see docs/cw/04_客製化設計.md §2). Not workspace-bound, not re-synced.
+    #[serde(default)]
+    pub external_template_path: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

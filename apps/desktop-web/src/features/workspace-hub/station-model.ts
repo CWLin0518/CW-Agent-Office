@@ -10,6 +10,9 @@ export interface CreateStationInput {
   promptEnabled: boolean
   promptContent: string
   launchCommand?: string | null
+  /** Local filesystem path to seed promptContent from at creation time only —
+   * see docs/cw/04_客製化設計.md §2. Ignored on update. */
+  externalTemplatePath?: string | null
 }
 
 export interface UpdateStationInput extends CreateStationInput {

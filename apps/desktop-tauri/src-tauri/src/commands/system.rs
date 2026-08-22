@@ -74,6 +74,25 @@ pub fn system_pick_directory(default_path: Option<String>) -> Result<Option<Stri
         .map(|path| path.to_string_lossy().to_string()))
 }
 
+/// Native "pick a single file" dialog, deliberately not workspace-bound —
+/// used by flows that reference an arbitrary local file outside the
+/// workspace (e.g. an agent's external prompt template, docs/cw/04_客製化設計.md §2).
+#[tauri::command]
+pub fn system_pick_file(default_path: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = FileDialog::new();
+    if let Some(path) = default_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        dialog = dialog.set_directory(path);
+    }
+
+    Ok(dialog
+        .pick_file()
+        .map(|path| path.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 pub fn system_confirm(title: String, message: String) -> Result<bool, String> {
     let title = title.trim();

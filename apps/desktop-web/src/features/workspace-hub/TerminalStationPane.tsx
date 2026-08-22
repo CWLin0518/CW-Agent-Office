@@ -14,6 +14,7 @@ import { t } from '@shell/i18n/ui-locale'
 import { AppIcon } from '@shell/ui/icons'
 import {
   StationXtermTerminal,
+  SessionTabBar,
   type AgentExecutionState,
   type StationTerminalSinkBindingHandler,
 } from '@features/terminal'
@@ -52,6 +53,7 @@ interface TerminalStationPaneProps {
   appearanceVersion: string
   station: AgentStation
   runtime?: WorkbenchStationRuntime
+  sessionTabs?: string[]
   workspaceId?: string | null
   workspaceCwd?: string | null
   taskSignal?: StationTaskSignal
@@ -62,6 +64,9 @@ interface TerminalStationPaneProps {
   onLaunchStationTerminal: (stationId: string) => void
   onLaunchCliAgent: (stationId: string) => void
   onForceCloseTerminal?: (stationId: string) => void
+  onSwitchSessionTab?: (stationId: string, sessionId: string) => void
+  onCloseSessionTab?: (stationId: string, sessionId: string) => void
+  onNewSessionTab?: (stationId: string) => void
   onSendInputData: (stationId: string, data: string) => void
   onResizeTerminal: (stationId: string, cols: number, rows: number) => void
   onBindTerminalSink: StationTerminalSinkBindingHandler
@@ -80,6 +85,7 @@ function TerminalStationPaneView({
   appearanceVersion,
   station,
   runtime,
+  sessionTabs,
   workspaceId,
   workspaceCwd,
   taskSignal,
@@ -89,6 +95,9 @@ function TerminalStationPaneView({
   onSelectStation,
   onLaunchStationTerminal,
   onForceCloseTerminal,
+  onSwitchSessionTab,
+  onCloseSessionTab,
+  onNewSessionTab,
   onSendInputData,
   onResizeTerminal,
   onBindTerminalSink,
@@ -279,6 +288,16 @@ function TerminalStationPaneView({
 
       {shouldRenderTerminal ? (
         <>
+          {onNewSessionTab ? (
+            <SessionTabBar
+              locale={locale}
+              sessionTabs={sessionTabs ?? (runtime?.sessionId ? [runtime.sessionId] : [])}
+              activeSessionId={runtime?.sessionId ?? null}
+              onSwitchTab={(sessionId) => onSwitchSessionTab?.(station.id, sessionId)}
+              onCloseTab={(sessionId) => onCloseSessionTab?.(station.id, sessionId)}
+              onAddTab={() => onNewSessionTab(station.id)}
+            />
+          ) : null}
           <StationXtermTerminal
             locale={locale}
             workspaceId={workspaceId}
