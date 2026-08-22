@@ -1887,12 +1887,42 @@ export interface AgentProfile {
   parentAgentId?: string | null
   externalTemplatePath?: string | null
   gitTracked: boolean
+  layoutX?: number | null
+  layoutY?: number | null
   createdAtMs: number
   updatedAtMs: number
 }
 
 export interface AgentListResponse {
   agents: AgentProfile[]
+}
+
+export type AgentLinkKind = 'authored' | 'derived'
+
+export interface AgentLink {
+  id: string
+  workspaceId: string
+  fromAgentId: string
+  toAgentId: string
+  kind: AgentLinkKind
+  createdAtMs: number
+}
+
+export interface AgentCanvasListLinksResponse {
+  links: AgentLink[]
+}
+
+export type AgentRuntimeState = 'unknown' | 'offline' | 'idle' | 'active'
+
+export interface AgentRuntimeStatus {
+  agentId: string
+  workspaceId: string
+  state: AgentRuntimeState
+  updatedAtMs: number
+}
+
+export interface AgentCanvasRuntimeStatusResponse {
+  statuses: AgentRuntimeStatus[]
 }
 
 export interface AgentCreateRequest {
@@ -4360,6 +4390,22 @@ export const desktopApi = {
   },
   agentList(workspaceId: string) {
     return invokeCommand<AgentListResponse>('agent_list', { workspaceId })
+  },
+  agentCanvasListLinks(workspaceId: string) {
+    return invokeCommand<AgentCanvasListLinksResponse>('agent_canvas_list_links', { workspaceId })
+  },
+  agentCanvasRuntimeStatus(workspaceId: string) {
+    return invokeCommand<AgentCanvasRuntimeStatusResponse>('agent_canvas_runtime_status', {
+      workspaceId,
+    })
+  },
+  agentCanvasSetLayout(workspaceId: string, agentId: string, x: number, y: number) {
+    return invokeCommand<Record<string, never>>('agent_canvas_set_layout', {
+      workspaceId,
+      agentId,
+      x,
+      y,
+    })
   },
   agentCreate(request: AgentCreateRequest) {
     return invokeCommand<AgentCreateResponse>('agent_create', {

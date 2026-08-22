@@ -21,6 +21,8 @@ function activityIconName(id: NavItemId) {
       return 'files' as const
     case 'designer':
       return 'designer' as const
+    case 'agent-canvas':
+      return 'route' as const
     case 'git':
       return 'git' as const
     case 'hooks':

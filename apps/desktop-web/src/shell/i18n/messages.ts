@@ -497,6 +497,8 @@ export const messages = {
   'nav.filesShort': { 'zh-CN': '文件', 'en-US': 'FS' },
   'nav.designer': { 'zh-CN': '业务设计器', 'en-US': 'Designer' },
   'nav.designerShort': { 'zh-CN': '设计', 'en-US': 'DS' },
+  'nav.agentCanvas': { 'zh-CN': 'Agent 协作', 'en-US': 'Agent Canvas' },
+  'nav.agentCanvasShort': { 'zh-CN': '协作', 'en-US': 'AC' },
   'nav.git': { 'zh-CN': 'Git 协作', 'en-US': 'Git' },
   'nav.hooks': { 'zh-CN': 'Hook 编排', 'en-US': 'Hooks' },
   'nav.hooksShort': { 'zh-CN': '钩子', 'en-US': 'HK' },
@@ -546,6 +548,13 @@ export const messages = {
   'pane.designer.docsRoot': { 'zh-CN': '.gtoffice/docs 文档库', 'en-US': '.gtoffice/docs library' },
   'pane.designer.schema': { 'zh-CN': 'Schema v1 块模型', 'en-US': 'Schema v1 block model' },
   'pane.designer.agentReview': { 'zh-CN': 'Agent patch 先审阅后应用', 'en-US': 'Review agent patches before apply' },
+  'pane.agentCanvas.title': { 'zh-CN': 'Agent 协作画布', 'en-US': 'Agent Canvas' },
+  'pane.agentCanvas.subtitle': {
+    'zh-CN': '节点是 Agent，连线是最近的实际通信',
+    'en-US': 'Nodes are agents; edges are recent real communication',
+  },
+  'pane.agentCanvas.hintNodes': { 'zh-CN': '节点：当前 workspace 内的 Agent', 'en-US': 'Nodes: agents in this workspace' },
+  'pane.agentCanvas.hintEdges': { 'zh-CN': '连线：最近的 gto send 往来', 'en-US': 'Edges: recent gto-send activity' },
   'station.filter.search': { 'zh-CN': '搜索角色', 'en-US': 'Search' },
   'station.filter.searchPlaceholder': {
     'zh-CN': '按名称/目录/角色/工具过滤',
@@ -2968,6 +2977,27 @@ export const messages = {
   'designer.screenPreview.uiPreview': { 'zh-CN': 'UI 预览', 'en-US': 'UI preview' },
   'designer.screenPreview.selectedElement': { 'zh-CN': '已选中元素（{count} 字符）', 'en-US': 'Selected element ({count} characters)' },
   'designer.inspector.completenessTitle': { 'zh-CN': '完备性（影响代码生成准确度）', 'en-US': 'Completeness (affects code generation accuracy)' },
+  // P4 — agent-canvas MVP (docs/cw/04_客製化設計.md §1)
+  'agentCanvas.empty': {
+    'zh-CN': '这个 workspace 里还没有 Agent。',
+    'en-US': 'No agents in this workspace yet.',
+  },
+  'agentCanvas.zoomIn': { 'zh-CN': '放大', 'en-US': 'Zoom in' },
+  'agentCanvas.zoomOut': { 'zh-CN': '缩小', 'en-US': 'Zoom out' },
+  'agentCanvas.zoomReset': { 'zh-CN': '重置缩放', 'en-US': 'Reset zoom' },
+  'agentCanvas.status.active': { 'zh-CN': '活跃', 'en-US': 'Active' },
+  'agentCanvas.status.idle': { 'zh-CN': '在线', 'en-US': 'Idle' },
+  'agentCanvas.status.offline': { 'zh-CN': '离线', 'en-US': 'Offline' },
+  'agentCanvas.status.unknown': { 'zh-CN': '未知', 'en-US': 'Unknown' },
+  'agentCanvas.nodeLabel': { 'zh-CN': '{name}：{status}', 'en-US': '{name}: {status}' },
+  'agentCanvas.edge.derivedTitle': {
+    'zh-CN': '最近有 gto send 往来',
+    'en-US': 'Recent gto-send activity',
+  },
+  'agentCanvas.edge.authoredTitle': {
+    'zh-CN': '手动建立的连线',
+    'en-US': 'Hand-drawn connection',
+  },
 }
 
 export type TranslationKey = keyof typeof messages

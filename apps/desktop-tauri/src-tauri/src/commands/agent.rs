@@ -19,11 +19,11 @@ use binding_cleanup::{
     DirectBindingCleanupMode,
 };
 
-fn to_command_error(error: impl ToString) -> String {
+pub(crate) fn to_command_error(error: impl ToString) -> String {
     error.to_string()
 }
 
-fn ensure_workspace_exists(state: &AppState, workspace_id: &str) -> Result<(), String> {
+pub(crate) fn ensure_workspace_exists(state: &AppState, workspace_id: &str) -> Result<(), String> {
     let workspace_id = WorkspaceId::new(workspace_id);
     state
         .workspace_service

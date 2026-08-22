@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_canvas;
 pub mod agentic_one;
 pub mod business_designer;
 pub mod file_explorer;

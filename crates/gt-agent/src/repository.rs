@@ -1,4 +1,4 @@
-use crate::{AgentPolicy, AgentProfile, AgentScope, AgentState};
+use crate::{AgentLink, AgentPolicy, AgentProfile, AgentScope, AgentState};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -83,4 +83,33 @@ pub trait AgentPolicyRepository: Send + Sync {
     /// no snapshot yet, so agents created before this feature existed behave
     /// unchanged.
     fn get_agent_policy(&self, workspace_id: &str, agent_id: &str) -> AgentResult<AgentPolicy>;
+}
+
+/// Backed by `agent_links` (docs/cw/04_客製化設計.md §1) and `agents.layout_x`/
+/// `agents.layout_y`. P4 only produces `AgentLinkKind::Derived` rows (written
+/// from local_bridge's dispatch/publish handlers); hand-drawn `Authored` links
+/// are P4.5.
+pub trait AgentLinkRepository: Send + Sync {
+    /// Upserts the "last interacted at" row for this ordered (from, to) pair —
+    /// one row per pair, not one row per dispatch, so a chatty pair of agents
+    /// doesn't grow the table unbounded.
+    fn record_derived_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<()>;
+
+    fn list_links(&self, workspace_id: &str) -> AgentResult<Vec<AgentLink>>;
+
+    /// Sets `agents.layout_x`/`agents.layout_y` directly, independent of
+    /// `update_agent`'s full-row overwrite — same rationale as
+    /// `AgentRepository::set_git_tracked`.
+    fn set_agent_layout(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        x: f64,
+        y: f64,
+    ) -> AgentResult<()>;
 }

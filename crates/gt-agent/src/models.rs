@@ -89,12 +89,82 @@ pub struct AgentProfile {
     /// out of version control.
     #[serde(default = "default_git_tracked")]
     pub git_tracked: bool,
+    /// Node position on the agent-canvas (docs/cw/04_客製化設計.md §1), in
+    /// canvas coordinate space. `None` until the user has dragged the node at
+    /// least once; the canvas falls back to an auto-layout in that case.
+    #[serde(default)]
+    pub layout_x: Option<f64>,
+    #[serde(default)]
+    pub layout_y: Option<f64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
 
 fn default_git_tracked() -> bool {
     true
+}
+
+/// A connection between two agents on the agent-canvas (docs/cw/04_客製化設計.md
+/// §1). `Derived` links are written automatically whenever a `gto send`
+/// dispatch succeeds (see local_bridge's dispatch/publish handlers); `Authored`
+/// links are user hand-drawn and reserved for P4.5 — this crate defines both
+/// variants now so the schema/type doesn't need to change when P4.5 lands.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentLinkKind {
+    Authored,
+    Derived,
+}
+
+impl AgentLinkKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentLinkKind::Authored => "authored",
+            AgentLinkKind::Derived => "derived",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Self {
+        match value {
+            "authored" => AgentLinkKind::Authored,
+            _ => AgentLinkKind::Derived,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLink {
+    pub id: String,
+    pub workspace_id: String,
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub kind: AgentLinkKind,
+    pub created_at_ms: i64,
+}
+
+/// Minimal, canvas-agnostic runtime status projection (docs/cw/05_PRD對齊調研.md
+/// "給 P4 的路標"). Deliberately NOT the full Runtime Snapshot / Lifecycle State
+/// contract from docs/AGENT_RUNTIME_UPGRADE_PRD.md — this is a small, in-memory
+/// summary derived from gt-task's existing runtime registrations, kept
+/// independent of both the `agents` table and the canvas UI so it can be
+/// upgraded to the full PRD contract later without callers changing shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntimeState {
+    Unknown,
+    Offline,
+    Idle,
+    Active,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeStatus {
+    pub agent_id: String,
+    pub workspace_id: String,
+    pub state: AgentRuntimeState,
+    pub updated_at_ms: i64,
 }
 
 fn normalize_tool_provider_key(tool: &str) -> &'static str {

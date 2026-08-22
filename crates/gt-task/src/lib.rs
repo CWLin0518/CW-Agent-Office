@@ -666,6 +666,52 @@ impl TaskService {
         runtimes
     }
 
+    /// Minimal, canvas-agnostic runtime status projection for agent-canvas
+    /// (docs/cw/05_PRD對齊調研.md "給 P4 的路標"). Deliberately not the full
+    /// Runtime Snapshot / Lifecycle State contract from
+    /// docs/AGENT_RUNTIME_UPGRADE_PRD.md — reuses `runtimes` (registered =
+    /// online; `register_runtime` already removes an entry on `online: false`,
+    /// so a stored entry is always online) plus recent `channel_messages`
+    /// activity, rather than adding a new detection mechanism.
+    ///
+    /// Only returns rows for agents currently registered here — gt-task has no
+    /// concept of the full agent roster (that's `AgentRepository`'s job), so it
+    /// can't tell "known agent that's offline" apart from "id that doesn't
+    /// exist". Callers with the full roster (the agent-canvas command layer)
+    /// should treat any agent id missing from this result as `Offline`.
+    pub fn agent_runtime_status(&self, workspace_id: &str) -> Vec<gt_agent::AgentRuntimeStatus> {
+        const ACTIVE_WINDOW_MS: u64 = 5 * 60 * 1000;
+        let guard = match self.state.read() {
+            Ok(guard) => guard,
+            Err(_) => return Vec::new(),
+        };
+        let now_ms = now_ms();
+        guard
+            .runtimes
+            .values()
+            .filter(|runtime| runtime.workspace_id == workspace_id)
+            .map(|runtime| {
+                let recently_active = guard.channel_messages.iter().any(|message| {
+                    message.workspace_id == workspace_id
+                        && now_ms.saturating_sub(message.ts_ms) <= ACTIVE_WINDOW_MS
+                        && (message.target_agent_id == runtime.agent_id
+                            || message.sender_agent_id.as_deref() == Some(&runtime.agent_id))
+                });
+                let state = if recently_active {
+                    gt_agent::AgentRuntimeState::Active
+                } else {
+                    gt_agent::AgentRuntimeState::Idle
+                };
+                gt_agent::AgentRuntimeStatus {
+                    agent_id: runtime.agent_id.clone(),
+                    workspace_id: workspace_id.to_string(),
+                    state,
+                    updated_at_ms: now_ms as i64,
+                }
+            })
+            .collect()
+    }
+
     pub fn upsert_route_binding(&self, binding: ChannelRouteBinding) -> bool {
         let mut normalized = normalize_binding(binding);
         let mut guard = match self.state.write() {
@@ -1157,14 +1203,20 @@ impl TaskService {
                     .map(|guard| guard.clone())
                     .unwrap_or_else(|_| Arc::new(AllowAllAgentPolicyProvider));
                 evaluator
-                    .policy_for(&WorkspaceId::new(request.workspace_id.clone()), sender_agent_id)
+                    .policy_for(
+                        &WorkspaceId::new(request.workspace_id.clone()),
+                        sender_agent_id,
+                    )
                     .execution
                     .max_concurrency
             }
             _ => None,
         };
 
-        for (target_index, target_agent_id) in normalize_agent_ids(&request.targets).into_iter().enumerate() {
+        for (target_index, target_agent_id) in normalize_agent_ids(&request.targets)
+            .into_iter()
+            .enumerate()
+        {
             let task_id = self.next_id("task");
 
             if let Some(max_concurrency) = max_concurrency {
@@ -1873,5 +1925,96 @@ mod p3_execution_policy_tests {
             sent_count, 2,
             "a human-initiated dispatch has no agent policy to enforce"
         );
+    }
+}
+
+#[cfg(test)]
+mod p4_agent_canvas_tests {
+    use super::*;
+
+    fn register(service: &TaskService, workspace_id: &str, agent_id: &str, online: bool) {
+        service.register_runtime(AgentRuntimeRegistration {
+            workspace_id: workspace_id.to_string(),
+            agent_id: agent_id.to_string(),
+            station_id: agent_id.to_string(),
+            session_id: format!("session-{agent_id}"),
+            tool_kind: AgentToolKind::Unknown,
+            resolved_cwd: None,
+            submit_sequence: None,
+            provider_session: None,
+            online,
+        });
+    }
+
+    #[test]
+    fn agent_runtime_status_reports_idle_and_active_for_registered_agents_only() {
+        let service = TaskService::default();
+        // register_runtime with online:false removes any entry rather than
+        // storing one, so "offline" agents never show up here at all — the
+        // agent-canvas command layer is expected to treat any agent id absent
+        // from this result as Offline.
+        register(&service, "ws-1", "agent-offline", false);
+        register(&service, "ws-1", "agent-idle", true);
+        register(&service, "ws-1", "agent-active", true);
+
+        // Sender is deliberately a third, unregistered id so it can't
+        // accidentally satisfy the "agent-idle" or "agent-active" assertions
+        // below via its own sender_agent_id match.
+        let request = TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender {
+                sender_type: DispatchSenderType::Agent,
+                agent_id: Some("agent-external-sender".to_string()),
+            },
+            targets: vec!["agent-active".to_string()],
+            title: "test".to_string(),
+            markdown: "do the thing".to_string(),
+            attachments: Vec::new(),
+            submit_sequences: HashMap::new(),
+        };
+        let outcome = service.dispatch_batch(&request, Path::new("."), |_, _, _| Ok(()));
+        assert_eq!(outcome.response.results[0].status, TaskDispatchStatus::Sent);
+
+        let statuses = service.agent_runtime_status("ws-1");
+        let find = |agent_id: &str| {
+            statuses
+                .iter()
+                .find(|status| status.agent_id == agent_id)
+                .unwrap_or_else(|| panic!("expected status for {agent_id}"))
+        };
+
+        assert!(
+            !statuses
+                .iter()
+                .any(|status| status.agent_id == "agent-offline"),
+            "an agent registered with online:false must not appear in the result at all"
+        );
+        assert_eq!(
+            find("agent-idle").state,
+            gt_agent::AgentRuntimeState::Idle,
+            "registered and online, but not party to any recent dispatch"
+        );
+        assert_eq!(
+            find("agent-active").state,
+            gt_agent::AgentRuntimeState::Active,
+            "dispatch target should be Active right after a successful dispatch"
+        );
+        assert!(
+            !statuses
+                .iter()
+                .any(|status| status.agent_id == "agent-not-registered"),
+            "agent-canvas should treat a missing registration as Unknown by simply not finding a row, not by fabricating one"
+        );
+    }
+
+    #[test]
+    fn agent_runtime_status_is_scoped_to_workspace() {
+        let service = TaskService::default();
+        register(&service, "ws-1", "agent-a", true);
+        register(&service, "ws-2", "agent-b", true);
+
+        let statuses = service.agent_runtime_status("ws-1");
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].agent_id, "agent-a");
     }
 }

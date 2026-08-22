@@ -6,6 +6,7 @@ export type NavItemId =
   | 'tasks'
   | 'files'
   | 'designer'
+  | 'agent-canvas'
   | 'git'
   | 'hooks'
   | 'channels'
@@ -30,6 +31,11 @@ export function getNavItems(locale: Locale): NavItem[] {
     { id: 'tasks', label: t(locale, 'nav.tasks'), short: t(locale, 'nav.tasksShort') },
     { id: 'channels', label: t(locale, 'nav.channels'), short: t(locale, 'nav.channelsShort') },
     { id: 'stations', label: t(locale, 'nav.stations'), short: t(locale, 'nav.stationsShort') },
+    {
+      id: 'agent-canvas',
+      label: t(locale, 'nav.agentCanvas'),
+      short: t(locale, 'nav.agentCanvasShort'),
+    },
   ]
 }
 
@@ -63,6 +69,11 @@ export function getPaneModels(locale: Locale): Record<NavItemId, PaneModel> {
         t(locale, 'pane.designer.schema'),
         t(locale, 'pane.designer.agentReview'),
       ],
+    },
+    'agent-canvas': {
+      title: t(locale, 'pane.agentCanvas.title'),
+      subtitle: t(locale, 'pane.agentCanvas.subtitle'),
+      items: [t(locale, 'pane.agentCanvas.hintNodes'), t(locale, 'pane.agentCanvas.hintEdges')],
     },
     git: {
       title: t(locale, 'pane.git.title'),

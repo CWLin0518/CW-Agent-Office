@@ -1,7 +1,8 @@
 use crate::sqlite::SqliteStorage;
 use gt_agent::{
-    AgentError, AgentPolicy, AgentPolicyRepository, AgentProfile, AgentRepository, AgentResult,
-    AgentScope, AgentState, CreateAgentInput, UpdateAgentInput,
+    AgentError, AgentLink, AgentLinkKind, AgentLinkRepository, AgentPolicy, AgentPolicyRepository,
+    AgentProfile, AgentRepository, AgentResult, AgentScope, AgentState, CreateAgentInput,
+    UpdateAgentInput,
 };
 use rusqlite::{params, OptionalExtension};
 
@@ -30,9 +31,10 @@ impl SqliteAgentRepository {
             })
     }
 
-    // NOTE: only clears `agents`. `agent_links`/`agent_policy_snapshots` have no FK
-    // cascade, so once P3/P4 start writing rows into those tables, extend this to
-    // delete them by workspace_id too or a workspace reset will orphan them.
+    // NOTE: `agent_links`/`agent_policy_snapshots` have no FK cascade, so this
+    // clears both explicitly. `agent_policy_snapshots` cleanup is still
+    // deferred (not yet exercised by any workspace-reset path in P3); revisit
+    // together if that changes.
     pub fn reset_workspace_state_in_tx(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -40,6 +42,13 @@ impl SqliteAgentRepository {
     ) -> AgentResult<()> {
         tx.execute(
             "DELETE FROM agents WHERE workspace_id = ?1",
+            params![workspace_id],
+        )
+        .map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        tx.execute(
+            "DELETE FROM agent_links WHERE workspace_id = ?1",
             params![workspace_id],
         )
         .map_err(|error| AgentError::Storage {
@@ -108,6 +117,7 @@ CREATE TABLE IF NOT EXISTS agents (
   launch_command TEXT, order_index INTEGER NOT NULL DEFAULT 0,
   parent_agent_id TEXT, external_template_path TEXT,
   git_tracked INTEGER NOT NULL DEFAULT 1,
+  layout_x REAL, layout_y REAL,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (id, workspace_id)
 );
@@ -122,6 +132,12 @@ CREATE TABLE IF NOT EXISTS agent_links (
 
 CREATE INDEX IF NOT EXISTS idx_agent_links_workspace
   ON agent_links(workspace_id, created_at_ms DESC);
+
+-- One row per (workspace, from, to, kind): derived links are upserted so a
+-- chatty pair of agents doesn't grow this table per-dispatch, and authored
+-- links (P4.5) can only exist once per direction/kind anyway.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_links_pair
+  ON agent_links(workspace_id, from_agent_id, to_agent_id, kind);
 "#;
 
 const AGENT_POLICY_SNAPSHOTS_SCHEMA: &str = r#"
@@ -154,6 +170,8 @@ impl AgentRepository for SqliteAgentRepository {
             "ALTER TABLE agents ADD COLUMN git_tracked INTEGER NOT NULL DEFAULT 1",
             [],
         );
+        let _ = conn.execute("ALTER TABLE agents ADD COLUMN layout_x REAL", []);
+        let _ = conn.execute("ALTER TABLE agents ADD COLUMN layout_y REAL", []);
         conn.execute_batch(AGENT_LINKS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
@@ -177,7 +195,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn list_agents(&self, workspace_id: &str) -> AgentResult<Vec<AgentProfile>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         let rows = stmt
             .query_map(params![workspace_id], |row| {
@@ -199,10 +217,12 @@ impl AgentRepository for SqliteAgentRepository {
                     parent_agent_id: row.get(12)?,
                     external_template_path: row.get(13)?,
                     git_tracked: row.get::<_, i32>(14)? != 0,
+                    layout_x: row.get(15)?,
+                    layout_y: row.get(16)?,
                     prompt_file_name: None,
                     prompt_file_relative_path: None,
-                    created_at_ms: row.get(15)?,
-                    updated_at_ms: row.get(16)?,
+                    created_at_ms: row.get(17)?,
+                    updated_at_ms: row.get(18)?,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -322,9 +342,11 @@ impl AgentPolicyRepository for SqliteAgentRepository {
         agent_id: &str,
         policy: &AgentPolicy,
     ) -> AgentResult<String> {
-        let policy_json = policy.to_json().map_err(|error| AgentError::InvalidArgument {
-            message: format!("invalid policy: {error}"),
-        })?;
+        let policy_json = policy
+            .to_json()
+            .map_err(|error| AgentError::InvalidArgument {
+                message: format!("invalid policy: {error}"),
+            })?;
         let mut conn = self.connection()?;
         let id = uuid::Uuid::new_v4().to_string();
         let now = Self::now_ms();
@@ -369,6 +391,90 @@ impl AgentPolicyRepository for SqliteAgentRepository {
             }),
             None => Ok(AgentPolicy::default()),
         }
+    }
+}
+
+impl AgentLinkRepository for SqliteAgentRepository {
+    fn record_derived_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<()> {
+        let conn = self.connection()?;
+        let now = Self::now_ms();
+        conn.execute(
+            "INSERT INTO agent_links (id, workspace_id, from_agent_id, to_agent_id, kind, created_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, 'derived', ?5) \
+             ON CONFLICT(workspace_id, from_agent_id, to_agent_id, kind) \
+             DO UPDATE SET created_at_ms = excluded.created_at_ms",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                workspace_id,
+                from_agent_id,
+                to_agent_id,
+                now
+            ],
+        )
+        .map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        Ok(())
+    }
+
+    fn list_links(&self, workspace_id: &str) -> AgentResult<Vec<AgentLink>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workspace_id, from_agent_id, to_agent_id, kind, created_at_ms \
+                 FROM agent_links WHERE workspace_id = ?1 ORDER BY created_at_ms DESC",
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        let rows = stmt
+            .query_map(params![workspace_id], |row| {
+                let kind: String = row.get(4)?;
+                Ok(AgentLink {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    from_agent_id: row.get(2)?,
+                    to_agent_id: row.get(3)?,
+                    kind: AgentLinkKind::from_storage_str(&kind),
+                    created_at_ms: row.get(5)?,
+                })
+            })
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })
+    }
+
+    fn set_agent_layout(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        x: f64,
+        y: f64,
+    ) -> AgentResult<()> {
+        let conn = self.connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE agents SET layout_x = ?1, layout_y = ?2, updated_at_ms = ?3 WHERE workspace_id = ?4 AND id = ?5",
+                params![x, y, Self::now_ms(), workspace_id, agent_id],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        if updated == 0 {
+            return Err(AgentError::InvalidArgument {
+                message: "agent_id not found".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -496,10 +602,7 @@ mod p0_migration_tests {
             .iter()
             .find(|agent| agent.id == "agent-with-parent")
             .expect("agent-with-parent present");
-        assert_eq!(
-            with_parent.parent_agent_id.as_deref(),
-            Some("agent-parent")
-        );
+        assert_eq!(with_parent.parent_agent_id.as_deref(), Some("agent-parent"));
         assert_eq!(
             with_parent.external_template_path.as_deref(),
             Some("/tmp/template.md")
@@ -581,7 +684,10 @@ mod p3_agent_policy_tests {
         let repo = repo_with_one_agent(&scratch, "agent-1");
 
         let mut policy_v1 = AgentPolicy::default();
-        policy_v1.shell.denied_commands.push("powershell".to_string());
+        policy_v1
+            .shell
+            .denied_commands
+            .push("powershell".to_string());
         policy_v1.execution.max_concurrency = Some(2);
         policy_v1.agent.allow_gto_send = false;
         let snapshot_v1 = repo
@@ -599,7 +705,10 @@ mod p3_agent_policy_tests {
             .into_iter()
             .find(|agent| agent.id == "agent-1")
             .expect("agent-1 present");
-        assert_eq!(agent.policy_snapshot_id.as_deref(), Some(snapshot_v1.as_str()));
+        assert_eq!(
+            agent.policy_snapshot_id.as_deref(),
+            Some(snapshot_v1.as_str())
+        );
 
         // A second save must append a new snapshot, not overwrite the first —
         // agent_policy_snapshots is meant to stay an auditable history.
@@ -621,7 +730,10 @@ mod p3_agent_policy_tests {
             .into_iter()
             .find(|agent| agent.id == "agent-1")
             .expect("agent-1 present");
-        assert_eq!(agent.policy_snapshot_id.as_deref(), Some(snapshot_v2.as_str()));
+        assert_eq!(
+            agent.policy_snapshot_id.as_deref(),
+            Some(snapshot_v2.as_str())
+        );
 
         let conn = repo.connection().expect("connection");
         let snapshot_count: i64 = conn
@@ -642,6 +754,146 @@ mod p3_agent_policy_tests {
         repo.ensure_schema().expect("ensure_schema");
 
         let result = repo.save_agent_policy("ws-1", "does-not-exist", &AgentPolicy::default());
-        assert!(result.is_err(), "saving a policy for an unknown agent must fail");
+        assert!(
+            result.is_err(),
+            "saving a policy for an unknown agent must fail"
+        );
+    }
+}
+
+#[cfg(test)]
+mod p4_agent_link_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct ScratchDb {
+        path: PathBuf,
+    }
+
+    impl ScratchDb {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gt-storage-p4-test-{name}-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            Self { path }
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    fn repo_with_two_agents(scratch: &ScratchDb) -> SqliteAgentRepository {
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+        for agent_id in ["agent-a", "agent-b"] {
+            repo.create_agent(CreateAgentInput {
+                workspace_id: "ws-1".to_string(),
+                agent_id: Some(agent_id.to_string()),
+                name: agent_id.to_string(),
+                tool: "codex".to_string(),
+                workdir: Some(".".to_string()),
+                custom_workdir: false,
+                scope: AgentScope::Station,
+                employee_no: None,
+                state: AgentState::Ready,
+                launch_command: None,
+                order_index: None,
+                parent_agent_id: None,
+                external_template_path: None,
+            })
+            .expect("create agent");
+        }
+        repo
+    }
+
+    #[test]
+    fn record_derived_link_upserts_instead_of_growing_unbounded() {
+        let scratch = ScratchDb::new("upsert");
+        let repo = repo_with_two_agents(&scratch);
+
+        repo.record_derived_link("ws-1", "agent-a", "agent-b")
+            .expect("record first dispatch");
+        repo.record_derived_link("ws-1", "agent-a", "agent-b")
+            .expect("record second dispatch between same pair");
+        repo.record_derived_link("ws-1", "agent-b", "agent-a")
+            .expect("record dispatch in the opposite direction");
+
+        let links = repo.list_links("ws-1").expect("list links");
+        assert_eq!(
+            links.len(),
+            2,
+            "repeated dispatches between the same ordered pair must upsert, not insert new rows"
+        );
+        assert!(links.iter().all(|link| link.kind == AgentLinkKind::Derived));
+    }
+
+    #[test]
+    fn set_agent_layout_persists_position_and_fails_for_unknown_agent() {
+        let scratch = ScratchDb::new("layout");
+        let repo = repo_with_two_agents(&scratch);
+
+        repo.set_agent_layout("ws-1", "agent-a", 120.5, -40.0)
+            .expect("set layout");
+        let agent = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-a")
+            .expect("agent-a present");
+        assert_eq!(agent.layout_x, Some(120.5));
+        assert_eq!(agent.layout_y, Some(-40.0));
+
+        let other = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-b")
+            .expect("agent-b present");
+        assert_eq!(other.layout_x, None, "unrelated agent must be untouched");
+
+        let result = repo.set_agent_layout("ws-1", "does-not-exist", 0.0, 0.0);
+        assert!(
+            result.is_err(),
+            "setting layout for an unknown agent must fail"
+        );
+    }
+
+    #[test]
+    fn reset_workspace_state_clears_agent_links() {
+        let scratch = ScratchDb::new("reset");
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+        repo.create_agent(CreateAgentInput {
+            workspace_id: "ws-1".to_string(),
+            agent_id: Some("agent-a".to_string()),
+            name: "agent-a".to_string(),
+            tool: "codex".to_string(),
+            workdir: Some(".".to_string()),
+            custom_workdir: false,
+            scope: AgentScope::Station,
+            employee_no: None,
+            state: AgentState::Ready,
+            launch_command: None,
+            order_index: None,
+            parent_agent_id: None,
+            external_template_path: None,
+        })
+        .expect("create agent-a");
+        repo.record_derived_link("ws-1", "agent-a", "agent-b")
+            .expect("record link");
+
+        repo.reset_workspace_state("ws-1")
+            .expect("reset workspace state");
+
+        assert!(repo.list_agents("ws-1").expect("list agents").is_empty());
+        assert!(repo.list_links("ws-1").expect("list links").is_empty());
     }
 }

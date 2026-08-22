@@ -1,0 +1,204 @@
+@use '../../styles/tokens/responsive' as *;
+
+// Agent canvas — read-only node graph (docs/cw/04_客製化設計.md §1, P4 MVP).
+// Layout classes (agent-canvas / -viewport / -svg / -nodes / -controls) mirror
+// business-designer's canvas structure 1:1 since both are built on the same
+// shared engine (@/components/graph-canvas), but this file owns its own
+// selectors — no cross-feature CSS sharing.
+
+.agent-canvas {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background:
+    linear-gradient(0deg, var(--vb-surface-muted), var(--vb-surface-muted)),
+    radial-gradient(circle at 1px 1px, var(--vb-border-strong) 1px, transparent 0);
+  background-size: auto, #{rem(28)} #{rem(28)};
+  overflow: hidden;
+  cursor: default;
+}
+
+.agent-canvas-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+
+  &.is-space-pan-armed,
+  &.is-panning {
+    cursor: grab;
+  }
+
+  &.is-panning {
+    cursor: grabbing;
+    user-select: none;
+  }
+}
+
+.agent-canvas-svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  font-size: 1rem;
+  pointer-events: none;
+}
+
+.agent-canvas-nodes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.agent-canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: #{rem(8)};
+  color: var(--vb-text-muted);
+  font-size: #{rem(13)};
+  text-align: center;
+  pointer-events: none;
+}
+
+.agent-canvas-controls {
+  position: absolute;
+  bottom: #{rem(12)};
+  right: #{rem(12)};
+  display: flex;
+  align-items: center;
+  gap: #{rem(2)};
+  padding: #{rem(4)};
+  border-radius: #{rem(10)};
+  background: var(--vb-surface);
+  border: var(--vb-border-width) solid var(--vb-border);
+  box-shadow: 0 #{rem(6)} #{rem(18)} rgba(0, 0, 0, 0.14);
+}
+
+.agent-canvas-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: #{rem(28)};
+  height: #{rem(28)};
+  border-radius: #{rem(7)};
+  border: none;
+  background: transparent;
+  color: var(--vb-text);
+  cursor: default;
+
+  &:hover {
+    background: var(--vb-border);
+  }
+}
+
+.agent-canvas-zoom-label {
+  min-width: #{rem(36)};
+  text-align: center;
+  font-size: #{rem(12)};
+  color: var(--vb-text-muted);
+}
+
+.agent-canvas-node-shell {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+
+  &.is-dragging {
+    z-index: 5;
+
+    .agent-canvas-node {
+      box-shadow: 0 #{rem(10)} #{rem(24)} rgba(0, 0, 0, 0.22);
+    }
+  }
+}
+
+.agent-canvas-node {
+  display: flex;
+  flex-direction: column;
+  gap: #{rem(4)};
+  padding: #{rem(10)} #{rem(12)};
+  border-radius: #{rem(10)};
+  border: var(--vb-border-width) solid var(--vb-border);
+  background: var(--vb-surface);
+  box-shadow: 0 #{rem(2)} #{rem(6)} rgba(0, 0, 0, 0.08);
+}
+
+.agent-canvas-node-header {
+  display: flex;
+  align-items: center;
+  gap: #{rem(6)};
+  min-width: 0;
+}
+
+.agent-canvas-node-status-dot {
+  flex: none;
+  width: #{rem(8)};
+  height: #{rem(8)};
+  border-radius: 50%;
+  background: var(--vb-text-muted);
+
+  &--active {
+    background: var(--vb-success);
+  }
+
+  &--idle {
+    background: var(--vb-accent);
+  }
+
+  &--offline {
+    background: var(--vb-text-muted);
+  }
+
+  &--unknown {
+    background: var(--vb-warning);
+  }
+}
+
+.agent-canvas-node-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: #{rem(13)};
+  font-weight: 600;
+  color: var(--vb-text);
+}
+
+.agent-canvas-node-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: #{rem(8)};
+  font-size: #{rem(11)};
+  color: var(--vb-text-muted);
+}
+
+.agent-canvas-node-tool {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-canvas-edge {
+  fill: none;
+  stroke-width: #{rem(1.5)};
+}
+
+// Derived edges (real gto-send activity) are dashed to read as "observed,"
+// distinct from P4.5's hand-drawn authored edges — see docs/cw/04_客製化設計.md §1.
+.agent-canvas-edge--derived {
+  stroke: var(--vb-accent);
+  stroke-dasharray: #{rem(4)} #{rem(3)};
+  opacity: 0.75;
+}
+
+.agent-canvas-edge--authored {
+  stroke: var(--vb-text);
+  opacity: 0.9;
+}

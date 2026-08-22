@@ -2,12 +2,12 @@ use gt_abstractions::{
     AbstractionError, TerminalCreateRequest, TerminalCwdMode, TerminalProvider, WorkspaceId,
     WorkspaceService,
 };
-use gt_agent::{AgentPolicyRepository, AgentRepository};
+use gt_agent::{AgentLinkRepository, AgentPolicyRepository, AgentRepository};
 use gt_storage::{SqliteAgentRepository, SqliteStorage};
 use gt_task::{
     AgentRuntimeRegistration, AgentToolKind, ChannelAckEvent, ChannelMessageEvent,
-    ChannelPublishRequest, DispatchSenderType, TaskDispatchBatchRequest,
-    TaskDispatchProgressEvent, TaskGetThreadRequest, TaskListThreadsRequest,
+    ChannelPublishRequest, DispatchSenderType, TaskDispatchBatchRequest, TaskDispatchProgressEvent,
+    TaskGetThreadRequest, TaskListThreadsRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -614,6 +614,34 @@ fn ensure_agent_allowed_to_dispatch(
     Ok(())
 }
 
+/// Writes a `derived` agent_links row (docs/cw/04_客製化設計.md §1) for every
+/// message event that actually has an agent sender — human-originated
+/// dispatches (`sender_agent_id: None`) don't produce a canvas edge. Best-effort:
+/// a failure here must never fail the dispatch/publish call itself, so errors
+/// are swallowed (mirrors `ensure_agent_allowed_to_dispatch`'s
+/// `resolve_agent_repository` fallback below).
+fn record_derived_links(
+    app: &AppHandle,
+    workspace_id: &str,
+    message_events: &[ChannelMessageEvent],
+) {
+    if message_events.is_empty() {
+        return;
+    }
+    let Ok(repo) = resolve_agent_repository(app) else {
+        return;
+    };
+    if repo.ensure_schema().is_err() {
+        return;
+    }
+    for event in message_events {
+        let Some(from_agent_id) = event.sender_agent_id.as_deref() else {
+            continue;
+        };
+        let _ = repo.record_derived_link(workspace_id, from_agent_id, &event.target_agent_id);
+    }
+}
+
 fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Value, BridgeError> {
     let request: TaskDispatchBatchRequest = serde_json::from_value(params).map_err(|error| {
         BridgeError::new(
@@ -662,6 +690,7 @@ fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Va
 
     emit_dispatch_progress_events(app, &outcome.progress_events);
     emit_channel_events(app, &outcome.message_events, &outcome.ack_events);
+    record_derived_links(app, &request.workspace_id, &outcome.message_events);
 
     serde_json::to_value(outcome.response)
         .map_err(|error| BridgeError::new("LOCAL_BRIDGE_INTERNAL", error.to_string()))
@@ -684,6 +713,7 @@ fn publish_channel(app: &AppHandle, state: &AppState, params: Value) -> Result<V
 
     let outcome = state.task_service.publish(&request);
     emit_channel_events(app, &outcome.message_events, &outcome.ack_events);
+    record_derived_links(app, &request.workspace_id, &outcome.message_events);
     serde_json::to_value(outcome.response)
         .map_err(|error| BridgeError::new("LOCAL_BRIDGE_INTERNAL", error.to_string()))
 }

@@ -15,8 +15,8 @@ mod terminal_debug;
 
 use base64::Engine;
 use commands::{
-    agent, agentic_one, business_designer, file_explorer, git, keybindings, security, session,
-    settings, system, task_center, terminal, tool_adapter, workspace,
+    agent, agent_canvas, agentic_one, business_designer, file_explorer, git, keybindings, security,
+    session, settings, system, task_center, terminal, tool_adapter, workspace,
 };
 use gt_terminal::TerminalRuntimeEvent;
 use rustls::crypto::aws_lc_rs;
@@ -159,6 +159,9 @@ pub fn run() {
             agent::agent_policy_read,
             agent::agent_policy_save,
             agent::agent_git_tracking_set,
+            agent_canvas::agent_canvas_list_links,
+            agent_canvas::agent_canvas_runtime_status,
+            agent_canvas::agent_canvas_set_layout,
             agentic_one::agent_install_status,
             agentic_one::install_agent,
             agentic_one::uninstall_agent,

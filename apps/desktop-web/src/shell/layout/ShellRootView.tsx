@@ -6,6 +6,7 @@ import {
   type RefObject,
   useState,
 } from 'react'
+import { AgentCanvasPane } from '@features/agent-canvas'
 import { BusinessDesignerPane } from '@features/business-designer'
 import { FileEditorPane, FileTreePane, GlobalFileSearchModal } from '@features/file-explorer'
 import { GitHistoryPane, GitOperationsPane } from '@features/git'
@@ -73,6 +74,7 @@ interface ShellRootViewProps {
   gitOperationsPaneProps: ComponentProps<typeof GitOperationsPane>
   communicationChannelsPaneProps: ComponentProps<typeof CommunicationChannelsPane>
   businessDesignerPaneProps: ComponentProps<typeof BusinessDesignerPane>
+  agentCanvasPaneProps: ComponentProps<typeof AgentCanvasPane>
   activePaneModel: PaneModel
   showWorkbenchCanvas: boolean
   workbenchCanvasProps: ComponentProps<typeof WorkbenchCanvas>
@@ -205,6 +207,7 @@ interface ShellMainPaneContentProps {
   fileEditorPaneProps: ComponentProps<typeof FileEditorPane>
   gitHistoryPaneProps: ComponentProps<typeof GitHistoryPane>
   businessDesignerPaneProps: ComponentProps<typeof BusinessDesignerPane>
+  agentCanvasPaneProps: ComponentProps<typeof AgentCanvasPane>
 }
 
 function ShellMainPaneContent({
@@ -214,6 +217,7 @@ function ShellMainPaneContent({
   fileEditorPaneProps,
   gitHistoryPaneProps,
   businessDesignerPaneProps,
+  agentCanvasPaneProps,
 }: ShellMainPaneContentProps) {
   if (showWorkbenchCanvas) {
     return (
@@ -247,6 +251,14 @@ function ShellMainPaneContent({
     )
   }
 
+  if (activeNavId === 'agent-canvas') {
+    return (
+      <div key="agent-canvas" className="shell-feature-view shell-pane-transition">
+        <AgentCanvasPane {...agentCanvasPaneProps} />
+      </div>
+    )
+  }
+
   return <div key="empty" className="shell-feature-view shell-pane-transition" />
 }
 
@@ -257,6 +269,7 @@ interface ShellWorkspaceContentProps {
   fileEditorPaneProps: ComponentProps<typeof FileEditorPane>
   gitHistoryPaneProps: ComponentProps<typeof GitHistoryPane>
   businessDesignerPaneProps: ComponentProps<typeof BusinessDesignerPane>
+  agentCanvasPaneProps: ComponentProps<typeof AgentCanvasPane>
 }
 
 function ShellWorkspaceContent({
@@ -266,6 +279,7 @@ function ShellWorkspaceContent({
   fileEditorPaneProps,
   gitHistoryPaneProps,
   businessDesignerPaneProps,
+  agentCanvasPaneProps,
 }: ShellWorkspaceContentProps) {
   return (
     <div className="shell-pane-shell shell-main-pane">
@@ -276,6 +290,7 @@ function ShellWorkspaceContent({
         fileEditorPaneProps={fileEditorPaneProps}
         gitHistoryPaneProps={gitHistoryPaneProps}
         businessDesignerPaneProps={businessDesignerPaneProps}
+        agentCanvasPaneProps={agentCanvasPaneProps}
       />
     </div>
   )
@@ -295,6 +310,7 @@ interface ShellMainAreaProps {
   fileEditorPaneProps: ComponentProps<typeof FileEditorPane>
   gitHistoryPaneProps: ComponentProps<typeof GitHistoryPane>
   businessDesignerPaneProps: ComponentProps<typeof BusinessDesignerPane>
+  agentCanvasPaneProps: ComponentProps<typeof AgentCanvasPane>
 }
 
 function ShellMainArea({
@@ -311,6 +327,7 @@ function ShellMainArea({
   fileEditorPaneProps,
   gitHistoryPaneProps,
   businessDesignerPaneProps,
+  agentCanvasPaneProps,
 }: ShellMainAreaProps) {
   return (
     <div ref={shellMainPaneRef} className="shell-main-content">
@@ -321,6 +338,7 @@ function ShellMainArea({
         fileEditorPaneProps={fileEditorPaneProps}
         gitHistoryPaneProps={gitHistoryPaneProps}
         businessDesignerPaneProps={businessDesignerPaneProps}
+        agentCanvasPaneProps={agentCanvasPaneProps}
       />
       {pinnedWorkbenchCanvasProps ? (
         <div
@@ -369,6 +387,7 @@ interface ShellMainLayoutProps {
   fileEditorPaneProps: ComponentProps<typeof FileEditorPane>
   gitHistoryPaneProps: ComponentProps<typeof GitHistoryPane>
   businessDesignerPaneProps: ComponentProps<typeof BusinessDesignerPane>
+  agentCanvasPaneProps: ComponentProps<typeof AgentCanvasPane>
 }
 
 function ShellMainLayout({
@@ -394,6 +413,7 @@ function ShellMainLayout({
   gitOperationsPaneProps,
   communicationChannelsPaneProps,
   businessDesignerPaneProps,
+  agentCanvasPaneProps,
   activePaneModel,
   showWorkbenchCanvas,
   workbenchCanvasProps,
@@ -455,6 +475,7 @@ function ShellMainLayout({
         fileEditorPaneProps={fileEditorPaneProps}
         gitHistoryPaneProps={gitHistoryPaneProps}
         businessDesignerPaneProps={businessDesignerPaneProps}
+        agentCanvasPaneProps={agentCanvasPaneProps}
       />
       {pinnedWorkbenchCanvasProps ? (
         <div className="shell-pane-shell shell-right-pane">
@@ -528,6 +549,7 @@ export function ShellRootView({
   gitOperationsPaneProps,
   communicationChannelsPaneProps,
   businessDesignerPaneProps,
+  agentCanvasPaneProps,
   activePaneModel,
   showWorkbenchCanvas,
   workbenchCanvasProps,
@@ -613,6 +635,7 @@ export function ShellRootView({
           gitOperationsPaneProps={gitOperationsPaneProps}
           communicationChannelsPaneProps={communicationChannelsPaneProps}
           businessDesignerPaneProps={businessDesignerPaneProps}
+          agentCanvasPaneProps={agentCanvasPaneProps}
           activePaneModel={activePaneModel}
           showWorkbenchCanvas={showWorkbenchCanvas}
           workbenchCanvasProps={workbenchCanvasPropsWithDock}

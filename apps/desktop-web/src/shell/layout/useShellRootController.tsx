@@ -1138,7 +1138,11 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
     [workbenchContainers, stations],
   )
 
-  const showWorkbenchCanvas = activeNavId !== 'files' && activeNavId !== 'git' && activeNavId !== 'designer'
+  const showWorkbenchCanvas =
+    activeNavId !== 'files' &&
+    activeNavId !== 'git' &&
+    activeNavId !== 'designer' &&
+    activeNavId !== 'agent-canvas'
   const showPinnedWorkbenchPane =
     Boolean(pinnedWorkbenchContainer) &&
     (activeNavId === 'files' || activeNavId === 'git' || unpinnedWorkbenchContainers.length > 0)
@@ -1453,6 +1457,11 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
       libraryPanelVisible: leftPaneVisible,
       onLibraryPanelVisibleChange: setLeftPaneVisible,
       onDispatchDesignerStationPrompt: handleDispatchDesignerStationPrompt,
+    },
+    agentCanvasPaneProps: {
+      locale,
+      workspaceId: presentedWorkspaceId,
+      active: activeNavId === 'agent-canvas',
     },
     activePaneModel,
     showWorkbenchCanvas,
