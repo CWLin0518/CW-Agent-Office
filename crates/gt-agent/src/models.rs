@@ -75,8 +75,8 @@ pub struct AgentProfile {
     pub prompt_file_relative_path: Option<String>,
     pub launch_command: Option<String>,
     pub order_index: i32,
-    /// Points at the `AgentProfile.id` of the agent that created this one via the
-    /// (future) agent-canvas "new subagent" action. `None` for top-level agents.
+    /// Points at the `AgentProfile.id` of the agent that created this one via
+    /// agent-canvas's "new subagent" action. `None` for top-level agents.
     #[serde(default)]
     pub parent_agent_id: Option<String>,
     /// Local filesystem path an agent's prompt content was seeded from at creation
@@ -96,6 +96,10 @@ pub struct AgentProfile {
     pub layout_x: Option<f64>,
     #[serde(default)]
     pub layout_y: Option<f64>,
+    /// Node border color on the agent-canvas (docs/cw/04_客製化設計.md §1,
+    /// P4.6), one of a small preset palette. `None` = default gray.
+    #[serde(default)]
+    pub color: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -107,8 +111,8 @@ fn default_git_tracked() -> bool {
 /// A connection between two agents on the agent-canvas (docs/cw/04_客製化設計.md
 /// §1). `Derived` links are written automatically whenever a `gto send`
 /// dispatch succeeds (see local_bridge's dispatch/publish handlers); `Authored`
-/// links are user hand-drawn and reserved for P4.5 — this crate defines both
-/// variants now so the schema/type doesn't need to change when P4.5 lands.
+/// links are user hand-drawn on the canvas and are also what local_bridge's
+/// edge-scoped `gto send` authorization checks against (P4.5).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentLinkKind {
@@ -140,6 +144,19 @@ pub struct AgentLink {
     pub from_agent_id: String,
     pub to_agent_id: String,
     pub kind: AgentLinkKind,
+    /// Wire color preset on agent-canvas (docs/cw/04_客製化設計.md §8, P4.6),
+    /// same palette as `AgentProfile::color`. `None` = default gray.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Whether this authored link renders/behaves as two-way (double
+    /// arrowhead) vs one-way (single arrowhead) — a display/state toggle,
+    /// not something a reverse drag ever creates (see `create_authored_link`,
+    /// which already dedupes a pair to one row regardless of direction).
+    /// Meaningless for `Derived`/`kind`-agnostic contexts; defaults to
+    /// `false` so every pre-existing authored link keeps today's
+    /// single-arrowhead appearance after this column is added.
+    #[serde(default)]
+    pub bidirectional: bool,
     pub created_at_ms: i64,
 }
 

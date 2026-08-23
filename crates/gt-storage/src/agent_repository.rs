@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS agents (
   launch_command TEXT, order_index INTEGER NOT NULL DEFAULT 0,
   parent_agent_id TEXT, external_template_path TEXT,
   git_tracked INTEGER NOT NULL DEFAULT 1,
-  layout_x REAL, layout_y REAL,
+  layout_x REAL, layout_y REAL, color TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (id, workspace_id)
 );
@@ -127,7 +127,8 @@ const AGENT_LINKS_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS agent_links (
   id TEXT NOT NULL PRIMARY KEY, workspace_id TEXT NOT NULL,
   from_agent_id TEXT NOT NULL, to_agent_id TEXT NOT NULL,
-  kind TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+  kind TEXT NOT NULL, color TEXT, bidirectional INTEGER NOT NULL DEFAULT 0,
+  created_at_ms INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_links_workspace
@@ -172,10 +173,22 @@ impl AgentRepository for SqliteAgentRepository {
         );
         let _ = conn.execute("ALTER TABLE agents ADD COLUMN layout_x REAL", []);
         let _ = conn.execute("ALTER TABLE agents ADD COLUMN layout_y REAL", []);
+        let _ = conn.execute("ALTER TABLE agents ADD COLUMN color TEXT", []);
         conn.execute_batch(AGENT_LINKS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
             })?;
+        // Additive columns for `agent_links` (docs/cw/04_客製化設計.md §8, P4.6)
+        // — wire color and the unidirectional/bidirectional display toggle.
+        // `bidirectional` defaults to 0 (false) deliberately: today's real
+        // rendering default is a single arrowhead (`renderEdge` only ever
+        // sets `markerEnd`), so defaulting to false keeps every pre-existing
+        // authored link's appearance unchanged after this migration runs.
+        let _ = conn.execute("ALTER TABLE agent_links ADD COLUMN color TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE agent_links ADD COLUMN bidirectional INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         conn.execute_batch(AGENT_POLICY_SNAPSHOTS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
@@ -195,7 +208,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn list_agents(&self, workspace_id: &str) -> AgentResult<Vec<AgentProfile>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, color, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         let rows = stmt
             .query_map(params![workspace_id], |row| {
@@ -219,10 +232,11 @@ impl AgentRepository for SqliteAgentRepository {
                     git_tracked: row.get::<_, i32>(14)? != 0,
                     layout_x: row.get(15)?,
                     layout_y: row.get(16)?,
+                    color: row.get(17)?,
                     prompt_file_name: None,
                     prompt_file_relative_path: None,
-                    created_at_ms: row.get(17)?,
-                    updated_at_ms: row.get(18)?,
+                    created_at_ms: row.get(18)?,
+                    updated_at_ms: row.get(19)?,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -422,11 +436,114 @@ impl AgentLinkRepository for SqliteAgentRepository {
         Ok(())
     }
 
+    fn create_authored_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<()> {
+        // The unique index on (workspace, from, to, kind) is direction-sensitive,
+        // but authored edges are a direction-agnostic "these two may talk"
+        // declaration (see `has_authored_edge`) — so a plain upsert would let
+        // drawing a->b and separately b->a create two independent rows that
+        // `delete_authored_link` (below) couldn't both revoke with a single
+        // right-click. Guard against that by treating either existing
+        // direction as "already drawn" up front.
+        if self.has_authored_edge(workspace_id, from_agent_id, to_agent_id)? {
+            return Ok(());
+        }
+        let conn = self.connection()?;
+        conn.execute(
+            "INSERT INTO agent_links (id, workspace_id, from_agent_id, to_agent_id, kind, created_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, 'authored', ?5) \
+             ON CONFLICT(workspace_id, from_agent_id, to_agent_id, kind) DO NOTHING",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                workspace_id,
+                from_agent_id,
+                to_agent_id,
+                Self::now_ms()
+            ],
+        )
+        .map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        Ok(())
+    }
+
+    fn delete_authored_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<bool> {
+        // Direction-agnostic to match `has_authored_edge`/`create_authored_link`
+        // — deletes whichever direction the row actually exists in (there is
+        // only ever at most one, per the guard in `create_authored_link`), so
+        // revoking an edge always fully revokes it regardless of which
+        // direction it happened to be drawn in.
+        let conn = self.connection()?;
+        let affected = conn
+            .execute(
+                "DELETE FROM agent_links WHERE workspace_id = ?1 AND kind = 'authored' \
+                 AND ((from_agent_id = ?2 AND to_agent_id = ?3) OR (from_agent_id = ?3 AND to_agent_id = ?2))",
+                params![workspace_id, from_agent_id, to_agent_id],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        Ok(affected > 0)
+    }
+
+    fn delete_derived_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<bool> {
+        // Direction-specific — unlike `delete_authored_link`, an a->b derived
+        // row and a b->a derived row are independent facts (see the trait
+        // doc comment), so only the exact direction requested is cleared.
+        let conn = self.connection()?;
+        let affected = conn
+            .execute(
+                "DELETE FROM agent_links WHERE workspace_id = ?1 AND from_agent_id = ?2 \
+                 AND to_agent_id = ?3 AND kind = 'derived'",
+                params![workspace_id, from_agent_id, to_agent_id],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        Ok(affected > 0)
+    }
+
+    fn has_authored_edge(
+        &self,
+        workspace_id: &str,
+        agent_a: &str,
+        agent_b: &str,
+    ) -> AgentResult<bool> {
+        let conn = self.connection()?;
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM agent_links WHERE workspace_id = ?1 AND kind = 'authored' \
+                 AND ((from_agent_id = ?2 AND to_agent_id = ?3) OR (from_agent_id = ?3 AND to_agent_id = ?2)) \
+                 LIMIT 1",
+                params![workspace_id, agent_a, agent_b],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        Ok(exists.is_some())
+    }
+
     fn list_links(&self, workspace_id: &str) -> AgentResult<Vec<AgentLink>> {
         let conn = self.connection()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, workspace_id, from_agent_id, to_agent_id, kind, created_at_ms \
+                "SELECT id, workspace_id, from_agent_id, to_agent_id, kind, color, bidirectional, created_at_ms \
                  FROM agent_links WHERE workspace_id = ?1 ORDER BY created_at_ms DESC",
             )
             .map_err(|error| AgentError::Storage {
@@ -441,7 +558,9 @@ impl AgentLinkRepository for SqliteAgentRepository {
                     from_agent_id: row.get(2)?,
                     to_agent_id: row.get(3)?,
                     kind: AgentLinkKind::from_storage_str(&kind),
-                    created_at_ms: row.get(5)?,
+                    color: row.get(5)?,
+                    bidirectional: row.get::<_, i64>(6)? != 0,
+                    created_at_ms: row.get(7)?,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -472,6 +591,81 @@ impl AgentLinkRepository for SqliteAgentRepository {
         if updated == 0 {
             return Err(AgentError::InvalidArgument {
                 message: "agent_id not found".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn set_agent_color(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        color: Option<String>,
+    ) -> AgentResult<()> {
+        let conn = self.connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE agents SET color = ?1, updated_at_ms = ?2 WHERE workspace_id = ?3 AND id = ?4",
+                params![color, Self::now_ms(), workspace_id, agent_id],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        if updated == 0 {
+            return Err(AgentError::InvalidArgument {
+                message: "agent_id not found".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn set_link_color(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+        color: Option<String>,
+    ) -> AgentResult<()> {
+        // Direction-agnostic, same WHERE shape as `delete_authored_link`.
+        let conn = self.connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE agent_links SET color = ?1 WHERE workspace_id = ?2 AND kind = 'authored' \
+                 AND ((from_agent_id = ?3 AND to_agent_id = ?4) OR (from_agent_id = ?4 AND to_agent_id = ?3))",
+                params![color, workspace_id, from_agent_id, to_agent_id],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        if updated == 0 {
+            return Err(AgentError::InvalidArgument {
+                message: "authored link not found".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn set_link_bidirectional(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+        bidirectional: bool,
+    ) -> AgentResult<()> {
+        // Direction-agnostic, same WHERE shape as `delete_authored_link`.
+        let conn = self.connection()?;
+        let updated = conn
+            .execute(
+                "UPDATE agent_links SET bidirectional = ?1 WHERE workspace_id = ?2 AND kind = 'authored' \
+                 AND ((from_agent_id = ?3 AND to_agent_id = ?4) OR (from_agent_id = ?4 AND to_agent_id = ?3))",
+                params![bidirectional, workspace_id, from_agent_id, to_agent_id],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        if updated == 0 {
+            return Err(AgentError::InvalidArgument {
+                message: "authored link not found".to_string(),
             });
         }
         Ok(())
@@ -835,6 +1029,185 @@ mod p4_agent_link_tests {
     }
 
     #[test]
+    fn delete_derived_link_only_clears_the_exact_direction_requested() {
+        let scratch = ScratchDb::new("derived-delete");
+        let repo = repo_with_two_agents(&scratch);
+
+        repo.record_derived_link("ws-1", "agent-a", "agent-b")
+            .expect("record a -> b dispatch");
+        repo.record_derived_link("ws-1", "agent-b", "agent-a")
+            .expect("record b -> a dispatch");
+
+        assert!(
+            !repo
+                .delete_derived_link("ws-1", "agent-x", "agent-y")
+                .expect("delete with nothing to delete"),
+            "deleting a nonexistent derived row should report false, not error"
+        );
+
+        assert!(repo
+            .delete_derived_link("ws-1", "agent-a", "agent-b")
+            .expect("delete the a -> b direction"));
+
+        let remaining = repo.list_links("ws-1").expect("list links");
+        assert_eq!(
+            remaining.len(),
+            1,
+            "only the a -> b row should be gone; b -> a is an independent fact"
+        );
+        assert_eq!(remaining[0].from_agent_id, "agent-b");
+        assert_eq!(remaining[0].to_agent_id, "agent-a");
+    }
+
+    #[test]
+    fn create_authored_link_is_idempotent_and_direction_agnostic_for_lookup() {
+        let scratch = ScratchDb::new("authored-create");
+        let repo = repo_with_two_agents(&scratch);
+
+        repo.create_authored_link("ws-1", "agent-a", "agent-b")
+            .expect("create authored link");
+        repo.create_authored_link("ws-1", "agent-a", "agent-b")
+            .expect("re-drawing the same edge is a no-op, not an error");
+
+        let links = repo.list_links("ws-1").expect("list links");
+        assert_eq!(
+            links.len(),
+            1,
+            "duplicate draws must not create a second row"
+        );
+        assert_eq!(links[0].kind, AgentLinkKind::Authored);
+
+        assert!(repo
+            .has_authored_edge("ws-1", "agent-a", "agent-b")
+            .expect("lookup forward direction"));
+        assert!(repo
+            .has_authored_edge("ws-1", "agent-b", "agent-a")
+            .expect("lookup reverse direction"));
+    }
+
+    #[test]
+    fn create_authored_link_in_reverse_direction_is_a_no_op_and_single_delete_revokes_it() {
+        let scratch = ScratchDb::new("authored-reverse");
+        let repo = repo_with_two_agents(&scratch);
+
+        repo.create_authored_link("ws-1", "agent-a", "agent-b")
+            .expect("draw a -> b");
+        repo.create_authored_link("ws-1", "agent-b", "agent-a")
+            .expect("drawing the reverse direction must not error");
+
+        let links = repo.list_links("ws-1").expect("list links");
+        assert_eq!(
+            links.len(),
+            1,
+            "the reverse-direction draw must not create a second row for the same undirected pair"
+        );
+
+        assert!(repo
+            .delete_authored_link("ws-1", "agent-b", "agent-a")
+            .expect("delete via the direction that was never actually stored"));
+        assert!(
+            !repo
+                .has_authored_edge("ws-1", "agent-a", "agent-b")
+                .expect("lookup after delete"),
+            "a single delete (regardless of direction) must fully revoke the edge"
+        );
+    }
+
+    #[test]
+    fn has_authored_edge_is_false_when_no_edge_drawn() {
+        let scratch = ScratchDb::new("authored-missing");
+        let repo = repo_with_two_agents(&scratch);
+
+        assert!(!repo
+            .has_authored_edge("ws-1", "agent-a", "agent-b")
+            .expect("lookup with no edges recorded"));
+
+        repo.record_derived_link("ws-1", "agent-a", "agent-b")
+            .expect("record a derived link");
+        assert!(
+            !repo
+                .has_authored_edge("ws-1", "agent-a", "agent-b")
+                .expect("lookup after only a derived link exists"),
+            "a derived link must not satisfy an authored-edge check"
+        );
+    }
+
+    #[test]
+    fn delete_authored_link_removes_row_and_reports_whether_one_existed() {
+        let scratch = ScratchDb::new("authored-delete");
+        let repo = repo_with_two_agents(&scratch);
+
+        assert!(
+            !repo
+                .delete_authored_link("ws-1", "agent-a", "agent-b")
+                .expect("delete with nothing to delete"),
+            "deleting a nonexistent edge should report false, not error"
+        );
+
+        repo.create_authored_link("ws-1", "agent-a", "agent-b")
+            .expect("create authored link");
+        assert!(repo
+            .delete_authored_link("ws-1", "agent-a", "agent-b")
+            .expect("delete existing edge"));
+        assert!(!repo
+            .has_authored_edge("ws-1", "agent-a", "agent-b")
+            .expect("lookup after delete"));
+    }
+
+    #[test]
+    fn set_link_color_and_bidirectional_are_direction_agnostic() {
+        let scratch = ScratchDb::new("link-color-bidi");
+        let repo = repo_with_two_agents(&scratch);
+        repo.create_authored_link("ws-1", "agent-a", "agent-b")
+            .expect("create authored link");
+
+        // Drawn a -> b; set via the reverse (b, a) order to confirm the
+        // lookup is direction-agnostic like `delete_authored_link`.
+        repo.set_link_color("ws-1", "agent-b", "agent-a", Some("blue".to_string()))
+            .expect("set link color");
+        repo.set_link_bidirectional("ws-1", "agent-b", "agent-a", true)
+            .expect("set link bidirectional");
+
+        let link = repo
+            .list_links("ws-1")
+            .expect("list links")
+            .into_iter()
+            .find(|link| link.kind == AgentLinkKind::Authored)
+            .expect("authored link present");
+        assert_eq!(link.color, Some("blue".to_string()));
+        assert!(link.bidirectional);
+
+        repo.set_link_color("ws-1", "agent-a", "agent-b", None)
+            .expect("reset link color to default");
+        repo.set_link_bidirectional("ws-1", "agent-a", "agent-b", false)
+            .expect("reset link bidirectional to unidirectional");
+        let reset_link = repo
+            .list_links("ws-1")
+            .expect("list links")
+            .into_iter()
+            .find(|link| link.kind == AgentLinkKind::Authored)
+            .expect("authored link present");
+        assert_eq!(reset_link.color, None, "None resets to default gray");
+        assert!(!reset_link.bidirectional);
+
+        assert!(
+            repo.set_link_color(
+                "ws-1",
+                "agent-a",
+                "does-not-exist",
+                Some("blue".to_string())
+            )
+            .is_err(),
+            "setting color for a nonexistent authored link must fail"
+        );
+        assert!(
+            repo.set_link_bidirectional("ws-1", "agent-a", "does-not-exist", true)
+                .is_err(),
+            "setting bidirectional for a nonexistent authored link must fail"
+        );
+    }
+
+    #[test]
     fn set_agent_layout_persists_position_and_fails_for_unknown_agent() {
         let scratch = ScratchDb::new("layout");
         let repo = repo_with_two_agents(&scratch);
@@ -862,6 +1235,46 @@ mod p4_agent_link_tests {
         assert!(
             result.is_err(),
             "setting layout for an unknown agent must fail"
+        );
+    }
+
+    #[test]
+    fn set_agent_color_persists_and_resets_and_fails_for_unknown_agent() {
+        let scratch = ScratchDb::new("agent-color");
+        let repo = repo_with_two_agents(&scratch);
+
+        repo.set_agent_color("ws-1", "agent-a", Some("blue".to_string()))
+            .expect("set color");
+        let agent = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-a")
+            .expect("agent-a present");
+        assert_eq!(agent.color, Some("blue".to_string()));
+
+        let other = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-b")
+            .expect("agent-b present");
+        assert_eq!(other.color, None, "unrelated agent must be untouched");
+
+        repo.set_agent_color("ws-1", "agent-a", None)
+            .expect("reset color to default");
+        let reset_agent = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-a")
+            .expect("agent-a present");
+        assert_eq!(reset_agent.color, None, "None resets to default gray");
+
+        let result = repo.set_agent_color("ws-1", "does-not-exist", Some("blue".to_string()));
+        assert!(
+            result.is_err(),
+            "setting color for an unknown agent must fail"
         );
     }
 

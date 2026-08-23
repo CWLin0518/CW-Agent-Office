@@ -6,7 +6,7 @@ import {
   type RefObject,
   useState,
 } from 'react'
-import { AgentCanvasPane } from '@features/agent-canvas'
+import { AgentCanvasPane, AgentCanvasStandbyRail } from '@features/agent-canvas'
 import { BusinessDesignerPane } from '@features/business-designer'
 import { FileEditorPane, FileTreePane, GlobalFileSearchModal } from '@features/file-explorer'
 import { GitHistoryPane, GitOperationsPane } from '@features/git'
@@ -75,6 +75,7 @@ interface ShellRootViewProps {
   communicationChannelsPaneProps: ComponentProps<typeof CommunicationChannelsPane>
   businessDesignerPaneProps: ComponentProps<typeof BusinessDesignerPane>
   agentCanvasPaneProps: ComponentProps<typeof AgentCanvasPane>
+  agentCanvasStandbyRailProps: ComponentProps<typeof AgentCanvasStandbyRail>
   activePaneModel: PaneModel
   showWorkbenchCanvas: boolean
   workbenchCanvasProps: ComponentProps<typeof WorkbenchCanvas>
@@ -152,6 +153,7 @@ interface ShellLeftPaneContentProps {
   taskCenterPaneProps: ComponentProps<typeof TaskCenterPane>
   gitOperationsPaneProps: ComponentProps<typeof GitOperationsPane>
   communicationChannelsPaneProps: ComponentProps<typeof CommunicationChannelsPane>
+  agentCanvasStandbyRailProps: ComponentProps<typeof AgentCanvasStandbyRail>
   activePaneModel: PaneModel
 }
 
@@ -161,6 +163,7 @@ function ShellLeftPaneContent({
   taskCenterPaneProps,
   gitOperationsPaneProps,
   communicationChannelsPaneProps,
+  agentCanvasStandbyRailProps,
   activePaneModel,
 }: ShellLeftPaneContentProps) {
   const showFileTree = activeNavId === 'files'
@@ -182,6 +185,9 @@ function ShellLeftPaneContent({
     }
     if (activeNavId === 'designer') {
       return <LeftBusinessPane model={activePaneModel} />
+    }
+    if (activeNavId === 'agent-canvas') {
+      return <AgentCanvasStandbyRail {...agentCanvasStandbyRailProps} />
     }
     return <LeftBusinessPane model={activePaneModel} />
   })()
@@ -388,6 +394,7 @@ interface ShellMainLayoutProps {
   gitHistoryPaneProps: ComponentProps<typeof GitHistoryPane>
   businessDesignerPaneProps: ComponentProps<typeof BusinessDesignerPane>
   agentCanvasPaneProps: ComponentProps<typeof AgentCanvasPane>
+  agentCanvasStandbyRailProps: ComponentProps<typeof AgentCanvasStandbyRail>
 }
 
 function ShellMainLayout({
@@ -414,6 +421,7 @@ function ShellMainLayout({
   communicationChannelsPaneProps,
   businessDesignerPaneProps,
   agentCanvasPaneProps,
+  agentCanvasStandbyRailProps,
   activePaneModel,
   showWorkbenchCanvas,
   workbenchCanvasProps,
@@ -441,6 +449,7 @@ function ShellMainLayout({
               taskCenterPaneProps={taskCenterPaneProps}
               gitOperationsPaneProps={gitOperationsPaneProps}
               communicationChannelsPaneProps={communicationChannelsPaneProps}
+              agentCanvasStandbyRailProps={agentCanvasStandbyRailProps}
               activePaneModel={activePaneModel}
             />
           </div>
@@ -550,6 +559,7 @@ export function ShellRootView({
   communicationChannelsPaneProps,
   businessDesignerPaneProps,
   agentCanvasPaneProps,
+  agentCanvasStandbyRailProps,
   activePaneModel,
   showWorkbenchCanvas,
   workbenchCanvasProps,
@@ -636,6 +646,7 @@ export function ShellRootView({
           communicationChannelsPaneProps={communicationChannelsPaneProps}
           businessDesignerPaneProps={businessDesignerPaneProps}
           agentCanvasPaneProps={agentCanvasPaneProps}
+          agentCanvasStandbyRailProps={agentCanvasStandbyRailProps}
           activePaneModel={activePaneModel}
           showWorkbenchCanvas={showWorkbenchCanvas}
           workbenchCanvasProps={workbenchCanvasPropsWithDock}

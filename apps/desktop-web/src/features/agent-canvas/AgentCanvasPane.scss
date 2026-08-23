@@ -1,10 +1,11 @@
 @use '../../styles/tokens/responsive' as *;
 
-// Agent canvas — read-only node graph (docs/cw/04_客製化設計.md §1, P4 MVP).
-// Layout classes (agent-canvas / -viewport / -svg / -nodes / -controls) mirror
-// business-designer's canvas structure 1:1 since both are built on the same
-// shared engine (@/components/graph-canvas), but this file owns its own
-// selectors — no cross-feature CSS sharing.
+// Agent canvas (docs/cw/04_客製化設計.md §1): P4 shipped a read-only node
+// graph; P4.5 added authored-edge drawing, edge deletion, and the context
+// menu used for both. Layout classes (agent-canvas / -viewport / -svg /
+// -nodes / -controls) mirror business-designer's canvas structure 1:1 since
+// both are built on the same shared engine (@/components/graph-canvas), but
+// this file owns its own selectors — no cross-feature CSS sharing.
 
 .agent-canvas {
   position: relative;
@@ -37,6 +38,15 @@
     cursor: grabbing;
     user-select: none;
   }
+
+  // A marquee drag sweeps the cursor across node cards, which contain real
+  // text (name/status labels) — without `user-select: none` the browser's
+  // native text-selection highlight would race visually under the custom
+  // `.agent-canvas-marquee` overlay for the whole gesture.
+  &.is-marqueeing {
+    cursor: crosshair;
+    user-select: none;
+  }
 }
 
 .agent-canvas-svg {
@@ -51,6 +61,15 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
+}
+
+// Rendered inside the same pan/zoom-transformed container as nodes (see
+// `GraphCanvas.tsx`'s `marqueeRect` div), positioned with plain canvas-space
+// left/top/width/height like a node — so it visually tracks the drag
+// correctly even mid-zoom, with no coordinate conversion of its own.
+.agent-canvas-marquee {
+  border: #{rem(1)} dashed var(--vb-accent);
+  background: color-mix(in srgb, var(--vb-accent) 12%, transparent);
 }
 
 .agent-canvas-empty {
@@ -96,6 +115,32 @@
   &:hover {
     background: var(--vb-border);
   }
+
+  // Toggled state — currently only the "hide derived connections" button
+  // (docs/cw/04_客製化設計.md §1, P4.5).
+  &.is-active {
+    background: var(--vb-accent);
+    color: var(--vb-surface);
+  }
+
+  // Align/distribute buttons (P4.6) disable themselves below their minimum
+  // selection size instead of hiding — keeps the toolbar layout stable
+  // rather than shifting buttons around as the selection changes.
+  &:disabled {
+    opacity: 0.35;
+    cursor: default;
+
+    &:hover {
+      background: transparent;
+    }
+  }
+}
+
+.agent-canvas-controls-divider {
+  width: #{rem(1)};
+  align-self: stretch;
+  margin: #{rem(4)} #{rem(2)};
+  background: var(--vb-border);
 }
 
 .agent-canvas-zoom-label {
@@ -117,17 +162,37 @@
       box-shadow: 0 #{rem(10)} #{rem(24)} rgba(0, 0, 0, 0.22);
     }
   }
+
+  &--selected .agent-canvas-node {
+    border-color: var(--vb-accent);
+    box-shadow: 0 0 0 #{rem(2)} var(--vb-accent);
+  }
 }
 
 .agent-canvas-node {
   display: flex;
   flex-direction: column;
   gap: #{rem(4)};
+  height: 100%;
   padding: #{rem(10)} #{rem(12)};
   border-radius: #{rem(10)};
-  border: var(--vb-border-width) solid var(--vb-border);
+  // `--agent-canvas-node-color` is an inline custom property (set by
+  // AgentCanvasNodeCard only when the agent has a non-default color) rather
+  // than an inline `border-color` directly, so the `&--selected` rule above
+  // (a plain stylesheet rule with higher specificity) can still win the
+  // cascade instead of being unconditionally beaten by inline styles.
+  border: var(--vb-border-width) solid var(--agent-canvas-node-color, var(--vb-border));
   background: var(--vb-surface);
   box-shadow: 0 #{rem(2)} #{rem(6)} rgba(0, 0, 0, 0.08);
+
+  // Subagent cards (docs/cw/04_客製化設計.md §1, P4.5) sit in a smaller
+  // `agent-canvas-node-shell` box (see SUBAGENT_NODE_WIDTH/HEIGHT) — the meta
+  // row (tool/status label) is dropped to keep the compact card legible.
+  &--subagent {
+    justify-content: center;
+    gap: #{rem(2)};
+    padding: #{rem(6)} #{rem(10)};
+  }
 }
 
 .agent-canvas-node-header {
@@ -185,6 +250,60 @@
   white-space: nowrap;
 }
 
+// Grasshopper-style connection ports (docs/cw/04_客製化設計.md §1, P4.5):
+// fixed input (left)/output (right) grips at the node box's vertical
+// midpoint — `AgentCanvasNodeCard` renders these as siblings of
+// `.agent-canvas-node`, so they anchor to the shell box, not the card's own
+// padding (see `computePortEdgeGeometry`, which anchors wires to the same
+// box edges).
+.agent-canvas-port {
+  position: absolute;
+  top: 50%;
+  width: #{rem(10)};
+  height: #{rem(10)};
+  border-radius: 50%;
+  transform: translateY(-50%);
+  background: var(--vb-surface);
+  border: #{rem(2)} solid var(--vb-text-muted);
+  cursor: crosshair;
+  touch-action: none;
+  z-index: 2;
+
+  &:hover {
+    border-color: var(--vb-accent);
+    background: var(--vb-accent);
+  }
+}
+
+.agent-canvas-port--input {
+  left: #{rem(-6)};
+}
+
+.agent-canvas-port--output {
+  right: #{rem(-6)};
+}
+
+// Live wire-drag preview: deliberately a `position: fixed` overlay in raw
+// screen space, not part of the pannable/zoomable canvas SVG — see
+// `buildWirePreviewPath`'s doc comment in AgentCanvasPane.tsx. Portaled to
+// `document.body` (see AgentCanvasPane.tsx), so this now stacks against
+// shell-level chrome, not just this pane — z-index matches GitMoreMenu's
+// body-portaled dropdown (styles/features/git/_pane.scss) rather than the
+// pane-local scale (5/2) used elsewhere in this file.
+.agent-canvas-wire-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.agent-canvas-wire-preview-path {
+  fill: none;
+  stroke: var(--vb-accent);
+  stroke-width: #{rem(2)};
+  stroke-dasharray: #{rem(5)} #{rem(4)};
+}
+
 .agent-canvas-edge {
   fill: none;
   stroke-width: #{rem(1.5)};
@@ -199,6 +318,129 @@
 }
 
 .agent-canvas-edge--authored {
-  stroke: var(--vb-text);
+  // `--agent-canvas-edge-color` is an inline custom property (set only when
+  // the link has a non-default color), same cascade reasoning as the node's
+  // `--agent-canvas-node-color` above — keeps the `--selected` compound rule
+  // below able to win via specificity instead of being unconditionally
+  // beaten by an inline `stroke` value.
+  stroke: var(--agent-canvas-edge-color, var(--vb-text));
   opacity: 0.9;
+}
+
+// Only authored edges are selectable, and always render with both classes
+// together (`agent-canvas-edge--authored agent-canvas-edge--selected`) — the
+// compound selector here (not a second bare `.agent-canvas-edge--selected`
+// rule) gives genuinely higher specificity than the single-class
+// `--authored` rule above, so it wins regardless of source order.
+.agent-canvas-edge--authored.agent-canvas-edge--selected {
+  stroke: var(--vb-accent);
+  stroke-width: #{rem(3)};
+  opacity: 1;
+}
+
+// Ownership (parent -> subagent) edges are a third, non-interactive kind,
+// deliberately distinct from both communication edge styles above — see the
+// AgentCanvasEdgeData doc comment in model/agent-canvas-graph.ts.
+.agent-canvas-edge--ownership {
+  stroke: var(--vb-text-muted);
+  stroke-dasharray: #{rem(1.5)} #{rem(4)};
+  stroke-linecap: round;
+  opacity: 0.6;
+}
+
+.agent-canvas-edge-hit {
+  cursor: default;
+}
+
+.agent-canvas-notice {
+  position: absolute;
+  top: #{rem(12)};
+  left: #{rem(12)};
+  max-width: #{rem(360)};
+  padding: #{rem(6)} #{rem(10)};
+  border-radius: #{rem(8)};
+  background: var(--vb-surface);
+  border: var(--vb-border-width) solid var(--vb-border);
+  box-shadow: 0 #{rem(6)} #{rem(18)} rgba(0, 0, 0, 0.14);
+  color: var(--vb-text-muted);
+  font-size: #{rem(11)};
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+// Portaled to `document.body` (see AgentCanvasPane.tsx) so `position: fixed`
+// resolves against the real viewport instead of `.shell-feature-view`, which
+// sets `contain: layout paint` and would otherwise become this menu's
+// containing block (the root cause of the menu rendering far from the
+// cursor) — z-index matches GitMoreMenu's body-portaled dropdown accordingly.
+.agent-canvas-context-menu {
+  position: fixed;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  min-width: #{rem(140)};
+  padding: #{rem(4)};
+  border-radius: #{rem(8)};
+  background: var(--vb-surface);
+  border: var(--vb-border-width) solid var(--vb-border);
+  box-shadow: 0 #{rem(8)} #{rem(20)} rgba(0, 0, 0, 0.2);
+
+  // Scoped to direct children only (not `button` descendant-wide) — the
+  // color-swatch row below nests its own `<button>`s two levels deep and
+  // needs its own (much smaller, inline) sizing, not this full-width menu
+  // row style.
+  > button {
+    display: block;
+    width: 100%;
+    padding: #{rem(6)} #{rem(8)};
+    border: none;
+    border-radius: #{rem(6)};
+    background: transparent;
+    color: var(--vb-text);
+    font-size: #{rem(12)};
+    text-align: left;
+    cursor: default;
+
+    &:hover {
+      background: var(--vb-border);
+    }
+  }
+}
+
+.agent-canvas-context-menu-section-label {
+  padding: #{rem(6)} #{rem(8)} 0;
+  font-size: #{rem(11)};
+  color: var(--vb-text-muted);
+}
+
+.agent-canvas-color-swatches {
+  display: flex;
+  align-items: center;
+  gap: #{rem(6)};
+  padding: #{rem(6)} #{rem(8)};
+}
+
+.agent-canvas-color-swatch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: #{rem(20)};
+  height: #{rem(20)};
+  padding: 0;
+  border-radius: 50%;
+  border: var(--vb-border-width) solid var(--vb-border);
+  background: var(--vb-surface);
+  color: #fff;
+  cursor: default;
+
+  svg {
+    width: #{rem(12)};
+    height: #{rem(12)};
+  }
+
+  &--default {
+    background: var(--vb-surface-muted);
+    color: var(--vb-text);
+  }
 }

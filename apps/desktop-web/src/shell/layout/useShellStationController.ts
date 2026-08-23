@@ -22,6 +22,10 @@ interface UseShellStationControllerInput {
   setActiveStationId: Dispatch<SetStateAction<string>>
   setIsStationManageOpen: Dispatch<SetStateAction<boolean>>
   setEditingStation: Dispatch<SetStateAction<UpdateStationInput | null>>
+  /** Cleared on every path that closes the station-manage modal, so a
+   * subagent-creation context (docs/cw/04_客製化設計.md §1, P4.5) can never
+   * leak into an unrelated later "create agent" call. */
+  setPendingSubagentParentId: Dispatch<SetStateAction<string | null>>
 }
 
 export interface ShellStationController {
@@ -43,6 +47,7 @@ export function useShellStationController({
   setActiveStationId,
   setIsStationManageOpen,
   setEditingStation,
+  setPendingSubagentParentId,
 }: UseShellStationControllerInput): ShellStationController {
   const [stations, setStations] = useState<AgentStation[]>(initialStations)
   const [stationsLoadedWorkspaceId, setStationsLoadedWorkspaceId] = useState<string | null>(null)
@@ -132,9 +137,11 @@ export function useShellStationController({
             promptContent: input.promptContent,
             launchCommand: input.launchCommand,
             externalTemplatePath: input.externalTemplatePath,
+            parentAgentId: input.parentAgentId,
           })
           await loadStationsFromDatabase(activeWorkspaceId)
           setIsStationManageOpen(false)
+          setPendingSubagentParentId(null)
         } catch (error) {
           console.error('failed to create agent', error)
           window.alert(resolveStationMutationErrorMessage(localeRef.current, 'create', error))
@@ -155,6 +162,7 @@ export function useShellStationController({
       localeRef,
       setActiveStationId,
       setIsStationManageOpen,
+      setPendingSubagentParentId,
       stationCounterRef,
     ],
   )
@@ -187,6 +195,7 @@ export function useShellStationController({
           await loadStationsFromDatabase(activeWorkspaceId)
           setIsStationManageOpen(false)
           setEditingStation(null)
+          setPendingSubagentParentId(null)
         } catch (error) {
           console.error('failed to update agent', error)
           window.alert(resolveStationMutationErrorMessage(localeRef.current, 'update', error))
@@ -210,6 +219,7 @@ export function useShellStationController({
       )
       setIsStationManageOpen(false)
       setEditingStation(null)
+      setPendingSubagentParentId(null)
     },
     [
       activeWorkspaceId,
@@ -217,6 +227,7 @@ export function useShellStationController({
       localeRef,
       setEditingStation,
       setIsStationManageOpen,
+      setPendingSubagentParentId,
     ],
   )
 

@@ -86,9 +86,11 @@ pub trait AgentPolicyRepository: Send + Sync {
 }
 
 /// Backed by `agent_links` (docs/cw/04_客製化設計.md §1) and `agents.layout_x`/
-/// `agents.layout_y`. P4 only produces `AgentLinkKind::Derived` rows (written
-/// from local_bridge's dispatch/publish handlers); hand-drawn `Authored` links
-/// are P4.5.
+/// `agents.layout_y`. `AgentLinkKind::Derived` rows are written from
+/// local_bridge's dispatch/publish handlers; `AgentLinkKind::Authored` rows
+/// are hand-drawn by the user on agent-canvas (P4.5) and are also what
+/// local_bridge's edge-scoped `gto send` authorization checks against (see
+/// `has_authored_edge`).
 pub trait AgentLinkRepository: Send + Sync {
     /// Upserts the "last interacted at" row for this ordered (from, to) pair —
     /// one row per pair, not one row per dispatch, so a chatty pair of agents
@@ -99,6 +101,49 @@ pub trait AgentLinkRepository: Send + Sync {
         from_agent_id: &str,
         to_agent_id: &str,
     ) -> AgentResult<()>;
+
+    /// Idempotent: drawing the same edge twice is a no-op, not a second row
+    /// (the `agent_links` unique index on (workspace, from, to, kind) already
+    /// enforces this at the storage layer).
+    fn create_authored_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<()>;
+
+    /// Returns whether a row existed and was removed.
+    fn delete_authored_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<bool>;
+
+    /// Clears one direction's "last interacted at" record — unlike
+    /// `delete_authored_link`, this is direction-specific (an `a -> b`
+    /// derived row and a `b -> a` derived row are two independent facts, each
+    /// meaning "this agent actually dispatched to that one," not one shared
+    /// undirected relationship). Returns whether a row existed and was
+    /// removed. A future `gto send` between the same pair simply re-records
+    /// it — this only clears the existing visualization, not the ability to
+    /// re-derive it.
+    fn delete_derived_link(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+    ) -> AgentResult<bool>;
+
+    /// Direction-agnostic: an authored edge drawn `a -> b` also authorizes
+    /// `b -> a`, matching the canvas UI's "these two may talk" semantics
+    /// (docs/cw/04_客製化設計.md §1) rather than a one-way permission.
+    fn has_authored_edge(
+        &self,
+        workspace_id: &str,
+        agent_a: &str,
+        agent_b: &str,
+    ) -> AgentResult<bool>;
 
     fn list_links(&self, workspace_id: &str) -> AgentResult<Vec<AgentLink>>;
 
@@ -111,5 +156,39 @@ pub trait AgentLinkRepository: Send + Sync {
         agent_id: &str,
         x: f64,
         y: f64,
+    ) -> AgentResult<()>;
+
+    /// Sets `agents.color` directly — a node border color preset on
+    /// agent-canvas (docs/cw/04_客製化設計.md §1, P4.6), colocated with
+    /// `set_agent_layout` since both are canvas-cosmetic `agents` columns,
+    /// not general agent CRUD. `None` resets to the default (gray).
+    fn set_agent_color(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        color: Option<String>,
+    ) -> AgentResult<()>;
+
+    /// Sets an authored link's display color — direction-agnostic (matches
+    /// `from`/`to` OR either direction), same as `delete_authored_link`,
+    /// since an authored edge is one undirected row regardless of which
+    /// direction it was originally drawn.
+    fn set_link_color(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+        color: Option<String>,
+    ) -> AgentResult<()>;
+
+    /// Sets an authored link's bidirectional (double-arrowhead) vs
+    /// unidirectional (single-arrowhead) display flag — direction-agnostic,
+    /// same rationale as `set_link_color`.
+    fn set_link_bidirectional(
+        &self,
+        workspace_id: &str,
+        from_agent_id: &str,
+        to_agent_id: &str,
+        bidirectional: bool,
     ) -> AgentResult<()>;
 }

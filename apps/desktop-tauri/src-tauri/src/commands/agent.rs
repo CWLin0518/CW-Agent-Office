@@ -409,6 +409,11 @@ pub struct AgentCreateRequest {
     pub launch_command: Option<String>,
     #[serde(default)]
     pub external_template_path: Option<String>,
+    /// Set when this agent is created via agent-canvas's "new subagent"
+    /// context menu action (docs/cw/04_客製化設計.md §1, P4.5). Must name an
+    /// existing agent in the same workspace whose policy allows spawning.
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
 }
 
 pub(crate) fn agent_create_with_repo(
@@ -426,6 +431,22 @@ pub(crate) fn agent_create_with_repo(
         request.custom_workdir.unwrap_or(false),
     )?;
     ensure_path_within_workspace(workspace_root, &workdir)?;
+
+    let parent_agent_id = request
+        .parent_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(parent_id) = parent_agent_id.as_deref() {
+        let parent = find_agent(repo, &request.workspace_id, parent_id)?;
+        let parent_policy = repo
+            .get_agent_policy(&request.workspace_id, &parent.id)
+            .unwrap_or_default();
+        if !parent_policy.agent.allow_subagent_spawn {
+            return Err("AGENT_POLICY_SUBAGENT_SPAWN_DENIED".to_string());
+        }
+    }
 
     let requested_external_template_path = request
         .external_template_path
@@ -473,7 +494,7 @@ pub(crate) fn agent_create_with_repo(
         state: agent_state,
         launch_command: request.launch_command,
         order_index: None,
-        parent_agent_id: None,
+        parent_agent_id,
         external_template_path,
     };
 
@@ -1016,4 +1037,135 @@ pub fn agent_git_tracking_set(
     resync_agent_gitignore(&workspace_root, &repo, &request.workspace_id)?;
 
     Ok(json!({ "agent": updated_agent }))
+}
+
+/// Covers `agent_create_with_repo`'s P4.5 subagent-creation gate
+/// (docs/cw/04_客製化設計.md §1) directly against a scratch `SqliteAgentRepository`
+/// — bypasses the Tauri `AppHandle`/`AppState` machinery `agent_create_with_context`
+/// needs, which isn't available in a unit test.
+#[cfg(test)]
+mod subagent_creation_tests {
+    use super::*;
+    use gt_agent::AgentPolicy;
+    use std::path::PathBuf;
+
+    struct ScratchRepo {
+        _db_path: PathBuf,
+        workspace_root: PathBuf,
+        repo: SqliteAgentRepository,
+    }
+
+    impl Drop for ScratchRepo {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self._db_path.display()));
+            }
+            let _ = std::fs::remove_dir_all(&self.workspace_root);
+        }
+    }
+
+    fn scratch_repo_with_parent(name: &str, allow_subagent_spawn: bool) -> ScratchRepo {
+        let unique = format!("{name}-{}", uuid::Uuid::new_v4());
+        let db_path = std::env::temp_dir().join(format!("gt-agent-cmd-test-{unique}.db"));
+        let workspace_root = std::env::temp_dir().join(format!("gt-agent-cmd-test-ws-{unique}"));
+        std::fs::create_dir_all(&workspace_root).expect("create scratch workspace root");
+
+        let storage = SqliteStorage::new(&db_path).expect("open scratch storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+
+        let parent = repo
+            .create_agent(CreateAgentInput {
+                workspace_id: "ws-1".to_string(),
+                agent_id: Some("parent-agent".to_string()),
+                name: "Parent".to_string(),
+                tool: "codex".to_string(),
+                workdir: Some(".".to_string()),
+                custom_workdir: false,
+                scope: AgentScope::Station,
+                employee_no: None,
+                state: AgentState::Ready,
+                launch_command: None,
+                order_index: None,
+                parent_agent_id: None,
+                external_template_path: None,
+            })
+            .expect("create parent agent");
+        let mut policy = AgentPolicy::default();
+        policy.agent.allow_subagent_spawn = allow_subagent_spawn;
+        repo.save_agent_policy("ws-1", &parent.id, &policy)
+            .expect("save parent policy");
+
+        ScratchRepo {
+            _db_path: db_path,
+            workspace_root,
+            repo,
+        }
+    }
+
+    fn subagent_request(parent_agent_id: &str) -> AgentCreateRequest {
+        AgentCreateRequest {
+            workspace_id: "ws-1".to_string(),
+            agent_id: None,
+            name: "Subagent".to_string(),
+            tool: Some("codex".to_string()),
+            workdir: None,
+            custom_workdir: None,
+            scope: None,
+            employee_no: None,
+            state: None,
+            prompt_enabled: None,
+            prompt_file_name: None,
+            prompt_content: None,
+            launch_command: None,
+            external_template_path: None,
+            parent_agent_id: Some(parent_agent_id.to_string()),
+        }
+    }
+
+    #[test]
+    fn subagent_creation_succeeds_when_parent_allows_spawn() {
+        let scratch = scratch_repo_with_parent("allowed", true);
+        let created = agent_create_with_repo(
+            subagent_request("parent-agent"),
+            &scratch.repo,
+            &scratch.workspace_root,
+        )
+        .expect("subagent creation should succeed");
+        assert_eq!(
+            created["agent"]["parentAgentId"].as_str(),
+            Some("parent-agent")
+        );
+    }
+
+    #[test]
+    fn subagent_creation_denied_when_parent_policy_disallows_spawn() {
+        let scratch = scratch_repo_with_parent("denied", false);
+        let error = agent_create_with_repo(
+            subagent_request("parent-agent"),
+            &scratch.repo,
+            &scratch.workspace_root,
+        )
+        .expect_err("subagent creation should be denied");
+        assert_eq!(error, "AGENT_POLICY_SUBAGENT_SPAWN_DENIED");
+
+        let remaining = scratch.repo.list_agents("ws-1").expect("list agents");
+        assert_eq!(
+            remaining.len(),
+            1,
+            "a denied create must not leave a partially-created subagent behind"
+        );
+    }
+
+    #[test]
+    fn subagent_creation_fails_for_nonexistent_parent() {
+        let scratch = scratch_repo_with_parent("missing-parent", true);
+        let error = agent_create_with_repo(
+            subagent_request("does-not-exist"),
+            &scratch.repo,
+            &scratch.workspace_root,
+        )
+        .expect_err("subagent creation should fail for an unknown parent");
+        assert_eq!(error, "AGENT_NOT_FOUND");
+    }
 }

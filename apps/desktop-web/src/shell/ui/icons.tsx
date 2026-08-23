@@ -3,6 +3,12 @@ import type { LucideIcon } from 'lucide-react'
 import {
   Activity,
   AlertTriangle,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalDistributeCenter,
   Archive,
   ArrowDown,
   ArrowUp,
@@ -18,6 +24,8 @@ import {
   Copy,
   Database,
   Braces,
+  Eye,
+  EyeOff,
   FilePlus,
   FolderPlus,
   Link,
@@ -135,6 +143,14 @@ export type AppIconName =
   | 'check-circle'
   | 'pin'
   | 'pin-off'
+  | 'eye'
+  | 'eye-off'
+  | 'align-left'
+  | 'align-right'
+  | 'align-top'
+  | 'align-bottom'
+  | 'distribute-horizontal'
+  | 'distribute-vertical'
 
 const iconMap: Record<AppIconName, LucideIcon> = {
   stations: LayoutGrid,
@@ -204,6 +220,14 @@ const iconMap: Record<AppIconName, LucideIcon> = {
   'check-circle': CheckCircle2,
   pin: Pin,
   'pin-off': PinOff,
+  eye: Eye,
+  'eye-off': EyeOff,
+  'align-left': AlignStartVertical,
+  'align-right': AlignEndVertical,
+  'align-top': AlignStartHorizontal,
+  'align-bottom': AlignEndHorizontal,
+  'distribute-horizontal': AlignHorizontalDistributeCenter,
+  'distribute-vertical': AlignVerticalDistributeCenter,
 }
 
 interface AppIconProps extends SVGProps<SVGSVGElement> {

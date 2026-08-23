@@ -45,6 +45,10 @@ interface StationManageModalProps {
   locale: Locale
   workspaceId?: string | null
   editingStation?: UpdateStationInput | null
+  /** Preset `parentAgentId` for a create opened from agent-canvas's "New
+   * Subagent" context menu action (docs/cw/04_客製化設計.md §1, P4.5).
+   * Ignored when `editingStation` is set. */
+  initialParentAgentId?: string | null
   saving?: boolean
   deleting?: boolean
   deleteCleanupState?: StationDeleteCleanupState | null
@@ -65,6 +69,7 @@ export function StationManageModal({
   locale,
   workspaceId,
   editingStation,
+  initialParentAgentId = null,
   saving = false,
   deleting = false,
   deleteCleanupState = null,
@@ -980,6 +985,7 @@ export function StationManageModal({
                     promptContent: promptEnabled ? promptContent : '',
                     launchCommand: launchCommand.trim() || null,
                     externalTemplatePath: !isEdit && externalTemplatePath.trim() ? externalTemplatePath.trim() : null,
+                    parentAgentId: !isEdit ? initialParentAgentId ?? null : null,
                   }
                   if (launchCommand.trim() && launchCommand.trim() !== provider) {
                     const updatedHistory = recordLaunchCommand(provider, launchCommand.trim())

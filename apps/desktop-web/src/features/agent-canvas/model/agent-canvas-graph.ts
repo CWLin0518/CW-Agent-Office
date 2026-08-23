@@ -15,20 +15,53 @@ import type {
 } from '@shell/integration/desktop-api'
 import type { GraphCanvasEdge, GraphCanvasNode } from '@/components/graph-canvas'
 
-/** Width / height for an agent node card, in canvas (math) units. */
+/** Width / height for a regular (top-level) agent node card, in canvas
+ * (math) units. */
 export const AGENT_NODE_WIDTH = 220
 export const AGENT_NODE_HEIGHT = 92
+/** Subagents (`agent.parentAgentId` set) render smaller — see P4.5 §1. */
+export const SUBAGENT_NODE_WIDTH = 156
+export const SUBAGENT_NODE_HEIGHT = 68
 const NODE_HSPACING = 64
 const NODE_VSPACING = 56
 
+function nodeSizeForAgent(agent: AgentProfile): { width: number; height: number } {
+  return agent.parentAgentId
+    ? { width: SUBAGENT_NODE_WIDTH, height: SUBAGENT_NODE_HEIGHT }
+    : { width: AGENT_NODE_WIDTH, height: AGENT_NODE_HEIGHT }
+}
+
+/**
+ * A visual node on the canvas — distinct from agent identity so the same
+ * agent can have more than one node (docs/cw/04_客製化設計.md §8, P4.6):
+ * "the agent is still one single running thing, this is purely a visual
+ * relationship depiction." Client-only (never persisted to the backend) —
+ * see `useAgentCanvasData`'s `instances` state.
+ *
+ * `instanceId === agentId` marks the "default" instance (seeded once from
+ * the pre-P4.6 one-node-per-agent world, or the first instance an agent
+ * ever gets) — its position keeps coming from `agent.layoutX`/`layoutY`
+ * (backend-persisted, unchanged from before P4.6). Any other instance's
+ * `position` is this client's own local override.
+ */
+export interface CanvasNodeInstance {
+  instanceId: string
+  agentId: string
+  position?: { x: number; y: number }
+}
+
 export interface AgentCanvasNodeData {
+  instanceId: string
   agent: AgentProfile
   runtimeState: AgentRuntimeState
 }
 
-export interface AgentCanvasEdgeData {
-  link: AgentLink
-}
+/** `link` edges are `agent_links` rows (authored, hand-drawn, interactive;
+ * derived, automatic, read-only). `ownership` edges are derived purely
+ * client-side from `agent.parentAgentId` — deliberately not persisted as an
+ * `agent_links` row, since that table's kind enum is about communication
+ * relationships, not "who manages whom" (docs/cw/04_客製化設計.md §1, P4.5). */
+export type AgentCanvasEdgeData = { kind: 'link'; link: AgentLink } | { kind: 'ownership' }
 
 export interface AgentCanvasGraphView {
   nodes: GraphCanvasNode<AgentCanvasNodeData>[]
@@ -45,10 +78,17 @@ function pickColumnCount(count: number): number {
 }
 
 function resolveNodePosition(
+  instance: CanvasNodeInstance,
   agent: AgentProfile,
   index: number,
   columns: number,
 ): { x: number; y: number } {
+  if (instance.position) {
+    return { x: Math.max(0, instance.position.x), y: Math.max(0, instance.position.y) }
+  }
+  // Default instance (or a duplicate somehow created with no position yet)
+  // falls back to the agent's own backend-persisted layout, unchanged from
+  // pre-P4.6 behavior.
   if (
     typeof agent.layoutX === 'number' &&
     Number.isFinite(agent.layoutX) &&
@@ -69,28 +109,72 @@ export function buildAgentCanvasGraph(
   agents: AgentProfile[],
   links: AgentLink[],
   statuses: AgentRuntimeStatus[],
+  instances: CanvasNodeInstance[],
 ): AgentCanvasGraphView {
+  const agentById = new Map(agents.map((agent) => [agent.id, agent]))
   const statusByAgentId = new Map(statuses.map((status) => [status.agentId, status.state]))
-  const columns = pickColumnCount(agents.length)
+  // Instances whose agent no longer exists in this workspace are silently
+  // dropped (e.g. deleted through some other flow) — nothing to render and
+  // nothing meaningful to keep a position for.
+  const liveInstances = instances.filter((instance) => agentById.has(instance.agentId))
+  const columns = pickColumnCount(liveInstances.length)
 
   let maxX = 0
   let maxY = 0
-  const nodes: GraphCanvasNode<AgentCanvasNodeData>[] = agents.map((agent, index) => {
-    const position = resolveNodePosition(agent, index, columns)
-    maxX = Math.max(maxX, position.x + AGENT_NODE_WIDTH)
-    maxY = Math.max(maxY, position.y + AGENT_NODE_HEIGHT)
+  const nodes: GraphCanvasNode<AgentCanvasNodeData>[] = liveInstances.map((instance, index) => {
+    const agent = agentById.get(instance.agentId) as AgentProfile
+    const position = resolveNodePosition(instance, agent, index, columns)
+    const size = nodeSizeForAgent(agent)
+    maxX = Math.max(maxX, position.x + size.width)
+    maxY = Math.max(maxY, position.y + size.height)
     return {
-      id: agent.id,
+      id: instance.instanceId,
       x: position.x,
       y: position.y,
-      data: { agent, runtimeState: statusByAgentId.get(agent.id) ?? 'unknown' },
+      width: size.width,
+      height: size.height,
+      data: { instanceId: instance.instanceId, agent, runtimeState: statusByAgentId.get(agent.id) ?? 'unknown' },
     }
   })
 
-  const agentIds = new Set(agents.map((agent) => agent.id))
-  const edges: GraphCanvasEdge<AgentCanvasEdgeData>[] = links
-    .filter((link) => agentIds.has(link.fromAgentId) && agentIds.has(link.toAgentId))
-    .map((link) => ({ fromId: link.fromAgentId, toId: link.toAgentId, data: { link } }))
+  // `AgentLink`/ownership relationships are keyed by agentId, not
+  // instanceId — an agent with multiple canvas instances gets its edges
+  // anchored to a single "primary" instance (the first one found, in
+  // `instances` order) rather than fanned out per instance-pair. This keeps
+  // exactly one rendered line per `AgentLink` row (matching the backend,
+  // which has no per-instance concept of a link) instead of an M×N
+  // cross-product that would make color/disconnect/bidirectional actions
+  // ambiguous about which rendered copy the user meant — an acceptable
+  // trade given feature 8 is explicitly a "purely visual" depiction.
+  const primaryInstanceIdByAgentId = new Map<string, string>()
+  for (const instance of liveInstances) {
+    if (!primaryInstanceIdByAgentId.has(instance.agentId)) {
+      primaryInstanceIdByAgentId.set(instance.agentId, instance.instanceId)
+    }
+  }
+
+  const linkEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = links
+    .filter((link) => primaryInstanceIdByAgentId.has(link.fromAgentId) && primaryInstanceIdByAgentId.has(link.toAgentId))
+    .map((link) => ({
+      fromId: primaryInstanceIdByAgentId.get(link.fromAgentId) as string,
+      toId: primaryInstanceIdByAgentId.get(link.toAgentId) as string,
+      data: { kind: 'link', link },
+    }))
+
+  const ownershipEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = agents
+    .filter(
+      (agent) =>
+        agent.parentAgentId &&
+        primaryInstanceIdByAgentId.has(agent.parentAgentId) &&
+        primaryInstanceIdByAgentId.has(agent.id),
+    )
+    .map((agent) => ({
+      fromId: primaryInstanceIdByAgentId.get(agent.parentAgentId as string) as string,
+      toId: primaryInstanceIdByAgentId.get(agent.id) as string,
+      data: { kind: 'ownership' },
+    }))
+
+  const edges = [...linkEdges, ...ownershipEdges]
 
   return {
     nodes,
@@ -99,5 +183,37 @@ export function buildAgentCanvasGraph(
       width: Math.max(maxX + NODE_HSPACING, 800),
       height: Math.max(maxY + NODE_VSPACING, 480),
     },
+  }
+}
+
+export interface PortEdgeGeometry {
+  path: string
+  start: { x: number; y: number }
+  end: { x: number; y: number }
+}
+
+/** Grasshopper-style wire geometry: always output (right-mid of `from`) to
+ * input (left-mid of `to`), regardless of the nodes' relative vertical
+ * position — unlike `computeQuadraticEdgeGeometry` (the shared engine's
+ * generic node-to-node heuristic, which picks whichever side is closer),
+ * ports have a fixed side, so the wire is a horizontal S-curve that loops
+ * around when `to` sits above/below/left of `from`. Used for both `link` and
+ * `ownership` edges so ports and wires visually line up consistently. */
+export function computePortEdgeGeometry(
+  from: { x: number; y: number; width?: number; height?: number },
+  to: { x: number; y: number; width?: number; height?: number },
+): PortEdgeGeometry {
+  const fromWidth = from.width ?? AGENT_NODE_WIDTH
+  const fromHeight = from.height ?? AGENT_NODE_HEIGHT
+  const toHeight = to.height ?? AGENT_NODE_HEIGHT
+  const start = { x: from.x + fromWidth, y: from.y + fromHeight / 2 }
+  const end = { x: to.x, y: to.y + toHeight / 2 }
+  const offset = Math.min(120, Math.max(32, Math.abs(end.x - start.x) / 2))
+  const c1 = { x: start.x + offset, y: start.y }
+  const c2 = { x: end.x - offset, y: end.y }
+  return {
+    start,
+    end,
+    path: `M ${start.x} ${start.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`,
   }
 }

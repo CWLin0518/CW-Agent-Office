@@ -320,7 +320,7 @@
         <!-- 頁面標題與需求總覽 -->
         <header>
             <h1>GT Office 改版規劃看板</h1>
-            <p class="subtitle">基於《04 客製化設計》文件 | 更新於 2026-08-22：P0～P3 已完成並通過 code review + 操作測試</p>
+            <p class="subtitle">基於《04 客製化設計》文件 | 更新於 2026-08-23：P0～P4.6 已完成並通過 code review；P4.5、P4.6 尚待真人在桌面 App 內做操作驗證</p>
             <div class="requirements">
                 <div class="requirement-item">
                     <strong>需求 1:</strong> 節點式 Agent 協作畫布（Grasshopper 風格）
@@ -413,9 +413,12 @@
                     <div class="card">
                         <div class="card-title">Agent Canvas MVP</div>
                         <div class="card-description">
-                            先做唯讀的節點圖，畫出現有 Station + 實際 `gto` 派發產生的 derived 連線。MVP 先不做手畫線和 subagent，降低風險。驗收標準包含 Agent 狀態資料層對齊 PRD。
+                            唯讀節點圖：畫出現有 Station + 實際 `gto` 派發產生的 derived 連線（虛線區分未來的 authored 實線）。新增共用畫布引擎 `components/graph-canvas/`（從 DesignerGraphCanvas 抽出 pan/zoom/drag/culling），`agents` 表加 `layout_x/layout_y` 存節點拖曳位置，`agent_links` 表首次真的被寫入（derived、upsert 去重）。Agent 即時狀態做成精簡的 Idle/Active/Offline 投影，不綁定 PRD 全套 Lifecycle State。
                         </div>
-                        <div class="card-status">待開始</div>
+                        <div class="card-status completed">✓ 已完成</div>
+                        <div class="card-findings">
+                            實作中發現兩處要修正原設計：① `register_runtime(online:false)` 其實是直接移除記錄而非存一筆離線狀態，Offline 判斷因此改到 command 層用「完整 Agent 名冊 − 在線集合」的差集算，而不是靠 gt-task 自己回報。② 專案的 ESLint 是 `eslint-plugin-react-hooks@7`（React Compiler 規則），「把 ref 包進 interaction 物件傳給 renderNode」的寫法會被判定為 render 中存取 ref，改成畫布引擎自己持有節點 shell div、renderNode 只回傳卡片內容。真人操作驗證：兩個真實 Agent 互相 `gto send` 後，畫布在下次輪詢正確畫出 derived 虛線，方向與兩端狀態（Idle→Active）都正確。
+                        </div>
                     </div>
                 </div>
 
@@ -425,9 +428,31 @@
                     <div class="card">
                         <div class="card-title">Agent Canvas 加強</div>
                         <div class="card-description">
-                            手畫 authored 連線、畫布上建立 subagent。此時可以把 P3 的 Agent 權限開關升級成依 edge 授權。前一步驗證過畫布可用後再加互動。
+                            節點互動改成 Grasshopper 風格：每個節點左右各一個 input/output 端點，直接從端點拖拉到另一個端點建立 authored 連線；拖拉時按住 Shift 是取消連接（同一手勢，反轉語意）；端點右鍵有「取消連接」選單（一次清掉該端點所有連線）；連線本身右鍵仍可單條刪除。畫布共用引擎（`components/graph-canvas`）新增節點可選的 per-node width/height，subagent 節點因此縮小顯示。右鍵節點建立 subagent（`parent_agent_id`，受 parent 的 `allow_subagent_spawn` 政策把關）。P3 的 Agent gto-send 開關正式升級成依 authored edge 授權：`local_bridge` 的 `task.dispatch_batch` 現在會逐一檢查 sender/target 之間是否存在連線，沒有就拒絕——這是設計文件 §1 決策 1 明確預期的破壞性行為變更，畫布上加了常駐提示文案。隸屬關係（parent/subagent）畫成第三種純前端衍生、不落地 `agent_links` 的連線，語意上跟溝通類連線分開。
                         </div>
-                        <div class="card-status">待開始</div>
+                        <div class="card-status completed">✓ 已完成</div>
+                        <div class="card-findings">
+                            第一輪（後端授權模型 + 點選式連線）code review 抓到 Critical：① authored 連線的唯一鍵是有方向性的，但「是否已連線」的查詢與產品語意都是無方向的——使用者反向再拉一次線會產生兩筆獨立記錄，導致刪除其中一筆後另一筆仍存活、線看起來刪了但授權其實還在，已修成 create 前先做無方向查重、delete 改成無方向刪除，並補上回歸測試。② 新的 edge 授權只接在 `task.dispatch_batch`，`channel.publish`（MCP 側車工具 `gto_handover`/`gto_report_status` 走的是這條路）完全沒有等效檢查，屬於 P3 就存在、這次沒有擴大範圍去補的既有缺口——已把畫布提示文案改成明確只描述 `gto send` 批次派發，避免對使用者做出「沒連線就完全無法互通」的過度宣稱，並在程式碼留下追蹤註記。Important：agent 對自己派發（sender 出現在自己的 targets 裡）原本會被新檢查誤擋，已加白名單；`pendingSubagentParentId` 在 addStation/updateStation 成功路徑補上重置，避免未來新增的開啟入口誤繼承舊的 parent 內容。<br /><br />
+                            使用者後續要求把連線互動改成 Grasshopper 端點拖拉風格，第二輪 code review（僅涵蓋這次的前端互動重寫）抓到 Important：① 拖拉預覽線的起點只在按下當下算一次螢幕座標，拖曳中途縮放（滾輪/Ctrl+±）會讓預覽線跟來源端點脫節——改成每次 pointermove 都用 `event.currentTarget.getBoundingClientRect()`（pointer capture 期間 currentTarget 恆等於來源端點）即時重算。② 三種連線都不小心漏接了引擎原本提供的 `arrowMarkerUrl`，方向箭頭全部消失——已補回 authored/derived 兩種連線的 `markerEnd`（ownership 維持無箭頭，符合原本「非溝通類連線」的視覺語意）。Suggestion 追加修正：Esc 取消拖拉時原本沒有明確 release pointer capture（僅依賴 spec 承諾的隱含釋放），跨平台 WebView（WebView2/WKWebView/WebKitGTK）保險起見已加上明確 release。<br /><br />
+                            實測時發現一個執行期錯誤（非 code review 抓到，是真人操作觸發的）：`handlePortPointerMove` 在 `setWireDrag` 的 updater function 裡才讀 `event.currentTarget`，但 React 合成事件的 `currentTarget` 在 handler 同步執行完就會變成 null（符合原生 DOM 事件規範），updater 卻是延後到 state 更新處理時才呼叫——拖曳端點移動滑鼠時就會噴 `Cannot read properties of null (reading 'getBoundingClientRect')`。已修成在 handler 內同步算好座標，updater 只單純合併，不再碰 `event`。<br /><br />
+                            使用者後續回報畫布上的藍色虛線（derived 連線）想要能清除，補了兩個功能：① derived 連線右鍵「清除這筆記錄」，呼叫新的 `agent_canvas_delete_derived_link`（`delete_derived_link` 是方向性刪除，不像 authored 是無方向——因為 a→b 和 b→a 是各自獨立的往來事實，不是同一組關係）；之後如果這兩個 Agent 又真的有 gto send，線會自動重新出現，這只是清畫面顯示，不影響 gto send 權限。② 畫布控制列新增顯示/隱藏 derived 連線的切換鈕（純前端渲染過濾，不動資料庫）。<br /><br />
+                            後端 `local_bridge.rs` 的 edge 授權邏輯與 `agent_create_with_repo` 的 parent 政策檢查因既有測試套件（roles/departments 子系統殘留的大量已損壞測試檔，與本階段無關）目前無法整體 `cargo test`，新增測試已個別確認可編譯但無法實際執行；真人操作驗證（端點拖拉建線／Shift 取消連接／端點右鍵取消連接／derived 連線清除與顯示切換／未連線時 gto send 應被拒絕）尚未完整跑過，需要有人在桌面 App 裡再驗一輪。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- P4.6 -->
+                <div class="kanban-column">
+                    <div class="column-header">P4.6</div>
+                    <div class="card">
+                        <div class="card-title">Agent Canvas 選取／多線／備用列</div>
+                        <div class="card-description">
+                            修正端點右鍵「Disconnect」選單跳很遠的定位 bug（根因：`ShellRoot.scss` 的 `.shell-feature-view { contain: layout paint }` 讓它變成子孫 `position: fixed` 元素的 containing block，改用 `createPortal` 逃出去）。新增：點選節點/wire（Shift 疊加多選）、Delete/右鍵從畫布移除節點（不刪 agent 本體）、節點與 wire 各自的右鍵換色選單（5 色共用調色盤，後端持久化）、wire 右鍵斷開/單向雙向切換、框選（純拖=只選節點；Shift=只選線；Shift+Ctrl=都選；左→右=全包才選，右→左=碰到就選）、對齊/均分工具列、左側備用 agent 拖拉列（同一 agent 可拖出多個純視覺畫布節點，`instanceId===agentId` 的預設節點仍走後端持久化，其餘為純前端）。詳見 <code>docs/cw/07_P4.6開發進度.md</code>。
+                        </div>
+                        <div class="card-status completed">✓ 已完成</div>
+                        <div class="card-findings">
+                            9 個 phase 依相依順序（bug fix→選取引擎→顏色→wire 選取→wire 選單→框選→對齊→多 instance／備用列）逐一 code review，逐輪修正重點：Phase1 z-index 沒調到 body 層級被 shell chrome 蓋住；Phase2 選取狀態沒在切換 workspace 時重置；Phase5 `set_link_color`/`set_link_bidirectional` 沒有 not-found 錯誤、且側效應誤放進 `setState` updater（StrictMode 下可能雙重觸發）；Phase6（風險最大的一次）`pointercancel` 誤觸 commit、視窗失焦沒清狀態、拖曳中沒擋原生選字、`setMarqueeRect` 沒有 rAF 節流；Phase7 均分邏輯（原點）跟選用的圖示（承諾中心點）語意不符，混合節點尺寸時會重疊；Phase8 最嚴重一次抓到 Critical——「新增 Subagent」把 instance id 誤當 agent id 往下傳，對非預設 instance 會傳查無此 agent 的假 id，另有 Important：`addInstance` 沒有讓 agent 的第一個 instance 走後端持久化路徑，導致遷移之後才建立的新 agent 永遠無法持久化位置。以上全數已修並重跑 lint/typecheck/後端測試確認過。真人操作驗收（見文件 §4 清單）尚未跑。
+                        </div>
                     </div>
                 </div>
 

@@ -10,6 +10,7 @@ import {
   useState,
   type CSSProperties,
   type ReactNode,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -17,6 +18,8 @@ import {
 import type {
   GraphCanvasEdge,
   GraphCanvasHandle,
+  GraphCanvasMarqueeMode,
+  GraphCanvasMarqueeRect,
   GraphCanvasNode,
   GraphCanvasZoomApi,
 } from './graph-canvas-types'
@@ -44,11 +47,20 @@ export interface GraphCanvasProps<TNodeData, TEdgeData> {
   isInteractiveChrome?: (target: HTMLElement) => boolean
   /** Fired once per drag on pointerup, with the final canvas-space position. */
   onCommitNodePosition: (nodeId: string, position: { x: number; y: number }) => void
-  /** Fired on a pointerdown→pointerup with no meaningful movement (a click). */
-  onNodeClick?: (nodeId: string) => void
+  /** Fired on a pointerdown→pointerup with no meaningful movement (a click).
+   * The raw event is passed through (unexamined by the engine itself, same
+   * as `onNodeContextMenu`) so callers can read modifier keys, e.g. for
+   * Shift-click multi-select — a caller-owned concern, not something this
+   * shared engine (also used by business-designer, which has no multi-select)
+   * needs to know about. */
+  onNodeClick?: (nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => void
   onNodeFocus?: (nodeId: string) => void
   /** Also fired for an Enter keypress directly on the node shell (not a child). */
   onNodeDoubleClick?: (nodeId: string) => void
+  /** Fired on a right-click / context-menu activation on a node shell. Callers
+   * that use this should call `event.preventDefault()` themselves to suppress
+   * the native browser menu. */
+  onNodeContextMenu?: (nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => void
   /**
    * Inner visual content only — the engine owns the shell div (ref, position
    * style, drag/focus/keyboard wiring) so ref access never crosses a props
@@ -80,11 +92,36 @@ export interface GraphCanvasProps<TNodeData, TEdgeData> {
    */
   onViewportClick?: (event: ReactMouseEvent<HTMLDivElement>) => void
   onViewportContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void
+  /**
+   * Drag-a-rectangle-on-empty-background select. Mutually exclusive with
+   * space-armed pan (pan wins if both are "available" — space held always
+   * means the user wants to pan). The engine only computes and reports the
+   * rectangle (in canvas space) plus which way it was dragged and which
+   * modifier keys were held at drag-start; it has no opinion on what the
+   * rectangle *selects* — that's caller-owned, same reasoning as
+   * `onNodeClick` forwarding raw events instead of the engine knowing about
+   * "selection." Only fires for a real drag (same movement threshold node
+   * dragging uses) — a plain click on background does not call this, so the
+   * caller's `onViewportClick` still handles that case unchanged.
+   */
+  onMarqueeSelect?: (
+    rect: GraphCanvasMarqueeRect,
+    mode: GraphCanvasMarqueeMode,
+    modifiers: { shiftKey: boolean; ctrlKey: boolean },
+  ) => void
+  /** Raw pass-through native drag-and-drop handlers on the viewport, same
+   * shape as `onViewportClick` — a caller (agent-canvas's standby rail drop
+   * target) owns interpreting `event.dataTransfer`; the engine only forwards
+   * the event. `onViewportDragOver` must call `event.preventDefault()` for
+   * the browser to allow a drop here at all. */
+  onViewportDragOver?: (event: ReactDragEvent<HTMLDivElement>) => void
+  onViewportDrop?: (event: ReactDragEvent<HTMLDivElement>) => void
   wrapperClassName?: string
   viewportClassName?: string
   svgClassName?: string
   nodesLayerClassName?: string
   nodeShellClassName?: string
+  marqueeClassName?: string
 }
 
 interface DragState {
@@ -100,6 +137,19 @@ interface PanState {
   startPointerY: number
   startScrollLeft: number
   startScrollTop: number
+}
+
+interface MarqueeState {
+  pointerId: number
+  /** Canvas-space start point — fixed for the drag's duration. */
+  startCanvasX: number
+  startCanvasY: number
+  /** Raw client start point, kept only for the same movement-threshold
+   * "was this actually a drag" check node-dragging uses. */
+  startClientX: number
+  startClientY: number
+  shiftKey: boolean
+  ctrlKey: boolean
 }
 
 interface CanvasViewportWindow {
@@ -127,6 +177,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
     onNodeClick,
     onNodeFocus,
     onNodeDoubleClick,
+    onNodeContextMenu,
     renderNode,
     getNodeClassName,
     getNodeAriaLabel,
@@ -135,11 +186,15 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
     children,
     onViewportClick,
     onViewportContextMenu,
+    onMarqueeSelect,
+    onViewportDragOver,
+    onViewportDrop,
     wrapperClassName = 'graph-canvas',
     viewportClassName = 'graph-canvas-viewport',
     svgClassName = 'graph-canvas-svg',
     nodesLayerClassName = 'graph-canvas-nodes',
     nodeShellClassName = 'graph-canvas-node-shell',
+    marqueeClassName = 'graph-canvas-marquee',
   }: GraphCanvasProps<TNodeData, TEdgeData>,
   forwardedRef: React.ForwardedRef<GraphCanvasHandle>,
 ) {
@@ -169,22 +224,27 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
   const [spacePanArmed, setSpacePanArmed] = useState(false)
   const panStateRef = useRef<PanState | null>(null)
 
+  const clientPointToCanvas = useCallback(
+    (clientX: number, clientY: number): { x: number; y: number } => {
+      const viewport = viewportRef.current
+      if (!viewport) return { x: 0, y: 0 }
+      const rect = viewport.getBoundingClientRect()
+      return {
+        x: (clientX - rect.left + viewport.scrollLeft) / zoom,
+        y: (clientY - rect.top + viewport.scrollTop) / zoom,
+      }
+    },
+    [zoom],
+  )
+
   useImperativeHandle(
     forwardedRef,
     (): GraphCanvasHandle => ({
       getViewportElement: () => viewportRef.current,
-      screenToCanvasPoint: (clientX, clientY) => {
-        const viewport = viewportRef.current
-        if (!viewport) return { x: 0, y: 0 }
-        const rect = viewport.getBoundingClientRect()
-        return {
-          x: (clientX - rect.left + viewport.scrollLeft) / zoom,
-          y: (clientY - rect.top + viewport.scrollTop) / zoom,
-        }
-      },
+      screenToCanvasPoint: clientPointToCanvas,
       focusViewport: () => viewportRef.current?.focus({ preventScroll: true }),
     }),
-    [zoom],
+    [clientPointToCanvas],
   )
 
   // Zoom keyboard shortcuts (Cmd/Ctrl+0/+/-).
@@ -326,7 +386,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
       if (moved) {
         onCommitNodePosition(state.nodeId, finalPosition)
       } else {
-        onNodeClick?.(state.nodeId)
+        onNodeClick?.(state.nodeId, event)
       }
     },
     [zoom, onCommitNodePosition, onNodeClick],
@@ -353,6 +413,23 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
     [onNodeDoubleClick],
   )
 
+  const marqueeStateRef = useRef<MarqueeState | null>(null)
+  const [marqueeRect, setMarqueeRect] = useState<GraphCanvasMarqueeRect | null>(null)
+  // Coalesces `setMarqueeRect` to at most once per animation frame — raw
+  // pointermove can fire faster than the display refresh rate, and (unlike
+  // node-dragging, which mutates a DOM ref directly) marquee re-renders every
+  // visible node/edge on each update, so this follows the same
+  // `requestAnimationFrame`-coalescing precedent as this file's own
+  // `viewportWindow` scroll/resize updater below.
+  const marqueeMoveFrameRef = useRef(0)
+  const pendingMarqueeMoveRef = useRef<{ clientX: number; clientY: number } | null>(null)
+  // Set right before a real marquee drag (movement past the threshold)
+  // calls `onMarqueeSelect`, so the `click` event the browser still
+  // synthesizes on pointerup doesn't immediately reach `onViewportClick` and
+  // clear the selection the drag just made — background pointerdown/up with
+  // no movement (a plain click) never sets this, so that case is unaffected.
+  const suppressNextClickRef = useRef(false)
+
   const handleViewportPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const target = event.target as HTMLElement
@@ -361,42 +438,176 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
       if (!isChrome && !isEditableTarget) {
         viewportRef.current?.focus({ preventScroll: true })
       }
-      if (!spacePanArmed || event.button !== 0 || isChrome) {
-        return
-      }
+      if (event.button !== 0 || isChrome) return
       const viewport = viewportRef.current
       if (!viewport) return
-      event.preventDefault()
-      panStateRef.current = {
-        pointerId: event.pointerId,
-        startPointerX: event.clientX,
-        startPointerY: event.clientY,
-        startScrollLeft: viewport.scrollLeft,
-        startScrollTop: viewport.scrollTop,
+      if (spacePanArmed) {
+        event.preventDefault()
+        panStateRef.current = {
+          pointerId: event.pointerId,
+          startPointerX: event.clientX,
+          startPointerY: event.clientY,
+          startScrollLeft: viewport.scrollLeft,
+          startScrollTop: viewport.scrollTop,
+        }
+        viewport.classList.add('is-panning')
+        viewport.setPointerCapture?.(event.pointerId)
+        return
       }
-      viewport.classList.add('is-panning')
+      if (!onMarqueeSelect || isEditableTarget) return
+      event.preventDefault()
+      const canvasPoint = clientPointToCanvas(event.clientX, event.clientY)
+      marqueeStateRef.current = {
+        pointerId: event.pointerId,
+        startCanvasX: canvasPoint.x,
+        startCanvasY: canvasPoint.y,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey || event.metaKey,
+      }
+      setMarqueeRect({ x: canvasPoint.x, y: canvasPoint.y, width: 0, height: 0 })
+      viewport.classList.add('is-marqueeing')
       viewport.setPointerCapture?.(event.pointerId)
     },
-    [spacePanArmed, isInteractiveChrome],
+    [spacePanArmed, isInteractiveChrome, onMarqueeSelect, clientPointToCanvas],
   )
 
-  const handleViewportPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const state = panStateRef.current
-    const viewport = viewportRef.current
-    if (!state || !viewport || state.pointerId !== event.pointerId) return
-    event.preventDefault()
-    viewport.scrollLeft = state.startScrollLeft - (event.clientX - state.startPointerX)
-    viewport.scrollTop = state.startScrollTop - (event.clientY - state.startPointerY)
+  const handleViewportPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const panState = panStateRef.current
+      const viewport = viewportRef.current
+      if (panState && viewport && panState.pointerId === event.pointerId) {
+        event.preventDefault()
+        viewport.scrollLeft = panState.startScrollLeft - (event.clientX - panState.startPointerX)
+        viewport.scrollTop = panState.startScrollTop - (event.clientY - panState.startPointerY)
+        return
+      }
+      const marqueeState = marqueeStateRef.current
+      if (!marqueeState || marqueeState.pointerId !== event.pointerId) return
+      pendingMarqueeMoveRef.current = { clientX: event.clientX, clientY: event.clientY }
+      if (marqueeMoveFrameRef.current) return
+      marqueeMoveFrameRef.current = window.requestAnimationFrame(() => {
+        marqueeMoveFrameRef.current = 0
+        const pending = pendingMarqueeMoveRef.current
+        const state = marqueeStateRef.current
+        if (!pending || !state) return
+        const current = clientPointToCanvas(pending.clientX, pending.clientY)
+        setMarqueeRect({
+          x: Math.min(state.startCanvasX, current.x),
+          y: Math.min(state.startCanvasY, current.y),
+          width: Math.abs(current.x - state.startCanvasX),
+          height: Math.abs(current.y - state.startCanvasY),
+        })
+      })
+    },
+    [clientPointToCanvas],
+  )
+
+  /** Shared by pointerup (`commit=true`) and pointercancel (`commit=false`)
+   * — cancel always discards without ever calling `onMarqueeSelect` or
+   * setting `suppressNextClickRef`, matching how `handleNodePointerCancel`
+   * treats a cancelled node-drag as "discard," not "commit," elsewhere in
+   * this file. Returns whether a marquee drag was actually in progress. */
+  const finishMarqueeDrag = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>, commit: boolean): boolean => {
+      const marqueeState = marqueeStateRef.current
+      if (!marqueeState || marqueeState.pointerId !== event.pointerId) return false
+      marqueeStateRef.current = null
+      if (marqueeMoveFrameRef.current) {
+        window.cancelAnimationFrame(marqueeMoveFrameRef.current)
+        marqueeMoveFrameRef.current = 0
+      }
+      const viewport = viewportRef.current
+      viewport?.classList.remove('is-marqueeing')
+      viewport?.releasePointerCapture?.(event.pointerId)
+      if (commit && onMarqueeSelect) {
+        const dx = (event.clientX - marqueeState.startClientX) / zoom
+        const dy = (event.clientY - marqueeState.startClientY) / zoom
+        const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1
+        if (moved) {
+          const current = clientPointToCanvas(event.clientX, event.clientY)
+          const rect: GraphCanvasMarqueeRect = {
+            x: Math.min(marqueeState.startCanvasX, current.x),
+            y: Math.min(marqueeState.startCanvasY, current.y),
+            width: Math.abs(current.x - marqueeState.startCanvasX),
+            height: Math.abs(current.y - marqueeState.startCanvasY),
+          }
+          // "From left to right" vs "from right to left" per the product
+          // requirement — a plain client-X comparison (canvas-space is a
+          // monotonic transform of client-space, so the sign is identical).
+          const mode: GraphCanvasMarqueeMode = current.x >= marqueeState.startCanvasX ? 'contain' : 'intersect'
+          suppressNextClickRef.current = true
+          onMarqueeSelect(rect, mode, { shiftKey: marqueeState.shiftKey, ctrlKey: marqueeState.ctrlKey })
+        }
+      }
+      setMarqueeRect(null)
+      return true
+    },
+    [zoom, clientPointToCanvas, onMarqueeSelect],
+  )
+
+  const handleViewportPointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const panState = panStateRef.current
+      const viewport = viewportRef.current
+      if (panState && panState.pointerId === event.pointerId) {
+        panStateRef.current = null
+        viewport?.classList.remove('is-panning')
+        viewport?.releasePointerCapture?.(event.pointerId)
+        return
+      }
+      finishMarqueeDrag(event, true)
+    },
+    [finishMarqueeDrag],
+  )
+
+  const handleViewportPointerCancel = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const panState = panStateRef.current
+      const viewport = viewportRef.current
+      if (panState && panState.pointerId === event.pointerId) {
+        panStateRef.current = null
+        viewport?.classList.remove('is-panning')
+        viewport?.releasePointerCapture?.(event.pointerId)
+        return
+      }
+      finishMarqueeDrag(event, false)
+    },
+    [finishMarqueeDrag],
+  )
+
+  // Focus loss (Alt-Tab, etc.) mid-drag never delivers a pointerup/cancel to
+  // this window — without this, the marquee rectangle and its ref would be
+  // stuck indefinitely, mirroring the existing space-pan blur handler above
+  // (which has the same problem for panning) but scoped to marquee state.
+  useEffect(() => {
+    function onBlur() {
+      if (marqueeMoveFrameRef.current) {
+        window.cancelAnimationFrame(marqueeMoveFrameRef.current)
+        marqueeMoveFrameRef.current = 0
+      }
+      if (marqueeStateRef.current) {
+        viewportRef.current?.classList.remove('is-marqueeing')
+        viewportRef.current?.releasePointerCapture?.(marqueeStateRef.current.pointerId)
+      }
+      marqueeStateRef.current = null
+      setMarqueeRect(null)
+    }
+    window.addEventListener('blur', onBlur)
+    return () => window.removeEventListener('blur', onBlur)
   }, [])
 
-  const handleViewportPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const state = panStateRef.current
-    const viewport = viewportRef.current
-    if (!state || state.pointerId !== event.pointerId) return
-    panStateRef.current = null
-    viewport?.classList.remove('is-panning')
-    viewport?.releasePointerCapture?.(event.pointerId)
-  }, [])
+  const handleViewportClickInternal = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (suppressNextClickRef.current) {
+        suppressNextClickRef.current = false
+        return
+      }
+      onViewportClick?.(event)
+    },
+    [onViewportClick],
+  )
 
   const [viewportWindow, setViewportWindow] = useState<CanvasViewportWindow | null>(null)
   useEffect(() => {
@@ -443,8 +654,8 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
     const bottom = viewportWindow.y + viewportWindow.height + bufferY
     const filteredNodes = nodes.filter((node) => {
       if (pinnedNodeIds?.has(node.id)) return true
-      const nodeRight = node.x + nodeWidth
-      const nodeBottom = node.y + nodeHeight
+      const nodeRight = node.x + (node.width ?? nodeWidth)
+      const nodeBottom = node.y + (node.height ?? nodeHeight)
       return nodeRight >= left && node.x <= right && nodeBottom >= top && node.y <= bottom
     })
     const visibleIds = new Set(filteredNodes.map((node) => node.id))
@@ -468,12 +679,14 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
         className={`${viewportClassName}${spacePanArmed ? ' is-space-pan-armed' : ''}`}
         ref={viewportRef}
         tabIndex={-1}
-        onClick={onViewportClick}
+        onClick={handleViewportClickInternal}
         onContextMenu={onViewportContextMenu}
+        onDragOver={onViewportDragOver}
+        onDrop={onViewportDrop}
         onPointerDown={handleViewportPointerDown}
         onPointerMove={handleViewportPointerMove}
         onPointerUp={handleViewportPointerUp}
-        onPointerCancel={handleViewportPointerUp}
+        onPointerCancel={handleViewportPointerCancel}
       >
         <div style={wrapperStyle}>
           <svg
@@ -520,7 +733,12 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
                   }}
                   className={extraClassName ? `${nodeShellClassName} ${extraClassName}` : nodeShellClassName}
                   data-graph-node-id={node.id}
-                  style={{ left: node.x, top: node.y, width: nodeWidth, minHeight: nodeHeight }}
+                  style={{
+                    left: node.x,
+                    top: node.y,
+                    width: node.width ?? nodeWidth,
+                    minHeight: node.height ?? nodeHeight,
+                  }}
                   role="button"
                   tabIndex={0}
                   aria-label={getNodeAriaLabel?.(node)}
@@ -531,6 +749,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
                   onPointerCancel={handleNodePointerCancel}
                   onFocus={() => onNodeFocus?.(node.id)}
                   onDoubleClick={() => onNodeDoubleClick?.(node.id)}
+                  onContextMenu={(event) => onNodeContextMenu?.(node.id, event)}
                   onKeyDown={(event) => handleNodeKeyDown(node.id, event)}
                 >
                   {renderNode(node)}
@@ -538,6 +757,19 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
               )
             })}
           </div>
+          {marqueeRect && (
+            <div
+              className={marqueeClassName}
+              style={{
+                position: 'absolute',
+                left: marqueeRect.x,
+                top: marqueeRect.y,
+                width: marqueeRect.width,
+                height: marqueeRect.height,
+                pointerEvents: 'none',
+              }}
+            />
+          )}
         </div>
       </div>
       {children?.(zoomApi)}

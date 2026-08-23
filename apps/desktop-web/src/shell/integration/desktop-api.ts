@@ -1889,6 +1889,9 @@ export interface AgentProfile {
   gitTracked: boolean
   layoutX?: number | null
   layoutY?: number | null
+  /** Node border color preset on agent-canvas (docs/cw/04_客製化設計.md §1,
+   * P4.6). `null`/absent = default gray. */
+  color?: string | null
   createdAtMs: number
   updatedAtMs: number
 }
@@ -1905,6 +1908,13 @@ export interface AgentLink {
   fromAgentId: string
   toAgentId: string
   kind: AgentLinkKind
+  /** Wire display color preset, same palette as `AgentProfile.color`.
+   * `null`/absent = default gray. */
+  color?: string | null
+  /** Whether this authored link renders with a double arrowhead (two-way)
+   * vs a single arrowhead (one-way) — a display/state toggle, never set by
+   * dragging a reverse wire. Meaningless for derived links. */
+  bidirectional?: boolean
   createdAtMs: number
 }
 
@@ -1939,6 +1949,9 @@ export interface AgentCreateRequest {
   promptContent?: string | null
   launchCommand?: string | null
   externalTemplatePath?: string | null
+  /** Set when creating a subagent from agent-canvas's "new subagent" context
+   * menu action (docs/cw/04_客製化設計.md §1, P4.5). */
+  parentAgentId?: string | null
 }
 
 export interface AgentCreateResponse {
@@ -4407,6 +4420,13 @@ export const desktopApi = {
       y,
     })
   },
+  agentCanvasSetAgentColor(workspaceId: string, agentId: string, color: string | null) {
+    return invokeCommand<Record<string, never>>('agent_canvas_set_agent_color', {
+      workspaceId,
+      agentId,
+      color,
+    })
+  },
   agentCreate(request: AgentCreateRequest) {
     return invokeCommand<AgentCreateResponse>('agent_create', {
       request: {
@@ -4423,7 +4443,55 @@ export const desktopApi = {
         promptContent: request.promptContent ?? null,
         launchCommand: request.launchCommand ?? null,
         externalTemplatePath: request.externalTemplatePath ?? null,
+        parentAgentId: request.parentAgentId ?? null,
       },
+    })
+  },
+  agentCanvasCreateAuthoredLink(workspaceId: string, fromAgentId: string, toAgentId: string) {
+    return invokeCommand<Record<string, never>>('agent_canvas_create_authored_link', {
+      workspaceId,
+      fromAgentId,
+      toAgentId,
+    })
+  },
+  agentCanvasDeleteAuthoredLink(workspaceId: string, fromAgentId: string, toAgentId: string) {
+    return invokeCommand<{ deleted: boolean }>('agent_canvas_delete_authored_link', {
+      workspaceId,
+      fromAgentId,
+      toAgentId,
+    })
+  },
+  agentCanvasDeleteDerivedLink(workspaceId: string, fromAgentId: string, toAgentId: string) {
+    return invokeCommand<{ deleted: boolean }>('agent_canvas_delete_derived_link', {
+      workspaceId,
+      fromAgentId,
+      toAgentId,
+    })
+  },
+  agentCanvasSetLinkColor(
+    workspaceId: string,
+    fromAgentId: string,
+    toAgentId: string,
+    color: string | null,
+  ) {
+    return invokeCommand<Record<string, never>>('agent_canvas_set_link_color', {
+      workspaceId,
+      fromAgentId,
+      toAgentId,
+      color,
+    })
+  },
+  agentCanvasSetLinkBidirectional(
+    workspaceId: string,
+    fromAgentId: string,
+    toAgentId: string,
+    bidirectional: boolean,
+  ) {
+    return invokeCommand<Record<string, never>>('agent_canvas_set_link_bidirectional', {
+      workspaceId,
+      fromAgentId,
+      toAgentId,
+      bidirectional,
     })
   },
   agentReadExternalTemplate(request: AgentReadExternalTemplateRequest) {

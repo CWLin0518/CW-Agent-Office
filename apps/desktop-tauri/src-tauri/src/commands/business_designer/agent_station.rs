@@ -75,6 +75,7 @@ pub(crate) fn ensure_agent_station_at(
         prompt_content: None,
         launch_command: None,
         external_template_path: None,
+        parent_agent_id: None,
     };
     let mut created = agent_create_with_repo(request, &repo, &workspace_root)?;
     if let Some(obj) = created.as_object_mut() {

@@ -3,8 +3,10 @@ use serde::{Deserialize, Serialize};
 /// Phase A of docs/cw/04_客製化設計.md §3: the five permission categories that
 /// have a real, already-existing enforcement hook point (File System / Shell /
 /// Git / Agent invoke / Execution). Every field defaults to the fully
-/// permissive value so an agent with no stored policy snapshot behaves exactly
-/// as it did before this feature existed.
+/// permissive value, so an agent with no stored policy snapshot behaves
+/// unchanged for File System / Shell / Git / Execution. `agent.allow_gto_send`'s
+/// default (`true`) is the one exception as of P4.5: see `AgentInvokePolicy`'s
+/// doc comment for what "permissive" now actually means for it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPolicy {
@@ -62,9 +64,13 @@ pub struct GitPolicy {
     pub denied_subcommands: Vec<String>,
 }
 
-/// v1 per docs/cw/04_客製化設計.md §3: a plain switch, not yet tied to
-/// authored/derived edges (that upgrade is P4.5, once agent-canvas edges
-/// exist).
+/// Per docs/cw/04_客製化設計.md §3 (Phase A) and §1 decision 1 (P4.5 upgrade):
+/// `allow_gto_send = false` always denies. `true` (including the default) is
+/// scoped to agent-canvas authored edges — a sender may only `gto send` to a
+/// target it has an authored edge with (see local_bridge's
+/// `ensure_agent_allowed_to_dispatch`). `allow_subagent_spawn` gates whether
+/// this agent may be named as `parentAgentId` when creating a new agent
+/// (checked in `commands::agent::agent_create_with_repo`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInvokePolicy {

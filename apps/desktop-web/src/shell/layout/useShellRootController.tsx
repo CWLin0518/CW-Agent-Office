@@ -139,6 +139,9 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
   const [isChannelStudioOpen, setIsChannelStudioOpen] = useState(false)
   const [isStationManageOpen, setIsStationManageOpen] = useState(false)
   const [editingStation, setEditingStation] = useState<UpdateStationInput | null>(null)
+  /** Set when the station-manage modal was opened from agent-canvas's "New
+   * Subagent" context menu action (docs/cw/04_客製化設計.md §1, P4.5). */
+  const [pendingSubagentParentId, setPendingSubagentParentId] = useState<string | null>(null)
   const [isStationSearchOpen, setIsStationSearchOpen] = useState(false)
   const initialCanvasLayout = useMemo(loadCanvasLayoutPreference, [])
   const [canvasLayoutMode] = useState<WorkbenchLayoutMode>(initialCanvasLayout.mode)
@@ -284,6 +287,7 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
     setActiveStationId,
     setIsStationManageOpen,
     setEditingStation,
+    setPendingSubagentParentId,
   })
 
   const terminalController = useShellTerminalController({
@@ -1175,6 +1179,13 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
 
   const handleCanvasOpenStationManage = useCallback(() => {
     setEditingStation(null)
+    setPendingSubagentParentId(null)
+    setIsStationManageOpen(true)
+  }, [])
+
+  const handleAgentCanvasRequestNewSubagent = useCallback((parentAgentId: string) => {
+    setEditingStation(null)
+    setPendingSubagentParentId(parentAgentId)
     setIsStationManageOpen(true)
   }, [])
 
@@ -1462,6 +1473,12 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
       locale,
       workspaceId: presentedWorkspaceId,
       active: activeNavId === 'agent-canvas',
+      onRequestCreateSubagent: handleAgentCanvasRequestNewSubagent,
+    },
+    agentCanvasStandbyRailProps: {
+      locale,
+      workspaceId: presentedWorkspaceId,
+      active: activeNavId === 'agent-canvas',
     },
     activePaneModel,
     showWorkbenchCanvas,
@@ -1591,6 +1608,7 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
         locale,
         workspaceId: activeWorkspaceId,
         editingStation,
+        initialParentAgentId: pendingSubagentParentId,
         saving: stationSavePending,
         deleting: stationDeletePendingId === editingStation?.id,
         deleteCleanupState:
@@ -1599,6 +1617,7 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
         onClose: () => {
           setIsStationManageOpen(false)
           setEditingStation(null)
+          setPendingSubagentParentId(null)
           handleStationDeleteCleanupClose()
         },
         onPickWorkdir: handlePickStationWorkdir,

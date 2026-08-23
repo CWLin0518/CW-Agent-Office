@@ -581,17 +581,31 @@ fn build_directory_snapshot<R: tauri::Runtime>(
     }))
 }
 
-/// Phase A "Agent" category (docs/cw/04_客製化設計.md §3): v1 is a plain
-/// switch on whether an agent may `gto send` at all, not yet scoped to which
-/// target it's sending to (that upgrade to edge-scoped authorization is P4.5,
-/// once agent-canvas authored edges exist). Returns `Ok(())` for a human
-/// sender or an agent sender with no policy on record (fully permissive
-/// default, matching pre-P3 behavior).
+/// Phase A "Agent" category (docs/cw/04_客製化設計.md §3), upgraded per P4.5
+/// (§1 decision 1) to edge-scoped authorization now that agent-canvas
+/// authored edges exist: `allow_gto_send = false` still denies unconditionally,
+/// but `true` (including the default for agents with no policy on record) now
+/// additionally requires an authored edge (either direction) between the
+/// sender and *every* target — drawing a line on the canvas is what makes two
+/// agents allowed to talk. This is an intentional behavior change from pre-P4.5
+/// (previously any agent could `gto send` any other with no edge at all); see
+/// §1's decision record for why this isn't re-litigated here. Returns `Ok(())`
+/// for a human sender.
+///
+/// Known scope gap: only `dispatch_batch` (below) calls this. `publish_channel`
+/// (also below) has no equivalent check — it never enforced even the pre-P4.5
+/// `allow_gto_send` switch — and the `gto_handover`/`gto_report_status` MCP
+/// sidecar tools route through it with an agent-supplied sender/targets, so
+/// they currently bypass this edge requirement entirely. Not closed in P4.5
+/// (would mean gating a second, separately-designed RPC path); the in-canvas
+/// notice is worded to describe `gto send` dispatch specifically, not a
+/// blanket "agents can't reach each other" guarantee.
 fn ensure_agent_allowed_to_dispatch(
     app: &AppHandle,
     workspace_id: &str,
     sender_type: &DispatchSenderType,
     sender_agent_id: Option<&str>,
+    target_agent_ids: &[String],
 ) -> Result<(), BridgeError> {
     let (DispatchSenderType::Agent, Some(sender_agent_id)) = (sender_type, sender_agent_id) else {
         return Ok(());
@@ -610,6 +624,32 @@ fn ensure_agent_allowed_to_dispatch(
             "AGENT_POLICY_GTO_SEND_DENIED",
             format!("agent '{sender_agent_id}' policy denies gto send"),
         ));
+    }
+    for target_agent_id in target_agent_ids {
+        // An agent dispatching to itself (e.g. incidentally included in a
+        // multi-target broadcast) isn't a cross-agent communication and has
+        // no canvas edge to draw in the first place — `agent_canvas_create_authored_link`
+        // already refuses self-links (`ensure_distinct_agents_exist`), so
+        // requiring one here would make self-targeting permanently impossible.
+        if target_agent_id == sender_agent_id {
+            continue;
+        }
+        let has_edge = repo
+            .has_authored_edge(workspace_id, sender_agent_id, target_agent_id)
+            .map_err(|error| {
+                BridgeError::new(
+                    "LOCAL_BRIDGE_INTERNAL",
+                    format!("authored edge lookup failed: {error}"),
+                )
+            })?;
+        if !has_edge {
+            return Err(BridgeError::new(
+                "AGENT_POLICY_EDGE_REQUIRED",
+                format!(
+                    "no authored agent-canvas edge between '{sender_agent_id}' and '{target_agent_id}' — draw one on the canvas before sending"
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -674,6 +714,7 @@ fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Va
         &request.workspace_id,
         &request.sender.sender_type,
         request.sender.agent_id.as_deref(),
+        &request.targets,
     )?;
 
     let workspace_root = state

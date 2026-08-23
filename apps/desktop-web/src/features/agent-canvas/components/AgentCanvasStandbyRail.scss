@@ -1,0 +1,72 @@
+@use '../../../styles/tokens/responsive' as *;
+
+// Mirrors `shell/layout/LeftBusinessPane.scss`'s structure/spacing tokens
+// (this is the same left-pane slot, just with a feature-specific list
+// instead of the generic placeholder) — see docs/cw/04_客製化設計.md §8, P4.6.
+.agent-canvas-standby-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vb-space-lg);
+  height: 100%;
+  padding: #{rem(10)};
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.agent-canvas-standby-rail-title {
+  font-size: #{rem(16)};
+  font-weight: 700;
+  margin: 0;
+  color: var(--vb-text);
+}
+
+.agent-canvas-standby-rail-subtitle,
+.agent-canvas-standby-rail-empty {
+  font-size: #{rem(12)};
+  color: var(--vb-text-muted);
+  margin: var(--vb-space-2xs) 0 0;
+  line-height: 1.5;
+}
+
+.agent-canvas-standby-rail-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--vb-space-md) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vb-space-sm);
+}
+
+.agent-canvas-standby-rail-card {
+  display: flex;
+  flex-direction: column;
+  gap: #{rem(2)};
+  padding: #{rem(10)} #{rem(14)};
+  background: var(--vb-glass-lighter);
+  border: var(--vb-border-width) solid var(--vb-border-subtle);
+  border-radius: #{rem(10)};
+  cursor: grab;
+  transition:
+    background-color 140ms var(--vb-ease-smooth),
+    border-color 140ms var(--vb-ease-smooth);
+
+  &:hover {
+    background: var(--vb-glass-lighter-hover);
+    border-color: var(--vb-border-strong);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+.agent-canvas-standby-rail-card-name {
+  font-size: #{rem(13)};
+  font-weight: 600;
+  color: var(--vb-text);
+}
+
+.agent-canvas-standby-rail-card-tool {
+  font-size: #{rem(11)};
+  color: var(--vb-text-muted);
+}

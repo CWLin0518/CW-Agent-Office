@@ -13,6 +13,10 @@ export interface CreateStationInput {
   /** Local filesystem path to seed promptContent from at creation time only —
    * see docs/cw/04_客製化設計.md §2. Ignored on update. */
   externalTemplatePath?: string | null
+  /** Set when this agent is being created as a subagent from agent-canvas's
+   * "New Subagent" context menu action (docs/cw/04_客製化設計.md §1, P4.5).
+   * Create-only, like externalTemplatePath. */
+  parentAgentId?: string | null
 }
 
 export interface UpdateStationInput extends CreateStationInput {

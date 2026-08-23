@@ -2982,6 +2982,19 @@ export const messages = {
     'zh-CN': '这个 workspace 里还没有 Agent。',
     'en-US': 'No agents in this workspace yet.',
   },
+  'agentCanvas.standbyRail.title': { 'zh-CN': '待命 Agent', 'en-US': 'Standby Agents' },
+  'agentCanvas.standbyRail.subtitle': {
+    'zh-CN': '拖拉到画布上建立节点；同一个 Agent 可以拖出多个节点。',
+    'en-US': 'Drag onto the canvas to add a node; the same agent can have more than one.',
+  },
+  'agentCanvas.standbyRail.empty': { 'zh-CN': '这个工作区还没有 Agent。', 'en-US': 'No agents in this workspace yet.' },
+  'agentCanvas.standbyRail.dragHint': { 'zh-CN': '拖拉到画布上', 'en-US': 'Drag onto the canvas' },
+  'agentCanvas.align.left': { 'zh-CN': '左对齐', 'en-US': 'Align left' },
+  'agentCanvas.align.right': { 'zh-CN': '右对齐', 'en-US': 'Align right' },
+  'agentCanvas.align.top': { 'zh-CN': '顶部对齐', 'en-US': 'Align top' },
+  'agentCanvas.align.bottom': { 'zh-CN': '底部对齐', 'en-US': 'Align bottom' },
+  'agentCanvas.align.distributeHorizontal': { 'zh-CN': '水平均分', 'en-US': 'Distribute horizontally' },
+  'agentCanvas.align.distributeVertical': { 'zh-CN': '垂直均分', 'en-US': 'Distribute vertically' },
   'agentCanvas.zoomIn': { 'zh-CN': '放大', 'en-US': 'Zoom in' },
   'agentCanvas.zoomOut': { 'zh-CN': '缩小', 'en-US': 'Zoom out' },
   'agentCanvas.zoomReset': { 'zh-CN': '重置缩放', 'en-US': 'Reset zoom' },
@@ -2997,6 +3010,40 @@ export const messages = {
   'agentCanvas.edge.authoredTitle': {
     'zh-CN': '手动建立的连线',
     'en-US': 'Hand-drawn connection',
+  },
+  // P4.5 — authored edges + canvas subagent creation (docs/cw/04_客製化設計.md §1)
+  'agentCanvas.edge.ownershipTitle': {
+    'zh-CN': '隶属关系（parent / subagent）',
+    'en-US': 'Ownership (parent / subagent)',
+  },
+  'agentCanvas.contextMenu.newSubagent': { 'zh-CN': '新增 Subagent', 'en-US': 'New Subagent' },
+  'agentCanvas.contextMenu.delete': { 'zh-CN': '从画布移除', 'en-US': 'Remove from canvas' },
+  'agentCanvas.contextMenu.changeColor': { 'zh-CN': '变更颜色', 'en-US': 'Change color' },
+  'agentCanvas.color.groupLabel': { 'zh-CN': '颜色', 'en-US': 'Color' },
+  'agentCanvas.color.default': { 'zh-CN': '默认（灰色）', 'en-US': 'Default (gray)' },
+  'agentCanvas.port.input': { 'zh-CN': '输入端点（拖曳以连线）', 'en-US': 'Input (drag to connect)' },
+  'agentCanvas.port.output': { 'zh-CN': '输出端点（拖曳以连线）', 'en-US': 'Output (drag to connect)' },
+  'agentCanvas.port.disconnect': { 'zh-CN': '取消连接', 'en-US': 'Disconnect' },
+  'agentCanvas.edge.deleteConfirm': {
+    'zh-CN': '删除这条连线？删除后这两个 Agent 将无法互相 gto send，除非重新拉线。',
+    'en-US': 'Delete this connection? These two agents will no longer be able to gto send each other until it is redrawn.',
+  },
+  'agentCanvas.edge.derivedDeleteConfirm': {
+    'zh-CN': '清除这笔自动记录的往来记录？这只是清掉画布上的显示，不影响两个 Agent 之间的 gto send 权限；之后如果再有真实往来，这条线会重新出现。',
+    'en-US': 'Clear this auto-recorded activity line? This only removes it from the canvas — it does not affect gto send permission between these agents, and the line reappears if they interact again.',
+  },
+  'agentCanvas.edge.disconnect': { 'zh-CN': '断开连线', 'en-US': 'Disconnect' },
+  'agentCanvas.wire.makeBidirectional': { 'zh-CN': '设为双向', 'en-US': 'Make bidirectional' },
+  'agentCanvas.wire.makeUnidirectional': { 'zh-CN': '设为单向', 'en-US': 'Make unidirectional' },
+  'agentCanvas.toggleDerived.show': { 'zh-CN': '显示自动连线', 'en-US': 'Show derived connections' },
+  'agentCanvas.toggleDerived.hide': { 'zh-CN': '隐藏自动连线', 'en-US': 'Hide derived connections' },
+  'agentCanvas.notice.edgeRequired': {
+    'zh-CN': '提醒：Agent 之间透过 gto send 批次派发任务，现在需要先在这里手动拉一条连线；未连线会被拒绝。',
+    'en-US': 'Note: agents now need a hand-drawn connection here before a gto send task dispatch between them is allowed.',
+  },
+  'agentCanvas.error.linkActionFailed': {
+    'zh-CN': '连线操作失败',
+    'en-US': 'Connection action failed',
   },
 }
 
