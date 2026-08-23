@@ -133,6 +133,11 @@ interface DragState {
 
 interface PanState {
   pointerId: number
+  /** Which button started this pan — right-drag-pan (2) needs its trailing
+   * `contextmenu` event suppressed if the drag actually moved (see
+   * `suppressNextContextMenuRef`); space-armed left-drag-pan (0) never
+   * produces a context menu to begin with, so this only matters for 2. */
+  button: 0 | 2
   startPointerX: number
   startPointerY: number
   startScrollLeft: number
@@ -429,6 +434,12 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
   // clear the selection the drag just made — background pointerdown/up with
   // no movement (a plain click) never sets this, so that case is unaffected.
   const suppressNextClickRef = useRef(false)
+  // Set right before a real right-drag-pan (movement past the threshold)
+  // finishes, so the `contextmenu` event the browser still fires on right
+  // mouseup doesn't pop up a menu right after panning — a plain right-click
+  // with no movement never sets this, so `onViewportContextMenu` still
+  // fires normally for that case (see `handleViewportContextMenuInternal`).
+  const suppressNextContextMenuRef = useRef(false)
 
   const handleViewportPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -438,13 +449,43 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
       if (!isChrome && !isEditableTarget) {
         viewportRef.current?.focus({ preventScroll: true })
       }
-      if (event.button !== 0 || isChrome) return
+      if (isChrome) return
       const viewport = viewportRef.current
       if (!viewport) return
+
+      // Right-drag pan — always available (not gated behind space, unlike
+      // the left-button pan below), same underlying pan mechanism either
+      // way. Node/wire/port right-clicks never reach here: they're all
+      // covered by `isInteractiveChrome` (nodes/ports via
+      // `.agent-canvas-node-shell`, wires via `.agent-canvas-edge-hit`),
+      // which already bailed out above — this only ever starts for a
+      // right-mousedown on empty canvas background. `isEditableTarget` is
+      // excluded too, mirroring the marquee-select branch below it — no
+      // current caller renders an editable field directly on canvas
+      // background (outside chrome), but if one ever does, a right-drag
+      // there should behave like normal text interaction, not hijack it
+      // into a pan.
+      if (event.button === 2 && !isEditableTarget) {
+        event.preventDefault()
+        panStateRef.current = {
+          pointerId: event.pointerId,
+          button: 2,
+          startPointerX: event.clientX,
+          startPointerY: event.clientY,
+          startScrollLeft: viewport.scrollLeft,
+          startScrollTop: viewport.scrollTop,
+        }
+        viewport.classList.add('is-panning')
+        viewport.setPointerCapture?.(event.pointerId)
+        return
+      }
+
+      if (event.button !== 0) return
       if (spacePanArmed) {
         event.preventDefault()
         panStateRef.current = {
           pointerId: event.pointerId,
+          button: 0,
           startPointerX: event.clientX,
           startPointerY: event.clientY,
           startScrollLeft: viewport.scrollLeft,
@@ -555,6 +596,15 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
         panStateRef.current = null
         viewport?.classList.remove('is-panning')
         viewport?.releasePointerCapture?.(event.pointerId)
+        // Right-drag-pan's trailing `contextmenu` event only needs
+        // suppressing if the drag actually moved — a right mousedown+up
+        // with no movement in between is a plain right-click, which should
+        // still open whatever `onViewportContextMenu` normally shows.
+        if (panState.button === 2) {
+          const dx = event.clientX - panState.startPointerX
+          const dy = event.clientY - panState.startPointerY
+          if (Math.abs(dx) > 1 || Math.abs(dy) > 1) suppressNextContextMenuRef.current = true
+        }
         return
       }
       finishMarqueeDrag(event, true)
@@ -607,6 +657,18 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
       onViewportClick?.(event)
     },
     [onViewportClick],
+  )
+
+  const handleViewportContextMenuInternal = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (suppressNextContextMenuRef.current) {
+        suppressNextContextMenuRef.current = false
+        event.preventDefault()
+        return
+      }
+      onViewportContextMenu?.(event)
+    },
+    [onViewportContextMenu],
   )
 
   const [viewportWindow, setViewportWindow] = useState<CanvasViewportWindow | null>(null)
@@ -680,7 +742,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
         ref={viewportRef}
         tabIndex={-1}
         onClick={handleViewportClickInternal}
-        onContextMenu={onViewportContextMenu}
+        onContextMenu={handleViewportContextMenuInternal}
         onDragOver={onViewportDragOver}
         onDrop={onViewportDrop}
         onPointerDown={handleViewportPointerDown}

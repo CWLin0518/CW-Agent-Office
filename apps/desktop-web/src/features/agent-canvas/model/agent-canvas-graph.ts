@@ -54,6 +54,30 @@ export interface AgentCanvasNodeData {
   instanceId: string
   agent: AgentProfile
   runtimeState: AgentRuntimeState
+  /** Ordered `AgentLink.id`s of every AUTHORED link touching this agent as
+   * from/to, respectively — one visual port dot per id, plus a trailing "+"
+   * slot to create a new one (docs/cw/04_客製化設計.md §1). Only populated on
+   * an agent's primary instance (see `primaryInstanceIdByAgentId` below);
+   * any other (duplicate) instance gets empty arrays — it never anchors a
+   * real edge, so it never anchors a real port dot either, just the "+".
+   * Derived/ownership edges deliberately don't consume a slot — they're not
+   * something a user drags to create, so they keep anchoring at the node's
+   * vertical center (the pre-existing behavior, via `computePortEdgeGeometry`
+   * called with no slot args). */
+  outputLinkIds: string[]
+  inputLinkIds: string[]
+}
+
+/** Vertical spacing (canvas units) between stacked port slots on one side of
+ * a node. */
+export const PORT_SLOT_SPACING = 22
+
+/** Offset from a node's vertical CENTER for the `index`-th of `total`
+ * stacked port slots — symmetric around 0, so `total === 1` (no connections
+ * yet, just the "+") lands exactly on center, identical to the single fixed
+ * port position every node had before per-connection slots existed. */
+export function computePortSlotCenterOffset(index: number, total: number): number {
+  return (index - (total - 1) / 2) * PORT_SLOT_SPACING
 }
 
 /** `link` edges are `agent_links` rows (authored, hand-drawn, interactive;
@@ -119,24 +143,6 @@ export function buildAgentCanvasGraph(
   const liveInstances = instances.filter((instance) => agentById.has(instance.agentId))
   const columns = pickColumnCount(liveInstances.length)
 
-  let maxX = 0
-  let maxY = 0
-  const nodes: GraphCanvasNode<AgentCanvasNodeData>[] = liveInstances.map((instance, index) => {
-    const agent = agentById.get(instance.agentId) as AgentProfile
-    const position = resolveNodePosition(instance, agent, index, columns)
-    const size = nodeSizeForAgent(agent)
-    maxX = Math.max(maxX, position.x + size.width)
-    maxY = Math.max(maxY, position.y + size.height)
-    return {
-      id: instance.instanceId,
-      x: position.x,
-      y: position.y,
-      width: size.width,
-      height: size.height,
-      data: { instanceId: instance.instanceId, agent, runtimeState: statusByAgentId.get(agent.id) ?? 'unknown' },
-    }
-  })
-
   // `AgentLink`/ownership relationships are keyed by agentId, not
   // instanceId — an agent with multiple canvas instances gets its edges
   // anchored to a single "primary" instance (the first one found, in
@@ -152,6 +158,47 @@ export function buildAgentCanvasGraph(
       primaryInstanceIdByAgentId.set(instance.agentId, instance.instanceId)
     }
   }
+
+  // One ordered port-slot list per agent, authored links only (see
+  // `AgentCanvasNodeData.outputLinkIds` doc comment) — only ever populated
+  // for an agent whose primary instance is actually live.
+  const outputLinkIdsByAgentId = new Map<string, string[]>()
+  const inputLinkIdsByAgentId = new Map<string, string[]>()
+  for (const link of links) {
+    if (link.kind !== 'authored') continue
+    if (!primaryInstanceIdByAgentId.has(link.fromAgentId) || !primaryInstanceIdByAgentId.has(link.toAgentId)) continue
+    const outputList = outputLinkIdsByAgentId.get(link.fromAgentId) ?? []
+    outputList.push(link.id)
+    outputLinkIdsByAgentId.set(link.fromAgentId, outputList)
+    const inputList = inputLinkIdsByAgentId.get(link.toAgentId) ?? []
+    inputList.push(link.id)
+    inputLinkIdsByAgentId.set(link.toAgentId, inputList)
+  }
+
+  let maxX = 0
+  let maxY = 0
+  const nodes: GraphCanvasNode<AgentCanvasNodeData>[] = liveInstances.map((instance, index) => {
+    const agent = agentById.get(instance.agentId) as AgentProfile
+    const position = resolveNodePosition(instance, agent, index, columns)
+    const size = nodeSizeForAgent(agent)
+    maxX = Math.max(maxX, position.x + size.width)
+    maxY = Math.max(maxY, position.y + size.height)
+    const isPrimaryInstance = primaryInstanceIdByAgentId.get(agent.id) === instance.instanceId
+    return {
+      id: instance.instanceId,
+      x: position.x,
+      y: position.y,
+      width: size.width,
+      height: size.height,
+      data: {
+        instanceId: instance.instanceId,
+        agent,
+        runtimeState: statusByAgentId.get(agent.id) ?? 'unknown',
+        outputLinkIds: isPrimaryInstance ? outputLinkIdsByAgentId.get(agent.id) ?? [] : [],
+        inputLinkIds: isPrimaryInstance ? inputLinkIdsByAgentId.get(agent.id) ?? [] : [],
+      },
+    }
+  })
 
   const linkEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = links
     .filter((link) => primaryInstanceIdByAgentId.has(link.fromAgentId) && primaryInstanceIdByAgentId.has(link.toAgentId))
@@ -192,22 +239,45 @@ export interface PortEdgeGeometry {
   end: { x: number; y: number }
 }
 
-/** Grasshopper-style wire geometry: always output (right-mid of `from`) to
- * input (left-mid of `to`), regardless of the nodes' relative vertical
+/** A wire's anchor slot on one side of a node — `total === 1` (the default)
+ * anchors at the node's vertical center, matching every node's single fixed
+ * port before per-connection slots existed; `total > 1` fans slots out
+ * symmetrically via `computePortSlotCenterOffset`. */
+export interface PortSlot {
+  index: number
+  total: number
+}
+
+const CENTER_SLOT: PortSlot = { index: 0, total: 1 }
+
+/** Grasshopper-style wire geometry: always output (right side of `from`) to
+ * input (left side of `to`), regardless of the nodes' relative vertical
  * position — unlike `computeQuadraticEdgeGeometry` (the shared engine's
  * generic node-to-node heuristic, which picks whichever side is closer),
  * ports have a fixed side, so the wire is a horizontal S-curve that loops
- * around when `to` sits above/below/left of `from`. Used for both `link` and
- * `ownership` edges so ports and wires visually line up consistently. */
+ * around when `to` sits above/below/left of `from`. Used for `link` and
+ * `ownership` edges so ports and wires visually line up consistently —
+ * `ownership` and derived `link` edges call this with no slot args (center
+ * anchor, unchanged pre-multi-slot behavior); authored `link` edges pass
+ * each side's actual slot so multiple connections fan out to their own
+ * distinct port dot instead of converging on one point. */
 export function computePortEdgeGeometry(
   from: { x: number; y: number; width?: number; height?: number },
   to: { x: number; y: number; width?: number; height?: number },
+  fromSlot: PortSlot = CENTER_SLOT,
+  toSlot: PortSlot = CENTER_SLOT,
 ): PortEdgeGeometry {
   const fromWidth = from.width ?? AGENT_NODE_WIDTH
   const fromHeight = from.height ?? AGENT_NODE_HEIGHT
   const toHeight = to.height ?? AGENT_NODE_HEIGHT
-  const start = { x: from.x + fromWidth, y: from.y + fromHeight / 2 }
-  const end = { x: to.x, y: to.y + toHeight / 2 }
+  const start = {
+    x: from.x + fromWidth,
+    y: from.y + fromHeight / 2 + computePortSlotCenterOffset(fromSlot.index, fromSlot.total),
+  }
+  const end = {
+    x: to.x,
+    y: to.y + toHeight / 2 + computePortSlotCenterOffset(toSlot.index, toSlot.total),
+  }
   const offset = Math.min(120, Math.max(32, Math.abs(end.x - start.x) / 2))
   const c1 = { x: start.x + offset, y: start.y }
   const c2 = { x: end.x - offset, y: end.y }

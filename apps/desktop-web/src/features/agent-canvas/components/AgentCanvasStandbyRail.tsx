@@ -2,7 +2,7 @@ import { useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
 import { desktopApi } from '@shell/integration/desktop-api'
 import type { AgentProfile } from '@shell/integration/desktop-api'
 import { t, type Locale } from '@shell/i18n/ui-locale'
-import { AGENT_CANVAS_DRAG_MIME_TYPE } from '../model/agent-canvas-drag'
+import { setAgentCanvasDragPayload } from '../model/agent-canvas-drag'
 import './AgentCanvasStandbyRail.scss'
 
 interface AgentCanvasStandbyRailProps {
@@ -41,7 +41,7 @@ export function AgentCanvasStandbyRail({ locale, workspaceId, active }: AgentCan
   }, [active, workspaceId])
 
   function handleDragStart(agentId: string, event: ReactDragEvent<HTMLDivElement>) {
-    event.dataTransfer.setData(AGENT_CANVAS_DRAG_MIME_TYPE, agentId)
+    setAgentCanvasDragPayload(event.dataTransfer, agentId)
     event.dataTransfer.effectAllowed = 'copy'
   }
 

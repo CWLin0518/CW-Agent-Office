@@ -250,12 +250,16 @@
   white-space: nowrap;
 }
 
-// Grasshopper-style connection ports (docs/cw/04_客製化設計.md §1, P4.5):
-// fixed input (left)/output (right) grips at the node box's vertical
-// midpoint — `AgentCanvasNodeCard` renders these as siblings of
-// `.agent-canvas-node`, so they anchor to the shell box, not the card's own
-// padding (see `computePortEdgeGeometry`, which anchors wires to the same
-// box edges).
+// Grasshopper-style connection ports (docs/cw/04_客製化設計.md §1, P4.5/P4.6):
+// one dot per already-connected authored link, stacked vertically, plus a
+// trailing "+" to start a new one — `AgentCanvasNodeCard`'s `PortSlots`
+// renders these as siblings of `.agent-canvas-node`, so they anchor to the
+// shell box, not the card's own padding (see `computePortEdgeGeometry`,
+// which anchors wires to these same per-slot points via
+// `computePortSlotCenterOffset`). Base position is `top: 50%` +
+// `translateY(-50%)`; each element's own inline `style.transform` (set in
+// `AgentCanvasNodeCard`) ADDS the slot's offset on top of that — the
+// `transform` here is only the fallback for when no inline value is set.
 .agent-canvas-port {
   position: absolute;
   top: 50%;
@@ -265,13 +269,12 @@
   transform: translateY(-50%);
   background: var(--vb-surface);
   border: #{rem(2)} solid var(--vb-text-muted);
-  cursor: crosshair;
+  cursor: context-menu;
   touch-action: none;
   z-index: 2;
 
   &:hover {
     border-color: var(--vb-accent);
-    background: var(--vb-accent);
   }
 }
 
@@ -280,6 +283,42 @@
 }
 
 .agent-canvas-port--output {
+  right: #{rem(-6)};
+}
+
+// The "+" (add connection) slot — visually distinct from a connected dot
+// (square, not round, no fill) so it reads as "not yet a connection," and
+// this is the only slot that's still an actual drag source. Same footprint
+// as a connected dot (10px, -6px offset) so it doesn't read as a bigger,
+// more prominent control than the dots it sits alongside.
+.agent-canvas-port--add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: #{rem(10)};
+  height: #{rem(10)};
+  border-radius: #{rem(2)};
+  background: var(--vb-surface-muted);
+  border: #{rem(1.5)} solid var(--vb-text-muted);
+  cursor: crosshair;
+  color: var(--vb-text-muted);
+
+  svg {
+    width: #{rem(7)};
+    height: #{rem(7)};
+  }
+
+  &:hover {
+    border-color: var(--vb-accent);
+    color: var(--vb-accent);
+  }
+}
+
+.agent-canvas-port--input.agent-canvas-port--add {
+  left: #{rem(-6)};
+}
+
+.agent-canvas-port--output.agent-canvas-port--add {
   right: #{rem(-6)};
 }
 
@@ -349,7 +388,20 @@
 }
 
 .agent-canvas-edge-hit {
-  cursor: default;
+  cursor: pointer;
+}
+
+// Invisible, much wider stroke drawn on top of (well, under — paint order
+// doesn't matter since it's transparent) the real edge, purely to widen the
+// clickable/right-clickable hit area — an SVG path's default hit-testing
+// only responds within its actual painted stroke, and the visible edges
+// here are only ~1.5px wide, a hard target to hit precisely. `stroke:
+// transparent` (not `none`) still counts as "painted" for hit-testing
+// purposes, so this stays invisible while remaining clickable.
+.agent-canvas-edge-hit-path {
+  fill: none;
+  stroke: transparent;
+  stroke-width: #{rem(16)};
 }
 
 .agent-canvas-notice {

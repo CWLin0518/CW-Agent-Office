@@ -21,7 +21,7 @@ import {
 import { AgentCanvasColorSwatches } from './components/AgentCanvasColorSwatches'
 import { AgentCanvasNodeCard, type AgentPortHandlers, type AgentPortKind } from './components/AgentCanvasNodeCard'
 import { useAgentCanvasData } from './controllers/useAgentCanvasData'
-import { AGENT_CANVAS_DRAG_MIME_TYPE } from './model/agent-canvas-drag'
+import { parseAgentCanvasDragPayload } from './model/agent-canvas-drag'
 import { AGENT_NODE_HEIGHT, AGENT_NODE_WIDTH, computePortEdgeGeometry } from './model/agent-canvas-graph'
 import { statusLabel } from './model/agent-canvas-status-label'
 import './AgentCanvasPane.scss'
@@ -44,6 +44,11 @@ interface WireDragState {
   sourcePortKind: AgentPortKind
   sourceClientPoint: { x: number; y: number }
   currentClientPoint: { x: number; y: number }
+  /** Set when this drag started from an ALREADY-CONNECTED dot with
+   * Ctrl+Shift held (docs/cw/04_客製化設計.md §1) — rewires that specific
+   * link's grabbed end to wherever the drag completes (keeping the other,
+   * un-grabbed end fixed) instead of creating a brand new link. */
+  rewireLinkId?: string
 }
 
 interface NodeContextMenuState {
@@ -83,13 +88,6 @@ function isEditableEventTarget(target: EventTarget | null): boolean {
   )
 }
 
-interface PortContextMenuState {
-  agentId: string
-  portKind: AgentPortKind
-  clientX: number
-  clientY: number
-}
-
 // `.agent-canvas-edge-hit` (wires) is included alongside nodes/controls/menus
 // so that starting a pointer gesture on a wire — a click-to-select target
 // since Phase 4 — is never mistaken by the viewport for "empty background":
@@ -104,15 +102,29 @@ function isChromeElement(target: HTMLElement): boolean {
 }
 
 /** Finds the port element (if any) under a screen point — used on pointerup
- * to resolve a drag's drop target. `elementFromPoint` works regardless of
- * pointer capture (capture only affects event *routing*, not hit-testing). */
+ * to resolve a drag's drop target. Pointer capture doesn't affect hit-testing
+ * (only event *routing*), but a port dot is a small (10px) target sitting
+ * exactly where a wire's curve terminates — and every wire has its own wide
+ * (16px) invisible hit-path for easier wire selection, which can end up
+ * painted on top of that same point. Checking only the single topmost
+ * element (`elementFromPoint`) would then resolve to the wire instead of the
+ * port underneath it, silently failing to complete an otherwise-correct
+ * drop. `elementsFromPoint` (plural) returns every element stacked at that
+ * point, front-to-back, so this searches through all of them for the first
+ * actual port — the wire on top no longer hides it. */
 function resolvePortAt(clientX: number, clientY: number): { agentId: string; portKind: AgentPortKind } | null {
-  const element = document.elementFromPoint(clientX, clientY)
-  const portElement = element instanceof HTMLElement ? element.closest<HTMLElement>('[data-port]') : null
-  const agentId = portElement?.dataset.agentId
-  const portKind = portElement?.dataset.port
-  if (!agentId || (portKind !== 'input' && portKind !== 'output')) return null
-  return { agentId, portKind }
+  const stack = document.elementsFromPoint(clientX, clientY)
+  for (const element of stack) {
+    if (!(element instanceof HTMLElement)) continue
+    const portElement = element.closest<HTMLElement>('[data-port]')
+    if (!portElement) continue
+    const agentId = portElement.dataset.agentId
+    const portKind = portElement.dataset.port
+    if (agentId && (portKind === 'input' || portKind === 'output')) {
+      return { agentId, portKind }
+    }
+  }
+  return null
 }
 
 /** Screen-space (not canvas-space) wire preview path — deliberately not
@@ -185,7 +197,6 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
   } = useAgentCanvasData(workspaceId, active)
   const [wireDrag, setWireDrag] = useState<WireDragState | null>(null)
   const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null)
-  const [portContextMenu, setPortContextMenu] = useState<PortContextMenuState | null>(null)
   const [wireContextMenu, setWireContextMenu] = useState<WireContextMenuState | null>(null)
   const [selection, setSelection] = useState<AgentCanvasSelection>(EMPTY_SELECTION)
   // Purely a display filter — hiding derived edges never touches the
@@ -207,7 +218,6 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
 
   const closeMenus = useCallback(() => {
     setNodeContextMenu(null)
-    setPortContextMenu(null)
     setWireContextMenu(null)
   }, [])
 
@@ -233,7 +243,7 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
   // the `wireDrag` object itself, so this doesn't tear down/resubscribe on
   // every pointermove while a wire is being dragged.
   const isDragging = wireDrag !== null
-  const hasOpenMenu = nodeContextMenu !== null || portContextMenu !== null || wireContextMenu !== null
+  const hasOpenMenu = nodeContextMenu !== null || wireContextMenu !== null
   useEffect(() => {
     if (!isDragging && !hasOpenMenu) return
     function onKeyDown(event: KeyboardEvent) {
@@ -258,8 +268,19 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
   )
 
   const handlePortPointerDown = useCallback(
-    (agentId: string, portKind: AgentPortKind, event: ReactPointerEvent<HTMLDivElement>) => {
+    (
+      agentId: string,
+      portKind: AgentPortKind,
+      event: ReactPointerEvent<HTMLDivElement>,
+      rewireLinkId?: string,
+    ) => {
       if (event.button !== 0) return
+      // An already-connected dot only starts a drag when Ctrl+Shift is held
+      // (the rewire gesture) — a plain pointerdown on it does nothing here,
+      // falling through to its existing right-click-only behavior. The "+"
+      // (no `rewireLinkId`) is unaffected — it always starts a drag,
+      // regardless of modifiers, exactly as before this feature existed.
+      if (rewireLinkId && !(event.ctrlKey && event.shiftKey)) return
       event.stopPropagation()
       event.currentTarget.setPointerCapture?.(event.pointerId)
       capturedPortRef.current = { element: event.currentTarget, pointerId: event.pointerId }
@@ -270,6 +291,7 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
         sourcePortKind: portKind,
         sourceClientPoint: { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 },
         currentClientPoint: { x: event.clientX, y: event.clientY },
+        rewireLinkId,
       })
     },
     [],
@@ -310,9 +332,46 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
       const target = resolvePortAt(event.clientX, event.clientY)
       const drag = wireDrag
       setWireDrag(null)
-      if (!target || target.agentId === drag.sourceAgentId || target.portKind === drag.sourcePortKind) {
+      // Common to both modes: can't drop back onto the agent you grabbed
+      // from — for a fresh connection that's a self-link; for a rewire,
+      // that's "the end didn't actually move anywhere."
+      if (!target || target.agentId === drag.sourceAgentId) return
+
+      if (drag.rewireLinkId) {
+        // Rewire (Ctrl+Shift-drag from an already-connected dot): keep the
+        // OTHER (un-grabbed) end of the link fixed, replace the grabbed
+        // end's agent with wherever this was dropped. The target's specific
+        // port kind doesn't matter here — unlike a fresh connection, the
+        // role of the moved end is already fixed by which dot was grabbed,
+        // so any port on the target agent identifies "reconnect to this
+        // agent" equally well.
+        const linkEdge = graph.edges.find(
+          (edge) =>
+            edge.data.kind === 'link' && edge.data.link.kind === 'authored' && edge.data.link.id === drag.rewireLinkId,
+        )
+        if (!linkEdge || linkEdge.data.kind !== 'link') return
+        const { link } = linkEdge.data
+        const sourceIsOutput = drag.sourcePortKind === 'output'
+        const newFromAgentId = sourceIsOutput ? target.agentId : link.fromAgentId
+        const newToAgentId = sourceIsOutput ? link.toAgentId : target.agentId
+        // Dropping onto the link's own other (un-grabbed) end would make it
+        // a self-link — invalid. (Dropping back onto the grabbed end's own
+        // original agent is already excluded above, by the unconditional
+        // `target.agentId === drag.sourceAgentId` check.)
+        if (newFromAgentId === newToAgentId) return
+        // Create before delete (not the reverse) so a failure is
+        // recoverable rather than destructive: if `createAuthoredLink`
+        // fails, the original link is untouched; if the follow-up
+        // `deleteAuthoredLink` then fails, the user ends up with both the
+        // old and new link (visible, fixable) instead of the link silently
+        // vanishing.
+        createAuthoredLink(newFromAgentId, newToAgentId)
+          .then(() => deleteAuthoredLink(link.fromAgentId, link.toAgentId))
+          .catch(reportLinkActionError)
         return
       }
+
+      if (target.portKind === drag.sourcePortKind) return
       const sourceIsOutput = drag.sourcePortKind === 'output'
       const fromAgentId = sourceIsOutput ? drag.sourceAgentId : target.agentId
       const toAgentId = sourceIsOutput ? target.agentId : drag.sourceAgentId
@@ -324,7 +383,7 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
       const action = event.shiftKey ? deleteAuthoredLink : createAuthoredLink
       action(fromAgentId, toAgentId).catch(reportLinkActionError)
     },
-    [wireDrag, createAuthoredLink, deleteAuthoredLink, reportLinkActionError],
+    [wireDrag, graph.edges, createAuthoredLink, deleteAuthoredLink, reportLinkActionError],
   )
 
   const handlePortPointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -334,25 +393,21 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
     setWireDrag((previous) => (previous && previous.pointerId === event.pointerId ? null : previous))
   }, [])
 
-  const handlePortContextMenu = useCallback(
-    (agentId: string, portKind: AgentPortKind, event: ReactMouseEvent<HTMLDivElement>) => {
-      event.preventDefault()
-      event.stopPropagation()
-      setNodeContextMenu(null)
-      setPortContextMenu({ agentId, portKind, clientX: event.clientX, clientY: event.clientY })
-    },
-    [],
-  )
-
+  // No `onContextMenu` here — right-clicking the "+" (add connection)
+  // element has nothing to disconnect (it's never an existing link);
+  // disconnecting is now precisely per-dot, via `handlePortSlotContextMenu`
+  // on each already-connected slot instead. `rewireLinkId`, when passed
+  // (only by an already-connected dot, never the "+"), gates the drag
+  // behind Ctrl+Shift inside `handlePortPointerDown` and rewires that link
+  // on drop instead of creating a new one — see `handlePortPointerUp`.
   const getPortHandlers = useCallback(
-    (agentId: string, portKind: AgentPortKind): AgentPortHandlers => ({
-      onPointerDown: (event) => handlePortPointerDown(agentId, portKind, event),
+    (agentId: string, portKind: AgentPortKind, rewireLinkId?: string): AgentPortHandlers => ({
+      onPointerDown: (event) => handlePortPointerDown(agentId, portKind, event, rewireLinkId),
       onPointerMove: handlePortPointerMove,
       onPointerUp: handlePortPointerUp,
       onPointerCancel: handlePortPointerCancel,
-      onContextMenu: (event) => handlePortContextMenu(agentId, portKind, event),
     }),
-    [handlePortPointerDown, handlePortPointerMove, handlePortPointerUp, handlePortPointerCancel, handlePortContextMenu],
+    [handlePortPointerDown, handlePortPointerMove, handlePortPointerUp, handlePortPointerCancel],
   )
 
   const handleNodeClick = useCallback((nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -419,7 +474,6 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
   const handleNodeContextMenu = useCallback(
     (nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => {
       event.preventDefault()
-      setPortContextMenu(null)
       // Right-clicking a node outside the current selection replaces it (a
       // stray right-click shouldn't bulk-affect an unrelated multi-selection);
       // right-clicking a node already inside the selection keeps it, so the
@@ -444,18 +498,21 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
   // Standby-rail drop target (docs/cw/04_客製化設計.md §8, P4.6) — native
   // HTML5 drag-and-drop, not this pane's own pointer-based wire/marquee
   // dragging, since the drag source (left rail) and this drop target are
-  // separate shell panes with no shared parent state.
+  // separate shell panes with no shared parent state. `getData()` isn't
+  // readable until the actual `drop` event (browsers return `''` for it
+  // during `dragover`/`dragenter`, by spec, for security) — so this always
+  // allows the drop rather than trying to sniff the payload early; a drop
+  // that turns out not to be ours is a harmless no-op in `handleCanvasDrop`.
   const handleCanvasDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
-    if (!event.dataTransfer.types.includes(AGENT_CANVAS_DRAG_MIME_TYPE)) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
   }, [])
 
   const handleCanvasDrop = useCallback(
     (event: ReactDragEvent<HTMLDivElement>) => {
-      const agentId = event.dataTransfer.getData(AGENT_CANVAS_DRAG_MIME_TYPE)
-      if (!agentId) return
       event.preventDefault()
+      const agentId = parseAgentCanvasDragPayload(event.dataTransfer)
+      if (!agentId) return
       const dropPoint = graphCanvasRef.current?.screenToCanvasPoint(event.clientX, event.clientY) ?? { x: 0, y: 0 }
       // Center the new node under the cursor rather than anchoring its
       // top-left corner there — approximates with the regular (non-subagent)
@@ -528,25 +585,40 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
   // `handleNodeContextMenu`'s convention; a wire already inside a
   // multi-selection keeps the whole selection so the menu's actions apply
   // to every selected wire at once.
-  const handleWireContextMenu = useCallback((link: AgentLink, event: ReactMouseEvent<SVGGElement>) => {
+  // Untyped-element event (not `<SVGGElement>` specifically) since this is
+  // shared by right-clicking the wire's own `<g>` AND right-clicking one of
+  // its port dots (an `HTMLDivElement`, see `handlePortSlotContextMenu`) —
+  // only `preventDefault`/`clientX`/`clientY` are read, neither element-specific.
+  const handleWireContextMenu = useCallback((link: AgentLink, event: ReactMouseEvent) => {
     event.preventDefault()
     setNodeContextMenu(null)
-    setPortContextMenu(null)
     setSelection((previous) =>
       previous.edgeIds.has(link.id) ? previous : { nodeIds: new Set(), edgeIds: new Set([link.id]) },
     )
     setWireContextMenu({ clientX: event.clientX, clientY: event.clientY })
   }, [])
 
-  /** Resolves `selection.edgeIds` back to full `AgentLink` objects (only
-   * `AgentLink.id` is stored in selection) via `graph.edges` — the same
-   * lookup shape `handlePortDisconnect` below already uses for ports. */
+  /** Resolves `selection.edgeIds` (or any other id set) back to full
+   * `AgentLink` objects — only `AgentLink.id` is stored in selection/passed
+   * around elsewhere. */
   const resolveSelectedAuthoredLinks = useCallback(
     (edgeIds: ReadonlySet<string>): AgentLink[] =>
       graph.edges
         .filter((edge) => edge.data.kind === 'link' && edge.data.link.kind === 'authored' && edgeIds.has(edge.data.link.id))
         .map((edge) => (edge.data as { kind: 'link'; link: AgentLink }).link),
     [graph.edges],
+  )
+
+  // Right-clicking a node's connected port dot (one per authored link, see
+  // `AgentCanvasNodeCard`'s `PortSlots`) opens the exact same wire context
+  // menu right-clicking the wire's own line does — a dot is just another
+  // rendering of that same link, not a separate concept.
+  const handlePortSlotContextMenu = useCallback(
+    (_portKind: AgentPortKind, linkId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+      const [link] = resolveSelectedAuthoredLinks(new Set([linkId]))
+      if (link) handleWireContextMenu(link, event)
+    },
+    [resolveSelectedAuthoredLinks, handleWireContextMenu],
   )
 
   const selectedAuthoredLinks = resolveSelectedAuthoredLinks(selection.edgeIds)
@@ -672,22 +744,6 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
     [getSelectedNodeBoxes, commitInstancePosition],
   )
 
-  const handlePortDisconnect = useCallback(() => {
-    if (!portContextMenu) return
-    const { agentId, portKind } = portContextMenu
-    setPortContextMenu(null)
-    const linksToRemove: AgentLink[] = []
-    for (const edge of graph.edges) {
-      if (edge.data.kind !== 'link' || edge.data.link.kind !== 'authored') continue
-      const { link } = edge.data
-      const touchesThisPort = portKind === 'output' ? link.fromAgentId === agentId : link.toAgentId === agentId
-      if (touchesThisPort) linksToRemove.push(link)
-    }
-    Promise.all(linksToRemove.map((link) => deleteAuthoredLink(link.fromAgentId, link.toAgentId))).catch(
-      reportLinkActionError,
-    )
-  }, [portContextMenu, graph.edges, deleteAuthoredLink, reportLinkActionError])
-
   if (isEmpty) {
     return (
       <div className="agent-canvas">
@@ -755,12 +811,15 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
         <AgentCanvasNodeCard
           node={node.data}
           locale={locale}
-          getPortHandlers={(portKind) => getPortHandlers(node.data.agent.id, portKind)}
+          getPortHandlers={(portKind, rewireLinkId) => getPortHandlers(node.data.agent.id, portKind, rewireLinkId)}
+          onPortSlotContextMenu={handlePortSlotContextMenu}
         />
       )}
       renderEdge={(edge, from, to, _engineGeometry, arrowMarkerUrl) => {
-        const geometry = computePortEdgeGeometry(from, to)
         if (edge.data.kind === 'ownership') {
+          // Center-anchored (no slot args) — ownership lines don't consume a
+          // port dot, unchanged from before per-connection slots existed.
+          const geometry = computePortEdgeGeometry(from, to)
           return (
             <g pointerEvents="none">
               <title>{t(locale, 'agentCanvas.edge.ownershipTitle')}</title>
@@ -770,6 +829,9 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
         }
         const { link } = edge.data
         if (link.kind === 'derived') {
+          // Also center-anchored — derived lines are read-only observations,
+          // never created via drag, so they don't need/get their own slot.
+          const geometry = computePortEdgeGeometry(from, to)
           return (
             <g
               pointerEvents="auto"
@@ -780,6 +842,10 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
               }}
             >
               <title>{t(locale, 'agentCanvas.edge.derivedTitle')}</title>
+              {/* Invisible wide stroke widens the clickable/right-clickable
+                  area well beyond the thin visible line below — a bare
+                  1.5px stroke is a tiny, easy-to-miss target. */}
+              <path d={geometry.path} className="agent-canvas-edge-hit-path" />
               <path
                 d={geometry.path}
                 className="agent-canvas-edge agent-canvas-edge--derived"
@@ -788,6 +854,29 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
             </g>
           )
         }
+        // Authored links each get their own port dot on both ends (see
+        // `AgentCanvasNodeCard`'s `PortSlots`) — anchor the curve to the
+        // exact same slot the dot renders at, via `outputLinkIds`/
+        // `inputLinkIds`' index of this specific link, so the line visually
+        // starts/ends right at its own dot instead of the node's center.
+        const fromTotal = from.data.outputLinkIds.length + 1
+        const fromIndex = from.data.outputLinkIds.indexOf(link.id)
+        const toTotal = to.data.inputLinkIds.length + 1
+        const toIndex = to.data.inputLinkIds.indexOf(link.id)
+        // Should be unreachable — `outputLinkIds`/`inputLinkIds` are built
+        // from the same pass over `links` that produces this very edge (see
+        // `buildAgentCanvasGraph`). Falling back to index 0 keeps rendering
+        // instead of crashing, but a future refactor breaking that
+        // invariant deserves a visible signal, not a silently overlapping wire.
+        if (import.meta.env.DEV && (fromIndex === -1 || toIndex === -1)) {
+          console.warn('[agent-canvas] authored link missing from its own node port-slot list', link.id)
+        }
+        const geometry = computePortEdgeGeometry(
+          from,
+          to,
+          { index: fromIndex === -1 ? 0 : fromIndex, total: fromTotal },
+          { index: toIndex === -1 ? 0 : toIndex, total: toTotal },
+        )
         const isSelected = selection.edgeIds.has(link.id)
         return (
           <g
@@ -797,6 +886,10 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
             onContextMenu={(event) => handleWireContextMenu(link, event)}
           >
             <title>{t(locale, 'agentCanvas.edge.authoredTitle')}</title>
+            {/* Invisible wide stroke widens the clickable/right-clickable
+                area well beyond the thin visible line below — a bare 1.5px
+                stroke is a tiny, easy-to-miss target for left-click select. */}
+            <path d={geometry.path} className="agent-canvas-edge-hit-path" />
             <path
               d={geometry.path}
               className={`agent-canvas-edge agent-canvas-edge--authored${
@@ -946,18 +1039,6 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
               </div>,
               document.body,
             )}
-          {portContextMenu &&
-            createPortal(
-              <div
-                className="agent-canvas-context-menu"
-                style={{ left: portContextMenu.clientX, top: portContextMenu.clientY }}
-              >
-                <button type="button" onClick={handlePortDisconnect}>
-                  {t(locale, 'agentCanvas.port.disconnect')}
-                </button>
-              </div>,
-              document.body,
-            )}
           {wireContextMenu &&
             createPortal(
               <div
@@ -984,7 +1065,21 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
             )}
           {wireDrag &&
             createPortal(
-              <svg className="agent-canvas-wire-preview" aria-hidden="true">
+              // `<svg>` is a replaced element — under `position: fixed` +
+              // `inset: 0` alone (see .agent-canvas-wire-preview) a
+              // replaced element with `width`/`height: auto` does NOT
+              // stretch to fill both offsets the way a normal box would; it
+              // falls back to its intrinsic default size (~300×150 in most
+              // engines), so without an explicit size here the preview line
+              // only ever draws inside a small top-left box instead of
+              // across the whole screen. `100vw`/`100vh` sizes it
+              // unambiguously to the viewport regardless of that quirk.
+              <svg
+                className="agent-canvas-wire-preview"
+                width="100vw"
+                height="100vh"
+                aria-hidden="true"
+              >
                 <path
                   d={buildWirePreviewPath(wireDrag.sourceClientPoint, wireDrag.currentClientPoint)}
                   className="agent-canvas-wire-preview-path"

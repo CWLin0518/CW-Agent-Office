@@ -3021,9 +3021,16 @@ export const messages = {
   'agentCanvas.contextMenu.changeColor': { 'zh-CN': '变更颜色', 'en-US': 'Change color' },
   'agentCanvas.color.groupLabel': { 'zh-CN': '颜色', 'en-US': 'Color' },
   'agentCanvas.color.default': { 'zh-CN': '默认（灰色）', 'en-US': 'Default (gray)' },
-  'agentCanvas.port.input': { 'zh-CN': '输入端点（拖曳以连线）', 'en-US': 'Input (drag to connect)' },
-  'agentCanvas.port.output': { 'zh-CN': '输出端点（拖曳以连线）', 'en-US': 'Output (drag to connect)' },
-  'agentCanvas.port.disconnect': { 'zh-CN': '取消连接', 'en-US': 'Disconnect' },
+  'agentCanvas.port.input': {
+    'zh-CN': '输入端点（右键可管理这条连线；按住 Ctrl+Shift 拖曳可重新接线）',
+    'en-US': 'Input (right-click to manage this connection; Ctrl+Shift-drag to rewire)',
+  },
+  'agentCanvas.port.output': {
+    'zh-CN': '输出端点（右键可管理这条连线；按住 Ctrl+Shift 拖曳可重新接线）',
+    'en-US': 'Output (right-click to manage this connection; Ctrl+Shift-drag to rewire)',
+  },
+  'agentCanvas.port.addInput': { 'zh-CN': '新增输入连线（拖曳以连线）', 'en-US': 'Add input connection (drag to connect)' },
+  'agentCanvas.port.addOutput': { 'zh-CN': '新增输出连线（拖曳以连线）', 'en-US': 'Add output connection (drag to connect)' },
   'agentCanvas.edge.deleteConfirm': {
     'zh-CN': '删除这条连线？删除后这两个 Agent 将无法互相 gto send，除非重新拉线。',
     'en-US': 'Delete this connection? These two agents will no longer be able to gto send each other until it is redrawn.',
