@@ -85,7 +85,24 @@ export function computePortSlotCenterOffset(index: number, total: number): numbe
  * client-side from `agent.parentAgentId` — deliberately not persisted as an
  * `agent_links` row, since that table's kind enum is about communication
  * relationships, not "who manages whom" (docs/cw/04_客製化設計.md §1, P4.5). */
-export type AgentCanvasEdgeData = { kind: 'link'; link: AgentLink } | { kind: 'ownership' }
+export type AgentCanvasEdgeData =
+  | {
+      kind: 'link'
+      link: AgentLink
+      /** Only set for a `derived` link when the opposite direction ALSO has
+       * its own row (e.g. both `a -> b` and `b -> a` were recorded from real
+       * `gto send` traffic) — the backend keeps these as two independent
+       * facts (see `AgentLinkRepository.delete_derived_link`), but rendering
+       * them as two separate edges produced two visually different curves
+       * (`computePortEdgeGeometry` is directional: it always exits `from`'s
+       * right side and enters `to`'s left side), which reads as a second
+       * wire looping backward into the previous agent. Collapsing them into
+       * one edge with a double-headed arrow instead keeps the "two agents
+       * talk to each other" fact visible without the backward-looking
+       * duplicate line. */
+      reverseLinkId?: string
+    }
+  | { kind: 'ownership' }
 
 export interface AgentCanvasGraphView {
   nodes: GraphCanvasNode<AgentCanvasNodeData>[]
@@ -200,13 +217,64 @@ export function buildAgentCanvasGraph(
     }
   })
 
-  const linkEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = links
-    .filter((link) => primaryInstanceIdByAgentId.has(link.fromAgentId) && primaryInstanceIdByAgentId.has(link.toAgentId))
-    .map((link) => ({
+  const liveLinks = links.filter(
+    (link) => primaryInstanceIdByAgentId.has(link.fromAgentId) && primaryInstanceIdByAgentId.has(link.toAgentId),
+  )
+  // Authored links are already deduped direction-agnostically at the backend
+  // (`create_authored_link`/`has_authored_edge`) — at most one row per
+  // unordered pair, so each maps straight to its own edge. Derived links have
+  // no such guarantee (`a -> b` and `b -> a` are two independent "last
+  // interacted at" facts) — group by unordered pair first so a pair with
+  // both directions recorded renders as ONE edge (double arrowhead) instead
+  // of two directionally-mirrored curves that look like a wire looping back
+  // to the previous agent. Keyed by a nested Map (not a joined string) so an
+  // agent id that happens to contain the join separator can't collide two
+  // unrelated pairs into one. `agent_links` has a
+  // `UNIQUE(workspace_id, from_agent_id, to_agent_id, kind)` index, so each
+  // inner array holds at most 2 rows (one per direction).
+  const derivedByPair = new Map<string, Map<string, AgentLink[]>>()
+  const authoredLinks: AgentLink[] = []
+  for (const link of liveLinks) {
+    if (link.kind !== 'derived') {
+      authoredLinks.push(link)
+      continue
+    }
+    const [a, b] = [link.fromAgentId, link.toAgentId].sort()
+    const inner = derivedByPair.get(a) ?? new Map<string, AgentLink[]>()
+    const pairLinks = inner.get(b) ?? []
+    pairLinks.push(link)
+    inner.set(b, pairLinks)
+    derivedByPair.set(a, inner)
+  }
+  const derivedEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = []
+  for (const inner of derivedByPair.values()) {
+    for (const pairLinks of inner.values()) {
+      // `list_links` orders rows by most-recently-active first, so which
+      // direction happens to be `pairLinks[0]` flips between polls for a
+      // pair that's genuinely talking both ways — picking that as "primary"
+      // would flip `fromId`/`toId` (and so the edge's React key and its
+      // directional curve shape) every ~8s. Pick the lexicographically
+      // smaller `fromAgentId` instead so the rendered edge is stable across
+      // polls regardless of which side spoke most recently.
+      const [primary, reverse] =
+        pairLinks.length === 2 && pairLinks[0].fromAgentId > pairLinks[1].fromAgentId
+          ? [pairLinks[1], pairLinks[0]]
+          : pairLinks
+      derivedEdges.push({
+        fromId: primaryInstanceIdByAgentId.get(primary.fromAgentId) as string,
+        toId: primaryInstanceIdByAgentId.get(primary.toAgentId) as string,
+        data: { kind: 'link' as const, link: primary, reverseLinkId: reverse?.id },
+      })
+    }
+  }
+  const linkEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = [
+    ...authoredLinks.map((link) => ({
       fromId: primaryInstanceIdByAgentId.get(link.fromAgentId) as string,
       toId: primaryInstanceIdByAgentId.get(link.toAgentId) as string,
-      data: { kind: 'link', link },
-    }))
+      data: { kind: 'link' as const, link },
+    })),
+    ...derivedEdges,
+  ]
 
   const ownershipEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = agents
     .filter(

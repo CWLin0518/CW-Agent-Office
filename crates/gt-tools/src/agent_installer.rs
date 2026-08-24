@@ -465,6 +465,68 @@ mod tests {
     }
 
     #[test]
+    fn parse_capability_support_detects_known_overlay_flags() {
+        let help_text = "Usage: claude [options]\n\n  --mcp-config <file>   Load an additional MCP config\n  --settings <file>     Load additional settings\n";
+        let support = AgentInstaller::parse_capability_support_from_help(help_text);
+        assert!(support.supports_mcp_config_flag);
+        assert!(support.supports_settings_flag);
+        assert!(!support.supports_skills_dir_flag);
+    }
+
+    #[test]
+    fn parse_capability_support_defaults_false_when_flags_absent() {
+        let help_text = "Usage: codex [options]\n\n  --help   Show help\n";
+        let support = AgentInstaller::parse_capability_support_from_help(help_text);
+        assert!(!support.supports_mcp_config_flag);
+        assert!(!support.supports_settings_flag);
+        assert!(!support.supports_skills_dir_flag);
+    }
+
+    #[test]
+    fn capability_support_cache_round_trips_and_respects_ttl() {
+        let dir = temp_dir("capability-cache");
+        with_test_home(&dir, |_home| {
+            let support = ProviderCapabilitySupport {
+                supports_mcp_config_flag: true,
+                supports_settings_flag: true,
+                supports_skills_dir_flag: false,
+            };
+            AgentInstaller::store_cached_capability_support(AgentType::ClaudeCode, &support);
+
+            let cached = AgentInstaller::load_cached_capability_support(AgentType::ClaudeCode)
+                .expect("cached capability support");
+            assert_eq!(cached, support);
+
+            assert!(AgentInstaller::load_cached_capability_support(AgentType::Codex).is_none());
+        });
+    }
+
+    #[test]
+    fn invalidate_capability_support_cache_clears_single_agent_without_touching_others() {
+        let dir = temp_dir("capability-cache-invalidate");
+        with_test_home(&dir, |_home| {
+            let claude_support = ProviderCapabilitySupport {
+                supports_mcp_config_flag: true,
+                supports_settings_flag: true,
+                supports_skills_dir_flag: false,
+            };
+            let codex_support = ProviderCapabilitySupport::default();
+            AgentInstaller::store_cached_capability_support(AgentType::ClaudeCode, &claude_support);
+            AgentInstaller::store_cached_capability_support(AgentType::Codex, &codex_support);
+
+            AgentInstaller::invalidate_capability_support_cache(Some(AgentType::ClaudeCode));
+
+            assert!(
+                AgentInstaller::load_cached_capability_support(AgentType::ClaudeCode).is_none()
+            );
+            assert_eq!(
+                AgentInstaller::load_cached_capability_support(AgentType::Codex),
+                Some(codex_support)
+            );
+        });
+    }
+
+    #[test]
     fn uninstall_failure_message_uses_removal_copy() {
         let message = AgentInstaller::uninstall_failure_message(
             AgentType::Codex,
@@ -625,6 +687,46 @@ pub enum AgentUninstallAction {
     Command { program: String, args: Vec<String> },
     RemovePaths { paths: Vec<PathBuf> },
 }
+
+/// What the currently-pinned CLI binary actually supports for overlay-style
+/// mounting, per docs/cw/08_MCP_Hook_Skill掛載設計.md §2.2. Never assume these
+/// from memory of an old CLI version — always probe the live binary's
+/// `--help` output (see `AgentInstaller::detect_capability_support`).
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCapabilitySupport {
+    /// `--mcp-config <file>`
+    pub supports_mcp_config_flag: bool,
+    /// `--settings <file>` (used to overlay `hooks`)
+    pub supports_settings_flag: bool,
+    /// A flag to overlay an extra skills directory. As of this design's
+    /// writing no such flag is confirmed to exist on either CLI; this stays
+    /// `false` until a probe actually finds one, and materialize (§2.4)
+    /// falls back to copying skill files into the agent's own workdir when
+    /// it's `false`.
+    pub supports_skills_dir_flag: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+struct CachedProviderCapabilitySupport {
+    checked_at_ms: u64,
+    support: ProviderCapabilitySupport,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ProviderCapabilitySupportCacheStore {
+    version: u32,
+    entries: BTreeMap<String, CachedProviderCapabilitySupport>,
+}
+
+const PROVIDER_CAPABILITY_CACHE_VERSION: u32 = 1;
+// Re-probed daily even without an explicit invalidation, on top of the
+// explicit invalidation on install/upgrade (see
+// `invalidate_capability_support_cache`'s call sites) — a CLI can also be
+// upgraded outside GT Office's own installer (e.g. `npm update -g`).
+const PROVIDER_CAPABILITY_CACHE_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 pub struct AgentInstaller;
 
@@ -1974,7 +2076,11 @@ impl AgentInstaller {
         }
     }
 
-    fn user_home_dir() -> Option<PathBuf> {
+    /// `pub` (not just crate-internal) so other crates that need the same
+    /// HOME/USERPROFILE/HOMEDRIVE+HOMEPATH fallback chain — e.g. `gt-agent`
+    /// resolving `$CODEX_HOME`'s default (`$HOME/.codex`) for the Codex
+    /// capability materialize path — don't have to reimplement it.
+    pub fn user_home_dir() -> Option<PathBuf> {
         Self::path_from_env(env::var_os("HOME"))
             .or_else(|| Self::path_from_env(env::var_os("USERPROFILE")))
             .or_else(|| {
@@ -2129,5 +2235,136 @@ impl AgentInstaller {
         {
             true
         }
+    }
+
+    /// Probes the currently resolvable `agent` CLI binary for the overlay
+    /// flags docs/cw/08_MCP_Hook_Skill掛載設計.md §2.2 needs before
+    /// materialize (§2.3/§2.4) can decide flag-vs-copy. Cached in
+    /// `.gtoffice/cache/provider-capability.json`; see
+    /// `invalidate_capability_support_cache` for when that cache is dropped.
+    pub fn detect_capability_support(agent: AgentType) -> ProviderCapabilitySupport {
+        if let Some(cached) = Self::load_cached_capability_support(agent) {
+            return cached;
+        }
+        Self::detect_capability_support_fresh(agent)
+    }
+
+    pub fn detect_capability_support_fresh(agent: AgentType) -> ProviderCapabilitySupport {
+        let support = match Self::probe_help_text(agent) {
+            Some(text) => Self::parse_capability_support_from_help(&text),
+            None => ProviderCapabilitySupport::default(),
+        };
+        Self::store_cached_capability_support(agent, &support);
+        support
+    }
+
+    fn probe_help_text(agent: AgentType) -> Option<String> {
+        let executable = Self::launch_executable_hint(agent)
+            .unwrap_or_else(|| Self::executable_name(agent).to_string());
+        let mut command = Command::new(&executable);
+        configure_background_command(&mut command);
+        let output = command.arg("--help").output().ok()?;
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push('\n');
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        Some(text)
+    }
+
+    fn parse_capability_support_from_help(help_text: &str) -> ProviderCapabilitySupport {
+        ProviderCapabilitySupport {
+            supports_mcp_config_flag: help_text.contains("--mcp-config"),
+            supports_settings_flag: help_text.contains("--settings"),
+            supports_skills_dir_flag: Self::matches_any(
+                help_text,
+                &["--skills-dir", "--extra-skills-dir", "--skill-dir"],
+            ),
+        }
+    }
+
+    /// Drops the cached probe for `agent` (or every agent when `None`) so
+    /// the next `detect_capability_support` call re-probes the live binary.
+    /// Call this alongside `invalidate_install_status_cache` wherever an
+    /// install/upgrade action completes.
+    pub fn invalidate_capability_support_cache(agent: Option<AgentType>) {
+        let Some(path) = Self::capability_support_cache_path() else {
+            return;
+        };
+        let Some(mut store) = Self::read_capability_support_cache_store(&path) else {
+            return;
+        };
+
+        match agent {
+            Some(agent) => {
+                store.entries.remove(Self::cache_key(agent));
+            }
+            None => {
+                store.entries.clear();
+            }
+        }
+
+        if store.entries.is_empty() {
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+        let _ = Self::write_capability_support_cache_store(&path, &store);
+    }
+
+    fn capability_support_cache_path() -> Option<PathBuf> {
+        Self::user_home_dir().map(|home| {
+            home.join(".gtoffice")
+                .join("cache")
+                .join("provider-capability.json")
+        })
+    }
+
+    fn load_cached_capability_support(agent: AgentType) -> Option<ProviderCapabilitySupport> {
+        let path = Self::capability_support_cache_path()?;
+        let store = Self::read_capability_support_cache_store(&path)?;
+        let entry = store.entries.get(Self::cache_key(agent))?;
+        let age_ms = Self::now_ms().saturating_sub(entry.checked_at_ms);
+        if age_ms > PROVIDER_CAPABILITY_CACHE_TTL_MS {
+            return None;
+        }
+        Some(entry.support)
+    }
+
+    fn store_cached_capability_support(agent: AgentType, support: &ProviderCapabilitySupport) {
+        let Some(path) = Self::capability_support_cache_path() else {
+            return;
+        };
+
+        let mut store = Self::read_capability_support_cache_store(&path).unwrap_or_default();
+        store.version = PROVIDER_CAPABILITY_CACHE_VERSION;
+        store.entries.insert(
+            Self::cache_key(agent).to_string(),
+            CachedProviderCapabilitySupport {
+                checked_at_ms: Self::now_ms(),
+                support: *support,
+            },
+        );
+        let _ = Self::write_capability_support_cache_store(&path, &store);
+    }
+
+    fn read_capability_support_cache_store(
+        path: &Path,
+    ) -> Option<ProviderCapabilitySupportCacheStore> {
+        let raw = std::fs::read(path).ok()?;
+        let store = serde_json::from_slice::<ProviderCapabilitySupportCacheStore>(&raw).ok()?;
+        if store.version != PROVIDER_CAPABILITY_CACHE_VERSION {
+            return None;
+        }
+        Some(store)
+    }
+
+    fn write_capability_support_cache_store(
+        path: &Path,
+        store: &ProviderCapabilitySupportCacheStore,
+    ) -> Option<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok()?;
+        }
+        let body = serde_json::to_vec_pretty(store).ok()?;
+        std::fs::write(path, body).ok()?;
+        Some(())
     }
 }

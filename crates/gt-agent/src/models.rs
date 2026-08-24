@@ -71,6 +71,11 @@ pub struct AgentProfile {
     pub state: AgentState,
     pub employee_no: Option<String>,
     pub policy_snapshot_id: Option<String>,
+    /// Points at the most recently saved `agent_capability_snapshots` row
+    /// (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.1). `None` = no MCP/skill/hook
+    /// mount configured yet.
+    #[serde(default)]
+    pub capability_snapshot_id: Option<String>,
     pub prompt_file_name: Option<String>,
     pub prompt_file_relative_path: Option<String>,
     pub launch_command: Option<String>,
@@ -184,7 +189,7 @@ pub struct AgentRuntimeStatus {
     pub updated_at_ms: i64,
 }
 
-fn normalize_tool_provider_key(tool: &str) -> &'static str {
+pub(crate) fn normalize_tool_provider_key(tool: &str) -> &'static str {
     let normalized = tool.trim().to_ascii_lowercase();
     if normalized.contains("claude") {
         "claude"

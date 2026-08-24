@@ -1,8 +1,9 @@
 use crate::sqlite::SqliteStorage;
 use gt_agent::{
-    AgentError, AgentLink, AgentLinkKind, AgentLinkRepository, AgentPolicy, AgentPolicyRepository,
+    AgentCapabilityAuditRepository, AgentCapabilityRepository, AgentCapabilitySnapshot, AgentError,
+    AgentLink, AgentLinkKind, AgentLinkRepository, AgentPolicy, AgentPolicyRepository,
     AgentProfile, AgentRepository, AgentResult, AgentScope, AgentState, CreateAgentInput,
-    UpdateAgentInput,
+    HookAuditEntry, UpdateAgentInput,
 };
 use rusqlite::{params, OptionalExtension};
 
@@ -152,6 +153,53 @@ CREATE INDEX IF NOT EXISTS idx_agent_policy_snapshots_agent
   ON agent_policy_snapshots(workspace_id, agent_id, created_at_ms DESC);
 "#;
 
+const AGENT_CAPABILITY_SNAPSHOTS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_capability_snapshots (
+  id TEXT NOT NULL PRIMARY KEY, workspace_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL, capability_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_capability_snapshots_agent
+  ON agent_capability_snapshots(workspace_id, agent_id, created_at_ms DESC);
+"#;
+
+/// Version-lock ledger for hook rules (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.5
+/// 決策3, §3): a hook's content hash lands here only after the user has
+/// walked through the full preview UI and explicitly confirmed it. Presence
+/// of `(workspace_id, agent_id, hook_hash)` is the *entire* gate — saving a
+/// capability snapshot containing a hook whose hash isn't in this table must
+/// be rejected (see `agent_capability_save` in the Tauri command layer).
+/// `hook_hash` is `HookCapability::content_hash()` (SHA-256, not the
+/// DefaultHasher used elsewhere in this design for cache-busting — this one
+/// is a persisted security gate, not a cache key, so it needs to stay
+/// correct across a Rust/std upgrade, not just within one build).
+const AGENT_HOOK_CONFIRMATIONS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_hook_confirmations (
+  workspace_id TEXT NOT NULL, agent_id TEXT NOT NULL, hook_hash TEXT NOT NULL,
+  confirmed_by TEXT NOT NULL, confirmed_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (workspace_id, agent_id, hook_hash)
+);
+"#;
+
+/// Append-only audit trail for every hook actually applied via
+/// `agent_capability_save` (docs/cw/08_MCP_Hook_Skill掛載設計.md §3: "每條
+/// hook 的 apply 動作都要寫進 audit_repository"), mirroring the shape (not
+/// the literal schema — that one's AI-config-specific fields don't fit
+/// hooks) of `gt-ai-config`'s `ai_config_audit_logs` /
+/// `AiConfigAuditLogInput` pattern: who confirmed it, what the content was
+/// at apply time, when.
+const AGENT_CAPABILITY_AUDIT_LOGS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_capability_audit_logs (
+  id TEXT NOT NULL PRIMARY KEY, workspace_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+  hook_hash TEXT NOT NULL, event TEXT NOT NULL, matcher TEXT, command TEXT NOT NULL,
+  confirmed_by TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_capability_audit_logs_agent
+  ON agent_capability_audit_logs(workspace_id, agent_id, created_at_ms DESC);
+"#;
+
 impl AgentRepository for SqliteAgentRepository {
     fn ensure_schema(&self) -> AgentResult<()> {
         let conn = self.connection()?;
@@ -174,6 +222,10 @@ impl AgentRepository for SqliteAgentRepository {
         let _ = conn.execute("ALTER TABLE agents ADD COLUMN layout_x REAL", []);
         let _ = conn.execute("ALTER TABLE agents ADD COLUMN layout_y REAL", []);
         let _ = conn.execute("ALTER TABLE agents ADD COLUMN color TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN capability_snapshot_id TEXT",
+            [],
+        );
         conn.execute_batch(AGENT_LINKS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
@@ -192,6 +244,18 @@ impl AgentRepository for SqliteAgentRepository {
         conn.execute_batch(AGENT_POLICY_SNAPSHOTS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
+            })?;
+        conn.execute_batch(AGENT_CAPABILITY_SNAPSHOTS_SCHEMA)
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        conn.execute_batch(AGENT_HOOK_CONFIRMATIONS_SCHEMA)
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        conn.execute_batch(AGENT_CAPABILITY_AUDIT_LOGS_SCHEMA)
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
             })
     }
 
@@ -208,7 +272,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn list_agents(&self, workspace_id: &str) -> AgentResult<Vec<AgentProfile>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, color, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, color, capability_snapshot_id, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         let rows = stmt
             .query_map(params![workspace_id], |row| {
@@ -233,10 +297,11 @@ impl AgentRepository for SqliteAgentRepository {
                     layout_x: row.get(15)?,
                     layout_y: row.get(16)?,
                     color: row.get(17)?,
+                    capability_snapshot_id: row.get(18)?,
                     prompt_file_name: None,
                     prompt_file_relative_path: None,
-                    created_at_ms: row.get(18)?,
-                    updated_at_ms: row.get(19)?,
+                    created_at_ms: row.get(19)?,
+                    updated_at_ms: row.get(20)?,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -405,6 +470,213 @@ impl AgentPolicyRepository for SqliteAgentRepository {
             }),
             None => Ok(AgentPolicy::default()),
         }
+    }
+}
+
+impl AgentCapabilityRepository for SqliteAgentRepository {
+    fn save_agent_capability(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        capability: &AgentCapabilitySnapshot,
+    ) -> AgentResult<String> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        let tool: Option<String> = tx
+            .query_row(
+                "SELECT tool FROM agents WHERE workspace_id = ?1 AND id = ?2",
+                params![workspace_id, agent_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        let tool = tool.ok_or_else(|| AgentError::InvalidArgument {
+            message: "agent_id not found".to_string(),
+        })?;
+        capability
+            .validate_for_tool(&tool)
+            .map_err(|message| AgentError::InvalidArgument { message })?;
+
+        let capability_json =
+            capability
+                .to_json()
+                .map_err(|error| AgentError::InvalidArgument {
+                    message: format!("invalid capability: {error}"),
+                })?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Self::now_ms();
+        tx.execute(
+            "INSERT INTO agent_capability_snapshots (id, workspace_id, agent_id, capability_json, created_at_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, workspace_id, agent_id, capability_json, now],
+        )
+        .map_err(|error| AgentError::Storage { message: error.to_string() })?;
+        tx.execute(
+            "UPDATE agents SET capability_snapshot_id = ?1, updated_at_ms = ?2 WHERE workspace_id = ?3 AND id = ?4",
+            params![id, now, workspace_id, agent_id],
+        )
+        .map_err(|error| AgentError::Storage { message: error.to_string() })?;
+        tx.commit().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        Ok(id)
+    }
+
+    fn get_agent_capability(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> AgentResult<AgentCapabilitySnapshot> {
+        let conn = self.connection()?;
+        let capability_json: Option<String> = conn
+            .query_row(
+                "SELECT capability_json FROM agent_capability_snapshots WHERE workspace_id = ?1 AND agent_id = ?2 ORDER BY created_at_ms DESC LIMIT 1",
+                params![workspace_id, agent_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| AgentError::Storage { message: error.to_string() })?;
+        match capability_json {
+            Some(json) => {
+                AgentCapabilitySnapshot::from_json(&json).map_err(|error| AgentError::Storage {
+                    message: format!("corrupt capability snapshot: {error}"),
+                })
+            }
+            None => Ok(AgentCapabilitySnapshot::default()),
+        }
+    }
+}
+
+impl AgentCapabilityAuditRepository for SqliteAgentRepository {
+    fn confirmed_hook_hashes(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> AgentResult<std::collections::HashSet<String>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT hook_hash FROM agent_hook_confirmations WHERE workspace_id = ?1 AND agent_id = ?2",
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        let rows = stmt
+            .query_map(params![workspace_id, agent_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        rows.collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })
+    }
+
+    fn confirm_hook_hashes(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        hook_hashes: &[String],
+        confirmed_by: &str,
+    ) -> AgentResult<()> {
+        if hook_hashes.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.connection()?;
+        let now = Self::now_ms();
+        let tx = conn.transaction().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        for hash in hook_hashes {
+            tx.execute(
+                "INSERT INTO agent_hook_confirmations (workspace_id, agent_id, hook_hash, confirmed_by, confirmed_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT (workspace_id, agent_id, hook_hash) DO NOTHING",
+                params![workspace_id, agent_id, hash, confirmed_by, now],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        }
+        tx.commit().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })
+    }
+
+    fn record_hook_audit(&self, entries: &[HookAuditEntry]) -> AgentResult<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.connection()?;
+        let tx = conn.transaction().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })?;
+        for entry in entries {
+            tx.execute(
+                "INSERT INTO agent_capability_audit_logs \
+                 (id, workspace_id, agent_id, hook_hash, event, matcher, command, confirmed_by, created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    entry.id,
+                    entry.workspace_id,
+                    entry.agent_id,
+                    entry.hook_hash,
+                    entry.event,
+                    entry.matcher,
+                    entry.command,
+                    entry.confirmed_by,
+                    entry.created_at_ms,
+                ],
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        }
+        tx.commit().map_err(|error| AgentError::Storage {
+            message: error.to_string(),
+        })
+    }
+
+    fn list_hook_audit_logs(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> AgentResult<Vec<HookAuditEntry>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workspace_id, agent_id, hook_hash, event, matcher, command, confirmed_by, created_at_ms \
+                 FROM agent_capability_audit_logs WHERE workspace_id = ?1 AND agent_id = ?2 ORDER BY created_at_ms DESC",
+            )
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        let rows = stmt
+            .query_map(params![workspace_id, agent_id], |row| {
+                Ok(HookAuditEntry {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    agent_id: row.get(2)?,
+                    hook_hash: row.get(3)?,
+                    event: row.get(4)?,
+                    matcher: row.get(5)?,
+                    command: row.get(6)?,
+                    confirmed_by: row.get(7)?,
+                    created_at_ms: row.get(8)?,
+                })
+            })
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AgentError::Storage {
+                message: error.to_string(),
+            })
     }
 }
 
@@ -742,12 +1014,12 @@ mod p0_migration_tests {
         let conn = repo.connection().expect("connection");
         let table_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('agent_links', 'agent_policy_snapshots')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('agent_links', 'agent_policy_snapshots', 'agent_capability_snapshots')",
                 [],
                 |row| row.get(0),
             )
             .expect("query sqlite_master");
-        assert_eq!(table_count, 2);
+        assert_eq!(table_count, 3);
     }
 
     #[test]
@@ -952,6 +1224,355 @@ mod p3_agent_policy_tests {
             result.is_err(),
             "saving a policy for an unknown agent must fail"
         );
+    }
+}
+
+#[cfg(test)]
+mod p3_5_agent_capability_tests {
+    use super::*;
+    use gt_agent::{HookCapability, McpServerCapability, McpTransport, SkillCapability};
+    use std::path::PathBuf;
+
+    struct ScratchDb {
+        path: PathBuf,
+    }
+
+    impl ScratchDb {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gt-storage-p3-5-test-{name}-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            Self { path }
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    fn repo_with_one_agent(
+        scratch: &ScratchDb,
+        agent_id: &str,
+        tool: &str,
+    ) -> SqliteAgentRepository {
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+        repo.create_agent(CreateAgentInput {
+            workspace_id: "ws-1".to_string(),
+            agent_id: Some(agent_id.to_string()),
+            name: "Agent".to_string(),
+            tool: tool.to_string(),
+            workdir: Some(".".to_string()),
+            custom_workdir: false,
+            scope: AgentScope::Station,
+            employee_no: None,
+            state: AgentState::Ready,
+            launch_command: None,
+            order_index: None,
+            parent_agent_id: None,
+            external_template_path: None,
+        })
+        .expect("create agent");
+        repo
+    }
+
+    fn sample_mcp_only_capability() -> AgentCapabilitySnapshot {
+        let mut capability = AgentCapabilitySnapshot::default();
+        capability.mcp_servers.push(McpServerCapability {
+            id: "fs".to_string(),
+            transport: McpTransport::Stdio,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "mcp-server-fs".to_string()],
+            env: Default::default(),
+            url: None,
+        });
+        capability
+    }
+
+    #[test]
+    fn agent_with_no_snapshot_returns_empty_capability() {
+        let scratch = ScratchDb::new("no-snapshot");
+        let repo = repo_with_one_agent(&scratch, "agent-1", "claude");
+
+        let capability = repo
+            .get_agent_capability("ws-1", "agent-1")
+            .expect("get_agent_capability");
+        assert_eq!(capability, AgentCapabilitySnapshot::default());
+    }
+
+    #[test]
+    fn save_agent_capability_round_trips_and_repoints_snapshot_id() {
+        let scratch = ScratchDb::new("round-trip");
+        let repo = repo_with_one_agent(&scratch, "agent-1", "claude");
+
+        let capability_v1 = sample_mcp_only_capability();
+        let snapshot_v1 = repo
+            .save_agent_capability("ws-1", "agent-1", &capability_v1)
+            .expect("save capability v1");
+
+        let read_back_v1 = repo
+            .get_agent_capability("ws-1", "agent-1")
+            .expect("get capability v1");
+        assert_eq!(read_back_v1, capability_v1);
+
+        let agent = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-1")
+            .expect("agent-1 present");
+        assert_eq!(
+            agent.capability_snapshot_id.as_deref(),
+            Some(snapshot_v1.as_str())
+        );
+
+        // A second save must append a new snapshot, not overwrite the first —
+        // agent_capability_snapshots is meant to stay an auditable history.
+        let mut capability_v2 = sample_mcp_only_capability();
+        capability_v2.mcp_servers[0].id = "fs-v2".to_string();
+        let snapshot_v2 = repo
+            .save_agent_capability("ws-1", "agent-1", &capability_v2)
+            .expect("save capability v2");
+        assert_ne!(snapshot_v1, snapshot_v2);
+
+        let read_back_v2 = repo
+            .get_agent_capability("ws-1", "agent-1")
+            .expect("get capability v2");
+        assert_eq!(read_back_v2, capability_v2);
+
+        let conn = repo.connection().expect("connection");
+        let snapshot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_capability_snapshots WHERE workspace_id = 'ws-1' AND agent_id = 'agent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count snapshots");
+        assert_eq!(snapshot_count, 2, "old snapshot must not be overwritten");
+    }
+
+    #[test]
+    fn save_agent_capability_fails_for_unknown_agent() {
+        let scratch = ScratchDb::new("unknown-agent");
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+
+        let result =
+            repo.save_agent_capability("ws-1", "does-not-exist", &sample_mcp_only_capability());
+        assert!(
+            result.is_err(),
+            "saving a capability for an unknown agent must fail"
+        );
+    }
+
+    #[test]
+    fn save_agent_capability_rejects_skills_and_hooks_for_codex_agent() {
+        let scratch = ScratchDb::new("codex-reject");
+        let repo = repo_with_one_agent(&scratch, "agent-1", "codex");
+
+        let mut with_skill = AgentCapabilitySnapshot::default();
+        with_skill.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/tmp/reviewer/SKILL.md".to_string(),
+            enabled: true,
+        });
+        let skill_result = repo.save_agent_capability("ws-1", "agent-1", &with_skill);
+        assert!(
+            skill_result.is_err(),
+            "codex agents must reject skills in v1"
+        );
+
+        let mut with_hook = AgentCapabilitySnapshot::default();
+        with_hook.hooks.push(HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: None,
+            command: "echo hi".to_string(),
+        });
+        let hook_result = repo.save_agent_capability("ws-1", "agent-1", &with_hook);
+        assert!(hook_result.is_err(), "codex agents must reject hooks in v1");
+
+        // The rejected saves must not have repointed capability_snapshot_id or
+        // left partial rows behind.
+        let agent = repo
+            .list_agents("ws-1")
+            .expect("list agents")
+            .into_iter()
+            .find(|agent| agent.id == "agent-1")
+            .expect("agent-1 present");
+        assert_eq!(agent.capability_snapshot_id, None);
+
+        let conn = repo.connection().expect("connection");
+        let snapshot_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_capability_snapshots WHERE workspace_id = 'ws-1' AND agent_id = 'agent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count snapshots");
+        assert_eq!(snapshot_count, 0);
+    }
+
+    #[test]
+    fn save_agent_capability_allows_mcp_only_for_codex_agent() {
+        let scratch = ScratchDb::new("codex-mcp-ok");
+        let repo = repo_with_one_agent(&scratch, "agent-1", "codex");
+
+        let result = repo.save_agent_capability("ws-1", "agent-1", &sample_mcp_only_capability());
+        assert!(
+            result.is_ok(),
+            "codex agents must still accept MCP-only capability snapshots"
+        );
+    }
+}
+
+#[cfg(test)]
+mod p3_5_3_agent_capability_audit_tests {
+    use super::*;
+    use gt_agent::HookCapability;
+    use std::path::PathBuf;
+
+    struct ScratchDb {
+        path: PathBuf,
+    }
+
+    impl ScratchDb {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gt-storage-p3-5-3-test-{name}-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            Self { path }
+        }
+    }
+
+    impl Drop for ScratchDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    fn repo(scratch: &ScratchDb) -> SqliteAgentRepository {
+        let storage = SqliteStorage::new(&scratch.path).expect("open storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+        repo
+    }
+
+    fn sample_hook() -> HookCapability {
+        HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: Some("Bash".to_string()),
+            command: "echo about-to-run-bash".to_string(),
+        }
+    }
+
+    #[test]
+    fn no_hooks_confirmed_by_default() {
+        let scratch = ScratchDb::new("empty");
+        let repo = repo(&scratch);
+        let confirmed = repo
+            .confirmed_hook_hashes("ws-1", "agent-1")
+            .expect("confirmed_hook_hashes");
+        assert!(confirmed.is_empty());
+    }
+
+    #[test]
+    fn confirm_hook_hashes_is_idempotent_and_scoped_per_agent() {
+        let scratch = ScratchDb::new("confirm");
+        let repo = repo(&scratch);
+        let hash = sample_hook().content_hash();
+
+        repo.confirm_hook_hashes("ws-1", "agent-1", std::slice::from_ref(&hash), "System Admin")
+            .expect("confirm once");
+        // Re-confirming must not error or duplicate.
+        repo.confirm_hook_hashes("ws-1", "agent-1", std::slice::from_ref(&hash), "System Admin")
+            .expect("confirm again");
+
+        let confirmed_a1 = repo
+            .confirmed_hook_hashes("ws-1", "agent-1")
+            .expect("confirmed for agent-1");
+        assert_eq!(confirmed_a1.len(), 1);
+        assert!(confirmed_a1.contains(&hash));
+
+        // A different agent must not see agent-1's confirmation.
+        let confirmed_a2 = repo
+            .confirmed_hook_hashes("ws-1", "agent-2")
+            .expect("confirmed for agent-2");
+        assert!(confirmed_a2.is_empty());
+    }
+
+    #[test]
+    fn confirm_hook_hashes_with_empty_slice_is_a_no_op() {
+        let scratch = ScratchDb::new("empty-slice");
+        let repo = repo(&scratch);
+        repo.confirm_hook_hashes("ws-1", "agent-1", &[], "System Admin")
+            .expect("no-op confirm must succeed");
+        assert!(repo
+            .confirmed_hook_hashes("ws-1", "agent-1")
+            .expect("confirmed_hook_hashes")
+            .is_empty());
+    }
+
+    #[test]
+    fn record_and_list_hook_audit_logs_newest_first() {
+        let scratch = ScratchDb::new("audit");
+        let repo = repo(&scratch);
+
+        let entry_old = HookAuditEntry {
+            id: "audit-1".to_string(),
+            workspace_id: "ws-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            hook_hash: "hash-old".to_string(),
+            event: "PreToolUse".to_string(),
+            matcher: Some("Bash".to_string()),
+            command: "echo old".to_string(),
+            confirmed_by: "System Admin".to_string(),
+            created_at_ms: 1_000,
+        };
+        let entry_new = HookAuditEntry {
+            id: "audit-2".to_string(),
+            created_at_ms: 2_000,
+            hook_hash: "hash-new".to_string(),
+            command: "echo new".to_string(),
+            ..entry_old.clone()
+        };
+
+        repo.record_hook_audit(&[entry_old.clone(), entry_new.clone()])
+            .expect("record audit");
+
+        let logs = repo
+            .list_hook_audit_logs("ws-1", "agent-1")
+            .expect("list audit logs");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].id, "audit-2", "newest entry must come first");
+        assert_eq!(logs[1].id, "audit-1");
+
+        // A different agent must not see agent-1's audit trail.
+        assert!(repo
+            .list_hook_audit_logs("ws-1", "agent-2")
+            .expect("list audit logs for agent-2")
+            .is_empty());
+    }
+
+    #[test]
+    fn record_hook_audit_with_empty_slice_is_a_no_op() {
+        let scratch = ScratchDb::new("audit-empty");
+        let repo = repo(&scratch);
+        repo.record_hook_audit(&[])
+            .expect("no-op record must succeed");
+        assert!(repo
+            .list_hook_audit_logs("ws-1", "agent-1")
+            .expect("list audit logs")
+            .is_empty());
     }
 }
 

@@ -1,5 +1,6 @@
 import { memo, useMemo, useCallback } from 'react'
 import type { AgentStation } from './station-model'
+import { resolveAgentModelDisplayLabel } from './agent-management-model'
 import { StationActionDock } from './StationActionDock'
 import { StationActivityComet } from './StationActivityComet'
 import { StationExecutionStatus } from './StationExecutionStatus'
@@ -130,6 +131,7 @@ function TerminalStationPaneView({
     status: statusLabel,
     detail: statusDescription,
   })
+  const modelLabel = resolveAgentModelDisplayLabel(station.tool, station.launchCommand)
   const detachedReadonly = launchMode === 'detached-readonly'
   const stationActions = useMemo(
     () =>
@@ -257,6 +259,11 @@ function TerminalStationPaneView({
           <span className="terminal-station-pane-chip" title={station.tool}>
             {station.tool}
           </span>
+          {modelLabel ? (
+            <span className="terminal-station-pane-chip muted" title={modelLabel}>
+              {modelLabel}
+            </span>
+          ) : null}
           <StationExecutionStatus meta={statusMeta} label={statusLabel} title={statusTitle} compact />
           {visibleChannelBindingSummaries.map((summary) => {
             const routeLabel = t(locale, 'station.channelBindings.botRoute', {

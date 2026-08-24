@@ -36,6 +36,10 @@ interface AgentCanvasPaneProps {
    * (docs/cw/04_客製化設計.md §1, P4.5) — the caller owns opening the actual
    * create-agent UI (agent-canvas only requests it). */
   onRequestCreateSubagent?: (parentAgentId: string) => void
+  /** Fired by a node's hover gear button — the caller owns opening the
+   * actual edit-agent UI (agent-canvas only requests it), mirroring
+   * `onRequestCreateSubagent`'s split. */
+  onRequestEditAgent?: (agentId: string) => void
 }
 
 interface WireDragState {
@@ -181,7 +185,13 @@ function isPointInRect(point: { x: number; y: number }, rect: GraphCanvasMarquee
   )
 }
 
-export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSubagent }: AgentCanvasPaneProps) {
+export function AgentCanvasPane({
+  locale,
+  workspaceId,
+  active,
+  onRequestCreateSubagent,
+  onRequestEditAgent,
+}: AgentCanvasPaneProps) {
   const {
     graph,
     isEmpty,
@@ -664,9 +674,19 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
   }, [selection.edgeIds, resolveSelectedAuthoredLinks, setLinkBidirectional])
 
   const handleDeleteDerivedEdge = useCallback(
-    (fromAgentId: string, toAgentId: string) => {
+    (fromAgentId: string, toAgentId: string, alsoReverse: boolean) => {
       if (!window.confirm(t(locale, 'agentCanvas.edge.derivedDeleteConfirm'))) return
-      deleteDerivedLink(fromAgentId, toAgentId).catch(reportLinkActionError)
+      // A merged bidirectional edge (see `reverseLinkId` in
+      // `buildAgentCanvasGraph`) is drawn as one line — clearing it should
+      // clear both underlying directional rows, not leave the reverse one to
+      // silently reappear as a single-arrow line. `Promise.all` (not two
+      // independent `.catch`s) so a failure on either side surfaces one
+      // error, not two stacked `window.alert`s — same pattern as
+      // `handleDisconnectSelectedWires` above.
+      const deletions = alsoReverse
+        ? [deleteDerivedLink(fromAgentId, toAgentId), deleteDerivedLink(toAgentId, fromAgentId)]
+        : [deleteDerivedLink(fromAgentId, toAgentId)]
+      Promise.all(deletions).catch(reportLinkActionError)
     },
     [deleteDerivedLink, reportLinkActionError, locale],
   )
@@ -813,6 +833,7 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
           locale={locale}
           getPortHandlers={(portKind, rewireLinkId) => getPortHandlers(node.data.agent.id, portKind, rewireLinkId)}
           onPortSlotContextMenu={handlePortSlotContextMenu}
+          onRequestEdit={onRequestEditAgent}
         />
       )}
       renderEdge={(edge, from, to, _engineGeometry, arrowMarkerUrl) => {
@@ -827,18 +848,24 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
             </g>
           )
         }
-        const { link } = edge.data
+        const { link, reverseLinkId } = edge.data
         if (link.kind === 'derived') {
           // Also center-anchored — derived lines are read-only observations,
           // never created via drag, so they don't need/get their own slot.
           const geometry = computePortEdgeGeometry(from, to)
+          // `reverseLinkId` is only set when the opposite direction was ALSO
+          // recorded (docs on `AgentCanvasEdgeData.reverseLinkId`) — draw a
+          // double-headed arrow instead of a single one so the merged edge
+          // still reads as "these two talk both ways," without a second,
+          // directionally-mirrored line looping back to the previous agent.
+          const isBidirectional = Boolean(reverseLinkId)
           return (
             <g
               pointerEvents="auto"
               className="agent-canvas-edge-hit"
               onContextMenu={(event) => {
                 event.preventDefault()
-                handleDeleteDerivedEdge(link.fromAgentId, link.toAgentId)
+                handleDeleteDerivedEdge(link.fromAgentId, link.toAgentId, isBidirectional)
               }}
             >
               <title>{t(locale, 'agentCanvas.edge.derivedTitle')}</title>
@@ -849,6 +876,7 @@ export function AgentCanvasPane({ locale, workspaceId, active, onRequestCreateSu
               <path
                 d={geometry.path}
                 className="agent-canvas-edge agent-canvas-edge--derived"
+                markerStart={isBidirectional ? arrowMarkerUrl : undefined}
                 markerEnd={arrowMarkerUrl}
               />
             </g>

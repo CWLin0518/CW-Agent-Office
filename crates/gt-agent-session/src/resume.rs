@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use gt_agent::MaterializedCapability;
+
 use crate::types::{
     GtoSession, Provider, ResumeCheck, ResumeStep, SessionRelaunchMode, SessionStats,
 };
@@ -8,11 +10,23 @@ pub struct ResumeService;
 
 impl ResumeService {
     /// Build the shell command that starts the provider CLI in resume mode (non-interactive TUI flags).
-    pub fn build_resume_launch_command(session: &GtoSession) -> Option<String> {
+    ///
+    /// `materialized` is what `gt_agent::materialize_claude_capability` /
+    /// `materialize_codex_capability` (docs/cw/08_MCP_Hook_Skill掛載設計.md
+    /// §2.3/§2.4) wrote for this agent, if the caller already ran the one
+    /// matching `session.provider` — `None` means "launch with no
+    /// capability overlay," same as before this parameter existed. A
+    /// mismatched variant (e.g. `Codex(..)` for a `Provider::Claude`
+    /// session) is treated the same as `None` — see `apply_capability_overlay`.
+    pub fn build_resume_launch_command(
+        session: &GtoSession,
+        materialized: Option<&MaterializedCapability>,
+    ) -> Option<String> {
         Self::build_relaunch_launch_command(
             Some(session),
             session.provider,
             SessionRelaunchMode::Resume,
+            materialized,
         )
     }
 
@@ -20,15 +34,22 @@ impl ResumeService {
         session: Option<&GtoSession>,
         provider: Provider,
         mode: SessionRelaunchMode,
+        materialized: Option<&MaterializedCapability>,
     ) -> Option<String> {
-        match mode {
+        // Codex's overlay (`-p <profile>`) must sit *before* the
+        // subcommand, unlike Claude's (appended after — see
+        // `apply_capability_overlay`), so it's spliced in here rather than
+        // in a uniform post-processing step.
+        let codex_prefix = codex_profile_flag(provider, materialized);
+
+        let base = match mode {
             SessionRelaunchMode::ContinueLast => Some(match provider {
                 Provider::Claude => "claude --continue".to_string(),
-                Provider::Codex => "codex resume --last".to_string(),
+                Provider::Codex => format!("codex{codex_prefix} resume --last"),
             }),
             SessionRelaunchMode::ForkLast => Some(match provider {
                 Provider::Claude => "claude --fork-session --continue".to_string(),
-                Provider::Codex => "codex fork --last".to_string(),
+                Provider::Codex => format!("codex{codex_prefix} fork --last"),
             }),
             SessionRelaunchMode::Fork => {
                 let session = session?;
@@ -40,8 +61,8 @@ impl ResumeService {
                         .map(|id| format!("claude --fork-session --resume {id}"))
                         .or_else(|| Some("claude --fork-session --continue".to_string())),
                     Provider::Codex => resolve_provider_session_id(session)
-                        .map(|id| format!("codex fork {id}"))
-                        .or_else(|| Some("codex fork --last".to_string())),
+                        .map(|id| format!("codex{codex_prefix} fork {id}"))
+                        .or_else(|| Some(format!("codex{codex_prefix} fork --last"))),
                 }
             }
             SessionRelaunchMode::Resume => {
@@ -59,18 +80,22 @@ impl ResumeService {
                     }
                     Provider::Codex => {
                         if let Some(id) = resolve_provider_session_id(session) {
-                            Some(format!("codex resume {id}"))
+                            Some(format!("codex{codex_prefix} resume {id}"))
                         } else {
-                            Some("codex resume --last".to_string())
+                            Some(format!("codex{codex_prefix} resume --last"))
                         }
                     }
                 }
             }
-        }
+        };
+        base.map(|command| apply_capability_overlay(command, provider, materialized))
     }
 
-    pub fn build_resume_commands(session: &GtoSession) -> Vec<ResumeStep> {
-        let Some(command) = Self::build_resume_launch_command(session) else {
+    pub fn build_resume_commands(
+        session: &GtoSession,
+        materialized: Option<&MaterializedCapability>,
+    ) -> Vec<ResumeStep> {
+        let Some(command) = Self::build_resume_launch_command(session, materialized) else {
             return Vec::new();
         };
         vec![ResumeStep::StartCli { command }]
@@ -80,8 +105,11 @@ impl ResumeService {
         session: Option<&GtoSession>,
         provider: Provider,
         mode: SessionRelaunchMode,
+        materialized: Option<&MaterializedCapability>,
     ) -> Vec<ResumeStep> {
-        let Some(command) = Self::build_relaunch_launch_command(session, provider, mode) else {
+        let Some(command) =
+            Self::build_relaunch_launch_command(session, provider, mode, materialized)
+        else {
             return Vec::new();
         };
         vec![ResumeStep::StartCli { command }]
@@ -106,6 +134,87 @@ impl ResumeService {
         let last_commit_placeholder = stats.git_end_commit.as_deref().unwrap_or("—");
         crate::git_diff::build_handover_text(title, stats, Some(last_commit_placeholder))
     }
+}
+
+/// Appends `--mcp-config`/`--settings` flags for a Claude launch command when
+/// materialize (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.3/§2.4 決策1) wrote
+/// something to overlay. A no-op for `Provider::Codex` and for `None`.
+///
+/// This keeps returning a single typed-into-the-terminal shell command line
+/// (not a `program + args` tuple, unlike §2.4's literal suggestion) because
+/// that's what every existing caller of this function actually consumes —
+/// `apps/desktop-web`'s `executeSessionResumeSteps`/auto-launch-on-new-tab
+/// flow types this string into a PTY, it never spawns argv directly.
+/// Switching to `program + args` here would ripple into that frontend wire
+/// contract, which is out of scope for a non-UI phase.
+/// `-p <profile>` has to land *before* the subcommand (`codex -p x resume
+/// ...`, not `codex resume ... -p x`) — confirmed empirically against the
+/// pinned Codex CLI (see `gt_agent::materialize_codex_capability`'s doc
+/// comment). Returns a leading-space-prefixed fragment (`" -p name"`) ready
+/// to splice right after `"codex"`, or `""` when there's nothing to
+/// overlay — a mismatched variant (materialize ran for the other provider,
+/// or wasn't run at all) is treated the same as "nothing to overlay" rather
+/// than an error, since a stale/missing overlay just means "launch
+/// unmounted," not a broken launch.
+fn codex_profile_flag(provider: Provider, materialized: Option<&MaterializedCapability>) -> String {
+    if provider != Provider::Codex {
+        return String::new();
+    }
+    match materialized {
+        Some(MaterializedCapability::Codex(profile)) => {
+            format!(" -p {}", profile.profile_name)
+        }
+        _ => String::new(),
+    }
+}
+
+fn apply_capability_overlay(
+    command: String,
+    provider: Provider,
+    materialized: Option<&MaterializedCapability>,
+) -> String {
+    if provider != Provider::Claude {
+        return command;
+    }
+    let Some(MaterializedCapability::Claude(materialized)) = materialized else {
+        return command;
+    };
+
+    let mut command = command;
+    if let Some(path) = materialized.mcp_config_path.as_ref() {
+        match quoted_path_arg(path) {
+            Some(arg) => command.push_str(&format!(" --mcp-config {arg}")),
+            None => tracing::warn!(
+                path = %path.display(),
+                "materialized mcp-config path contains a double quote; skipping overlay flag"
+            ),
+        }
+    }
+    if let Some(path) = materialized.settings_path.as_ref() {
+        match quoted_path_arg(path) {
+            Some(arg) => command.push_str(&format!(" --settings {arg}")),
+            None => tracing::warn!(
+                path = %path.display(),
+                "materialized settings path contains a double quote; skipping overlay flag"
+            ),
+        }
+    }
+    command
+}
+
+/// Double-quoting is valid for a space-containing path in both PowerShell
+/// and POSIX shells (the two this codebase's PTYs actually run — see
+/// `crates/gt-terminal`'s shell resolution), which is all a
+/// GT-Office-generated `.gtoffice/agents/<id>/runtime/*.json` path ever
+/// needs. Returns `None` (caller skips the flag rather than guessing a
+/// cross-shell escape) if the path contains a `"`, since that's the one
+/// character this simple quoting can't handle safely.
+fn quoted_path_arg(path: &Path) -> Option<String> {
+    let text = path.to_string_lossy();
+    if text.contains('"') {
+        return None;
+    }
+    Some(format!("\"{text}\""))
 }
 
 /// Provider session id: explicit field, else Claude jsonl stem / Codex rollout id from path.
@@ -145,7 +254,9 @@ fn provider_session_id_from_log_path(provider: Provider, path: &Path) -> Option<
 mod tests {
     use super::*;
     use crate::types::{GtoSession, Lifecycle, Provider, SessionStats};
+    use gt_agent::{MaterializedCapability, MaterializedCodexProfile, MaterializedPaths};
     use std::fs;
+    use std::path::PathBuf;
 
     fn make_session(
         provider: Provider,
@@ -180,7 +291,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            ResumeService::build_resume_launch_command(&session).as_deref(),
+            ResumeService::build_resume_launch_command(&session, None).as_deref(),
             Some("claude --resume 550e8400-e29b-41d4-a716-446655440000")
         );
     }
@@ -189,7 +300,7 @@ mod tests {
     fn test_claude_resume_command_continue_fallback() {
         let session = make_session(Provider::Claude, None, None);
         assert_eq!(
-            ResumeService::build_resume_launch_command(&session).as_deref(),
+            ResumeService::build_resume_launch_command(&session, None).as_deref(),
             Some("claude --continue")
         );
     }
@@ -198,7 +309,7 @@ mod tests {
     fn test_codex_resume_command_with_id() {
         let session = make_session(Provider::Codex, None, Some("abc-uuid"));
         assert_eq!(
-            ResumeService::build_resume_launch_command(&session).as_deref(),
+            ResumeService::build_resume_launch_command(&session, None).as_deref(),
             Some("codex resume abc-uuid")
         );
     }
@@ -207,7 +318,7 @@ mod tests {
     fn test_codex_resume_command_last_fallback() {
         let session = make_session(Provider::Codex, None, None);
         assert_eq!(
-            ResumeService::build_resume_launch_command(&session).as_deref(),
+            ResumeService::build_resume_launch_command(&session, None).as_deref(),
             Some("codex resume --last")
         );
     }
@@ -215,10 +326,104 @@ mod tests {
     #[test]
     fn test_build_resume_commands_single_start() {
         let session = make_session(Provider::Codex, None, Some("id1"));
-        let steps = ResumeService::build_resume_commands(&session);
+        let steps = ResumeService::build_resume_commands(&session, None);
         assert_eq!(steps.len(), 1);
         assert!(
             matches!(&steps[0], ResumeStep::StartCli { command } if command == "codex resume id1")
+        );
+    }
+
+    #[test]
+    fn test_claude_resume_command_appends_overlay_flags_when_materialized() {
+        let session = make_session(
+            Provider::Claude,
+            Some("/tmp/550e8400-e29b-41d4-a716-446655440000.jsonl"),
+            None,
+        );
+        let materialized = MaterializedCapability::Claude(MaterializedPaths {
+            runtime_dir: PathBuf::from("/ws/.gtoffice/agents/a1/runtime"),
+            mcp_config_path: Some(PathBuf::from("/ws/.gtoffice/agents/a1/runtime/mcp.json")),
+            settings_path: Some(PathBuf::from(
+                "/ws/.gtoffice/agents/a1/runtime/settings.json",
+            )),
+            skills_copied_to: None,
+        });
+        let command = ResumeService::build_resume_launch_command(&session, Some(&materialized))
+            .expect("command");
+        assert_eq!(
+            command,
+            "claude --resume 550e8400-e29b-41d4-a716-446655440000 \
+--mcp-config \"/ws/.gtoffice/agents/a1/runtime/mcp.json\" \
+--settings \"/ws/.gtoffice/agents/a1/runtime/settings.json\""
+        );
+    }
+
+    #[test]
+    fn test_claude_resume_command_omits_overlay_flags_that_were_not_materialized() {
+        let session = make_session(Provider::Claude, None, None);
+        let materialized = MaterializedCapability::Claude(MaterializedPaths {
+            runtime_dir: PathBuf::from("/ws/.gtoffice/agents/a1/runtime"),
+            mcp_config_path: None,
+            settings_path: None,
+            skills_copied_to: None,
+        });
+        assert_eq!(
+            ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
+            Some("claude --continue")
+        );
+    }
+
+    #[test]
+    fn test_codex_resume_command_ignores_a_claude_shaped_materialized_value() {
+        let session = make_session(Provider::Codex, None, Some("abc-uuid"));
+        let materialized = MaterializedCapability::Claude(MaterializedPaths {
+            runtime_dir: PathBuf::from("/ws/.gtoffice/agents/a1/runtime"),
+            mcp_config_path: Some(PathBuf::from("/ws/.gtoffice/agents/a1/runtime/mcp.json")),
+            settings_path: None,
+            skills_copied_to: None,
+        });
+        assert_eq!(
+            ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
+            Some("codex resume abc-uuid")
+        );
+    }
+
+    #[test]
+    fn test_codex_resume_command_inserts_profile_flag_before_subcommand_when_materialized() {
+        let session = make_session(Provider::Codex, None, Some("abc-uuid"));
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
+            Some("codex -p gtoffice-agent-a resume abc-uuid")
+        );
+    }
+
+    #[test]
+    fn test_codex_last_fallback_still_inserts_profile_flag_before_subcommand() {
+        let session = make_session(Provider::Codex, None, None);
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
+            Some("codex -p gtoffice-agent-a resume --last")
+        );
+    }
+
+    #[test]
+    fn test_claude_resume_command_ignores_a_codex_shaped_materialized_value() {
+        let session = make_session(Provider::Claude, None, None);
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
+            Some("claude --continue")
         );
     }
 
@@ -259,6 +464,7 @@ mod tests {
                 Some(&session),
                 Provider::Claude,
                 SessionRelaunchMode::Fork,
+                None,
             )
             .as_deref(),
             Some("claude --fork-session --resume 550e8400-e29b-41d4-a716-446655440000")
@@ -271,7 +477,8 @@ mod tests {
             ResumeService::build_relaunch_launch_command(
                 None,
                 Provider::Claude,
-                SessionRelaunchMode::ForkLast
+                SessionRelaunchMode::ForkLast,
+                None,
             )
             .as_deref(),
             Some("claude --fork-session --continue")
@@ -285,7 +492,8 @@ mod tests {
             ResumeService::build_relaunch_launch_command(
                 Some(&session),
                 Provider::Codex,
-                SessionRelaunchMode::Fork
+                SessionRelaunchMode::Fork,
+                None,
             )
             .as_deref(),
             Some("codex fork abc-uuid")
@@ -299,9 +507,65 @@ mod tests {
                 None,
                 Provider::Codex,
                 SessionRelaunchMode::ContinueLast,
+                None,
             )
             .as_deref(),
             Some("codex resume --last")
+        );
+    }
+
+    #[test]
+    fn test_codex_continue_last_inserts_profile_flag_when_materialized() {
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::build_relaunch_launch_command(
+                None,
+                Provider::Codex,
+                SessionRelaunchMode::ContinueLast,
+                Some(&materialized),
+            )
+            .as_deref(),
+            Some("codex -p gtoffice-agent-a resume --last")
+        );
+    }
+
+    #[test]
+    fn test_codex_fork_last_inserts_profile_flag_when_materialized() {
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::build_relaunch_launch_command(
+                None,
+                Provider::Codex,
+                SessionRelaunchMode::ForkLast,
+                Some(&materialized),
+            )
+            .as_deref(),
+            Some("codex -p gtoffice-agent-a fork --last")
+        );
+    }
+
+    #[test]
+    fn test_codex_fork_with_id_inserts_profile_flag_when_materialized() {
+        let session = make_session(Provider::Codex, None, Some("abc-uuid"));
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::build_relaunch_launch_command(
+                Some(&session),
+                Provider::Codex,
+                SessionRelaunchMode::Fork,
+                Some(&materialized),
+            )
+            .as_deref(),
+            Some("codex -p gtoffice-agent-a fork abc-uuid")
         );
     }
 

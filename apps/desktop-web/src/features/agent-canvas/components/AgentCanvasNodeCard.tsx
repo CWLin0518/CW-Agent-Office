@@ -1,6 +1,7 @@
 import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, CSSProperties } from 'react'
 import { t, type Locale } from '@shell/i18n/ui-locale'
 import { AppIcon } from '@shell/ui/icons'
+import { resolveAgentModelDisplayLabel } from '@features/workspace-hub/agent-management-model'
 import { computePortSlotCenterOffset, type AgentCanvasNodeData } from '../model/agent-canvas-graph'
 import { statusLabel } from '../model/agent-canvas-status-label'
 
@@ -31,6 +32,10 @@ interface AgentCanvasNodeCardProps {
    * `linkId` back to the full `AgentLink` and opens the same wire context
    * menu a click on the wire itself would. */
   onPortSlotContextMenu: (portKind: AgentPortKind, linkId: string, event: ReactMouseEvent<HTMLDivElement>) => void
+  /** Fired by the gear button that appears on hover, top-right of the node —
+   * the caller owns opening the actual edit-agent UI (agent-canvas only
+   * requests it), mirroring `onRequestCreateSubagent`'s split. */
+  onRequestEdit?: (agentId: string) => void
 }
 
 /** One side's stack of port dots: one per already-connected authored link,
@@ -89,10 +94,17 @@ function PortSlots({
  * (ref/position/drag wiring) around this. Ports are siblings of the card,
  * not children, so their `position: absolute` anchors to the shell (the box
  * edge geometry actually connects wires to), not to the card's own padding. */
-export function AgentCanvasNodeCard({ node, locale, getPortHandlers, onPortSlotContextMenu }: AgentCanvasNodeCardProps) {
+export function AgentCanvasNodeCard({
+  node,
+  locale,
+  getPortHandlers,
+  onPortSlotContextMenu,
+  onRequestEdit,
+}: AgentCanvasNodeCardProps) {
   const { agent, runtimeState, outputLinkIds, inputLinkIds } = node
   const title = agent.name || agent.id
   const isSubagent = Boolean(agent.parentAgentId)
+  const modelLabel = resolveAgentModelDisplayLabel(agent.tool, agent.launchCommand)
 
   return (
     <>
@@ -100,6 +112,23 @@ export function AgentCanvasNodeCard({ node, locale, getPortHandlers, onPortSlotC
         className={`agent-canvas-node${isSubagent ? ' agent-canvas-node--subagent' : ''}`}
         style={agent.color ? ({ '--agent-canvas-node-color': agent.color } as CSSProperties) : undefined}
       >
+        {onRequestEdit && (
+          <button
+            type="button"
+            className="agent-canvas-node-edit-btn"
+            data-no-drag
+            title={t(locale, '编辑 Agent', 'Edit agent')}
+            aria-label={t(locale, '编辑 Agent', 'Edit agent')}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              onRequestEdit(agent.id)
+            }}
+            onContextMenu={(event) => event.stopPropagation()}
+          >
+            <AppIcon name="settings" aria-hidden="true" />
+          </button>
+        )}
         <div className="agent-canvas-node-header">
           <span
             className={`agent-canvas-node-status-dot agent-canvas-node-status-dot--${runtimeState}`}
@@ -110,6 +139,7 @@ export function AgentCanvasNodeCard({ node, locale, getPortHandlers, onPortSlotC
         {!isSubagent && (
           <div className="agent-canvas-node-meta">
             <span className="agent-canvas-node-tool">{agent.tool}</span>
+            {modelLabel && <span className="agent-canvas-node-model">{modelLabel}</span>}
             <span className="agent-canvas-node-status-label">{statusLabel(locale, runtimeState)}</span>
           </div>
         )}

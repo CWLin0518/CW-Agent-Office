@@ -9,13 +9,16 @@ import { trapModalTabFocus } from '@/components/modal/modal-focus-trap'
 import { requestStandardModalClose } from '@/components/modal/standard-modal-close'
 import { createStationTerminalFrameFlushScheduler } from '../terminal/station-terminal-frame-flush-scheduler'
 
-import type { CreateStationInput, UpdateStationInput } from './station-model'
+import { normalizeStationToolKind, type CreateStationInput, type UpdateStationInput } from './station-model'
 import {
+  applyModelToLaunchCommand,
   buildDefaultAgentWorkdir,
   buildSuggestedAgentWorkdir,
   isWorkspaceRootAgentWorkdir,
   resolveAvailableAgentProviders,
+  resolveInitialAgentModel,
   resolveManagedProviderKey,
+  resolveModelOptionsForProvider,
   resolvePromptFileRelativePathForProvider,
   resolvePromptFileNameForProvider,
   resolveProviderLabel,
@@ -28,6 +31,7 @@ import {
   getLaunchCommandHistoryForProvider,
   type LaunchCommandHistory,
 } from './launch-command-model'
+import { StationCapabilitiesTab, type StationCapabilitiesTabHandle } from './StationCapabilitiesTab'
 import { StationDeleteBindingCleanupDialog } from './StationDeleteBindingCleanupDialog'
 import type {
   StationDeleteCleanupState,
@@ -94,6 +98,7 @@ export function StationManageModal({
   const modalSessionRef = useRef(0)
   const [name, setName] = useState('')
   const [provider, setProvider] = useState<ManagedAgentProvider>('codex')
+  const [model, setModel] = useState('')
   const [workdir, setWorkdir] = useState('')
   const [launchCommand, setLaunchCommand] = useState('')
   const [promptContent, setPromptContent] = useState('')
@@ -104,7 +109,9 @@ export function StationManageModal({
   const [externalTemplatePath, setExternalTemplatePath] = useState('')
   const [externalTemplateLoading, setExternalTemplateLoading] = useState(false)
   const [externalTemplateError, setExternalTemplateError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'general' | 'permissions'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'permissions' | 'capabilities'>('general')
+  const [capabilitiesSaving, setCapabilitiesSaving] = useState(false)
+  const capabilitiesTabRef = useRef<StationCapabilitiesTabHandle>(null)
   const [policy, setPolicy] = useState<AgentPolicy>(createDefaultAgentPolicy())
   const [policyLoading, setPolicyLoading] = useState(false)
   const [policySaving, setPolicySaving] = useState(false)
@@ -136,8 +143,10 @@ export function StationManageModal({
     }
     modalSessionRef.current += 1
     const initialWorkdir = editingStation?.workdir?.trim() || buildDefaultAgentWorkdir(copy.defaultName)
+    const initialProvider = resolveManagedProviderKey(editingStation?.tool)
     setName(editingStation?.name ?? '')
-    setProvider(resolveManagedProviderKey(editingStation?.tool))
+    setProvider(initialProvider)
+    setModel(resolveInitialAgentModel(initialProvider, editingStation?.launchCommand))
     setWorkdir(initialWorkdir)
     setCustomWorkdirEnabled(initialWorkdir !== '.')
     setLaunchCommand(editingStation?.launchCommand ?? '')
@@ -187,6 +196,7 @@ export function StationManageModal({
         setProvidersLoaded(true)
         if (resolved.length > 0 && !resolved.some((item) => item.key === provider)) {
           setProvider(resolved[0].key)
+          setModel('')
         }
       } finally {
         if (!cancelled) {
@@ -503,12 +513,21 @@ export function StationManageModal({
               >
                 {locale === 'zh-CN' ? '权限' : 'Permissions'}
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'capabilities'}
+                className={`station-form-tab${activeTab === 'capabilities' ? ' active' : ''}`}
+                onClick={() => setActiveTab('capabilities')}
+              >
+                {locale === 'zh-CN' ? '能力' : 'Capabilities'}
+              </button>
             </div>
           )}
 
           <section
             className="station-form-grid"
-            style={activeTab === 'permissions' ? { display: 'none' } : undefined}
+            style={activeTab === 'permissions' || activeTab === 'capabilities' ? { display: 'none' } : undefined}
           >
             <label className="station-form-field">
               <span>{locale === 'zh-CN' ? 'Agent 名称' : 'Agent Name'}</span>
@@ -532,7 +551,12 @@ export function StationManageModal({
               <select
                 value={provider}
                 disabled={saving || deleting || providersLoading}
-                onChange={(event) => setProvider(event.target.value as ManagedAgentProvider)}
+                onChange={(event) => {
+                  const nextProvider = event.target.value as ManagedAgentProvider
+                  setProvider(nextProvider)
+                  setModel('')
+                  setLaunchCommand((current) => applyModelToLaunchCommand(current, nextProvider, ''))
+                }}
               >
                 {providerOptions.map((item) => (
                   <option key={item.key} value={item.key}>
@@ -547,6 +571,31 @@ export function StationManageModal({
                     : 'No configured or installed providers are available yet. Finish provider setup in Settings first.'}
                 </p>
               )}
+            </label>
+
+            <label className="station-form-field">
+              <span>{locale === 'zh-CN' ? '模型' : 'Model'}</span>
+              <select
+                value={model}
+                disabled={saving || deleting}
+                onChange={(event) => {
+                  const nextModel = event.target.value
+                  setModel(nextModel)
+                  setLaunchCommand((current) => applyModelToLaunchCommand(current, provider, nextModel))
+                }}
+              >
+                <option value="">{locale === 'zh-CN' ? '预设' : 'Default'}</option>
+                {resolveModelOptionsForProvider(provider).map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <p>
+                {locale === 'zh-CN'
+                  ? '选择模型会自动写入下方启动命令的 --model 参数，你也可以手动调整。'
+                  : 'Picking a model writes a --model flag into the launch command below; you can still edit it by hand.'}
+              </p>
             </label>
 
             <div className="station-form-field">
@@ -929,6 +978,18 @@ export function StationManageModal({
             </section>
           )}
 
+          {isEdit && editingStation && workspaceId && (
+            <StationCapabilitiesTab
+              ref={capabilitiesTabRef}
+              locale={locale}
+              workspaceId={workspaceId}
+              agentId={editingStation.id}
+              toolKind={normalizeStationToolKind(editingStation.tool)}
+              active={activeTab === 'capabilities'}
+              onSavingChange={setCapabilitiesSaving}
+            />
+          )}
+
           <footer className="station-form-actions">
             {isEdit && activeTab === 'permissions' && (
               <button
@@ -944,6 +1005,22 @@ export function StationManageModal({
                   : locale === 'zh-CN'
                     ? '保存权限'
                     : 'Save Permissions'}
+              </button>
+            )}
+            {isEdit && activeTab === 'capabilities' && (
+              <button
+                type="button"
+                className="station-form-btn"
+                disabled={capabilitiesSaving}
+                onClick={() => void capabilitiesTabRef.current?.requestSave()}
+              >
+                {capabilitiesSaving
+                  ? locale === 'zh-CN'
+                    ? '保存中…'
+                    : 'Saving…'
+                  : locale === 'zh-CN'
+                    ? '保存能力'
+                    : 'Save Capabilities'}
               </button>
             )}
             {isEdit && onDelete && (

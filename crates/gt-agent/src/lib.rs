@@ -1,7 +1,9 @@
+mod capability;
 mod models;
 mod policy;
 mod repository;
 
+pub use capability::*;
 pub use models::*;
 pub use policy::*;
 pub use repository::*;

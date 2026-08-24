@@ -1100,6 +1100,16 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
     setIsStationManageOpen(true)
   }, [])
 
+  const handleAgentCanvasRequestEditAgent = useCallback(
+    (agentId: string) => {
+      const station = stations.find((item) => item.id === agentId)
+      if (station) {
+        handleStationEdit(station)
+      }
+    },
+    [stations, handleStationEdit],
+  )
+
   const handleGitHistoryOpenInEditor = useCallback(
     (filePath: string) => {
       setActiveNavId('files')
@@ -1474,6 +1484,7 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
       workspaceId: presentedWorkspaceId,
       active: activeNavId === 'agent-canvas',
       onRequestCreateSubagent: handleAgentCanvasRequestNewSubagent,
+      onRequestEditAgent: handleAgentCanvasRequestEditAgent,
     },
     agentCanvasStandbyRailProps: {
       locale,

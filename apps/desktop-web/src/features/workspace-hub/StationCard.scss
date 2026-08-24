@@ -225,7 +225,8 @@
 }
 
 .station-window-identity-segment.is-role,
-.station-window-identity-segment.is-tool {
+.station-window-identity-segment.is-tool,
+.station-window-identity-segment.is-model {
   flex: 0 0 auto;
   font-size: rem(9.25);
   font-weight: 600;
@@ -239,6 +240,10 @@
 
 .station-window-identity-segment.is-tool {
   color: var(--vb-text-muted);
+}
+
+.station-window-identity-segment.is-model {
+  color: color-mix(in srgb, var(--vb-accent) 64%, white 36%);
 }
 
 :root[data-vb-platform='linux'] {

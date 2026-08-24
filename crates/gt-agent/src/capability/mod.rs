@@ -1,0 +1,365 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::models::normalize_tool_provider_key;
+
+mod materialize;
+
+pub use materialize::*;
+
+/// Provider-agnostic "what's mounted" profile for one agent (docs/cw/08_MCP_Hook_Skill掛載設計.md
+/// §2.1). Distinct from `AgentPolicy` (is/isn't allowed): this describes what
+/// MCP servers / skills / hooks exist to be allowed or denied in the first
+/// place. Stored as a JSON blob (`agent_capability_snapshots.capability_json`)
+/// rather than normalized tables because the shape of these three things
+/// tracks upstream Claude Code / Codex CLI churn (especially hook event
+/// types) faster than a migration-per-field would be worth.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilitySnapshot {
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerCapability>,
+    #[serde(default)]
+    pub skills: Vec<SkillCapability>,
+    #[serde(default)]
+    pub hooks: Vec<HookCapability>,
+}
+
+impl AgentCapabilitySnapshot {
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    /// v1 scope decision (§2.1, §6 決策 2): Codex agents only get `mcpServers`
+    /// materialized. `skills`/`hooks` are allowed to be *stored* for a Codex
+    /// agent (so switching an agent's `tool` later doesn't lose data) but
+    /// must be rejected at the point they'd otherwise silently do nothing —
+    /// a silent no-op here is exactly the "假掛載" (fake mount) failure mode
+    /// this design explicitly calls out. Callers persisting a snapshot must
+    /// run this check first.
+    pub fn validate_for_tool(&self, tool: &str) -> Result<(), String> {
+        for server in &self.mcp_servers {
+            server.validate_transport_fields()?;
+        }
+
+        if normalize_tool_provider_key(tool) != "codex" {
+            return Ok(());
+        }
+        if !self.skills.is_empty() || !self.hooks.is_empty() {
+            return Err(
+                "Codex agents do not support skills/hooks capabilities yet (v1 scope: MCP only)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio,
+    Sse,
+    Http,
+}
+
+/// Field requirements differ by `transport` and are enforced by
+/// `validate_transport_fields`, not by the type system, because the real
+/// `.mcp.json` / `--mcp-config` schema itself is transport-tagged this way —
+/// confirmed empirically against the pinned Claude Code CLI (`claude mcp add
+/// --transport sse ...` writes `{"type":"sse","url":"..."}`, no `command`;
+/// `claude mcp add-json` for stdio writes `{"command":...,"args":...,"env":...}`,
+/// no `url`/`type`). See docs/cw/08_MCP_Hook_Skill掛載設計.md §2.2's warning
+/// not to assume CLI-facing shapes from memory — this one was checked, not
+/// guessed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerCapability {
+    pub id: String,
+    pub transport: McpTransport,
+    /// Required (non-empty) for `Stdio`; unused for `Sse`/`Http`.
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Required (non-empty) for `Sse`/`Http`; unused for `Stdio`.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl McpServerCapability {
+    pub fn validate_transport_fields(&self) -> Result<(), String> {
+        match self.transport {
+            McpTransport::Stdio => {
+                if Self::is_blank(&self.command) {
+                    return Err(format!(
+                        "MCP server '{}': stdio transport requires a non-empty `command`",
+                        self.id
+                    ));
+                }
+            }
+            McpTransport::Sse | McpTransport::Http => {
+                if Self::is_blank(&self.url) {
+                    return Err(format!(
+                        "MCP server '{}': {:?} transport requires a non-empty `url`",
+                        self.id, self.transport
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn is_blank(value: &Option<String>) -> bool {
+        value.as_deref().map(str::trim).unwrap_or("").is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCapability {
+    pub id: String,
+    pub source_path: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// One hook rule. `matcher` follows Claude Code's per-event matcher syntax
+/// (tool-name glob, empty = match all); `command` is a user-authored shell
+/// command run verbatim, so every write path into this struct MUST go
+/// through the preview/confirm flow described in docs/cw/08_MCP_Hook_Skill掛載設計.md
+/// §2.5/§3 before being persisted — this struct itself does not enforce that.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookCapability {
+    pub event: String,
+    #[serde(default)]
+    pub matcher: Option<String>,
+    pub command: String,
+}
+
+impl HookCapability {
+    /// SHA-256 over `event`, `matcher` (empty string when `None` — matches
+    /// how `matcher` is already serialized in `materialize`'s
+    /// `build_settings_json`), and `command`, each separated by a NUL byte
+    /// so e.g. `event="a", command="bc"` can never collide with
+    /// `event="ab", command="c"`.
+    ///
+    /// This is the version-lock identity from docs/cw/08_MCP_Hook_Skill掛載設計.md
+    /// §2.5 決策3/§3: a hook's hash must land in `agent_hook_confirmations`
+    /// (a persisted table) before it can be saved, so — unlike every other
+    /// hash in this design (materialize's cache-busting `DefaultHasher`
+    /// uses) — this one has to keep producing the *same* value for the
+    /// *same* content across a Rust/std/compiler upgrade. `DefaultHasher`
+    /// makes no such guarantee; SHA-256 does.
+    pub fn content_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.event.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(self.matcher.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0u8]);
+        hasher.update(self.command.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stdio_mcp(id: &str, command: &str) -> McpServerCapability {
+        McpServerCapability {
+            id: id.to_string(),
+            transport: McpTransport::Stdio,
+            command: Some(command.to_string()),
+            args: vec![],
+            env: BTreeMap::new(),
+            url: None,
+        }
+    }
+
+    #[test]
+    fn json_round_trips() {
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        let mut fs_server = stdio_mcp("fs", "npx");
+        fs_server.args = vec!["-y".to_string(), "mcp-server-fs".to_string()];
+        snapshot.mcp_servers.push(fs_server);
+        snapshot.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/tmp/reviewer/SKILL.md".to_string(),
+            enabled: true,
+        });
+        snapshot.hooks.push(HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: Some("Bash".to_string()),
+            command: "echo about-to-run-bash".to_string(),
+        });
+
+        let json = snapshot.to_json().expect("serialize");
+        let restored = AgentCapabilitySnapshot::from_json(&json).expect("deserialize");
+        assert_eq!(snapshot, restored);
+    }
+
+    #[test]
+    fn missing_fields_deserialize_to_defaults() {
+        let snapshot = AgentCapabilitySnapshot::from_json("{}").expect("deserialize empty object");
+        assert_eq!(snapshot, AgentCapabilitySnapshot::default());
+    }
+
+    #[test]
+    fn mcp_only_snapshot_is_valid_for_codex() {
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        snapshot.mcp_servers.push(stdio_mcp("fs", "npx"));
+        assert!(snapshot.validate_for_tool("codex").is_ok());
+        assert!(snapshot.validate_for_tool("Codex CLI").is_ok());
+    }
+
+    #[test]
+    fn stdio_transport_requires_command() {
+        let mut server = stdio_mcp("fs", "npx");
+        server.command = None;
+        assert!(server.validate_transport_fields().is_err());
+
+        let mut blank = stdio_mcp("fs", "npx");
+        blank.command = Some("   ".to_string());
+        assert!(blank.validate_transport_fields().is_err());
+    }
+
+    #[test]
+    fn sse_and_http_transports_require_url_not_command() {
+        let sse_missing_url = McpServerCapability {
+            id: "remote".to_string(),
+            transport: McpTransport::Sse,
+            command: None,
+            args: vec![],
+            env: BTreeMap::new(),
+            url: None,
+        };
+        assert!(sse_missing_url.validate_transport_fields().is_err());
+
+        let sse_ok = McpServerCapability {
+            url: Some("https://example.com/sse".to_string()),
+            ..sse_missing_url
+        };
+        assert!(sse_ok.validate_transport_fields().is_ok());
+
+        let http_ok = McpServerCapability {
+            transport: McpTransport::Http,
+            ..sse_ok
+        };
+        assert!(http_ok.validate_transport_fields().is_ok());
+    }
+
+    #[test]
+    fn save_rejects_snapshot_with_malformed_mcp_server() {
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        let mut broken = stdio_mcp("fs", "npx");
+        broken.command = None;
+        snapshot.mcp_servers.push(broken);
+        assert!(snapshot.validate_for_tool("claude").is_err());
+    }
+
+    #[test]
+    fn skills_or_hooks_are_rejected_for_codex() {
+        let mut with_skill = AgentCapabilitySnapshot::default();
+        with_skill.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/tmp/reviewer/SKILL.md".to_string(),
+            enabled: true,
+        });
+        assert!(with_skill.validate_for_tool("codex").is_err());
+
+        let mut with_hook = AgentCapabilitySnapshot::default();
+        with_hook.hooks.push(HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: None,
+            command: "echo hi".to_string(),
+        });
+        assert!(with_hook.validate_for_tool("codex").is_err());
+    }
+
+    #[test]
+    fn skills_and_hooks_are_allowed_for_claude() {
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        snapshot.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/tmp/reviewer/SKILL.md".to_string(),
+            enabled: true,
+        });
+        snapshot.hooks.push(HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: None,
+            command: "echo hi".to_string(),
+        });
+        assert!(snapshot.validate_for_tool("claude").is_ok());
+    }
+
+    #[test]
+    fn hook_content_hash_is_deterministic_and_sensitive_to_every_field() {
+        let base = HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: Some("Bash".to_string()),
+            command: "echo hi".to_string(),
+        };
+        assert_eq!(base.content_hash(), base.content_hash());
+
+        let different_event = HookCapability {
+            event: "PostToolUse".to_string(),
+            ..base.clone()
+        };
+        assert_ne!(base.content_hash(), different_event.content_hash());
+
+        let different_matcher = HookCapability {
+            matcher: Some("Edit".to_string()),
+            ..base.clone()
+        };
+        assert_ne!(base.content_hash(), different_matcher.content_hash());
+
+        let different_command = HookCapability {
+            command: "echo bye".to_string(),
+            ..base.clone()
+        };
+        assert_ne!(base.content_hash(), different_command.content_hash());
+    }
+
+    #[test]
+    fn hook_content_hash_does_not_collide_across_the_event_command_boundary() {
+        let a = HookCapability {
+            event: "a".to_string(),
+            matcher: None,
+            command: "bc".to_string(),
+        };
+        let b = HookCapability {
+            event: "ab".to_string(),
+            matcher: None,
+            command: "c".to_string(),
+        };
+        assert_ne!(a.content_hash(), b.content_hash());
+    }
+
+    #[test]
+    fn hook_content_hash_treats_none_matcher_same_as_empty_string_matcher() {
+        let none_matcher = HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: None,
+            command: "echo hi".to_string(),
+        };
+        let empty_matcher = HookCapability {
+            matcher: Some(String::new()),
+            ..none_matcher.clone()
+        };
+        assert_eq!(none_matcher.content_hash(), empty_matcher.content_hash());
+    }
+}

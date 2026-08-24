@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { Crosshair, GripHorizontal, Play } from 'lucide-react'
 import type { AgentStation } from './station-model'
+import { resolveAgentModelDisplayLabel } from './agent-management-model'
 import {
   buildStationCardIdentityMeta,
   handleStationCardPrimaryLaunch,
@@ -341,8 +342,13 @@ function StationCardView({
   const shouldAutoLaunchTerminal = shouldAutoLaunchStationTerminalFromSurface(runtime)
 
   const identityMeta = useMemo(
-    () => buildStationCardIdentityMeta(station.name, station.tool),
-    [station.name, station.tool],
+    () =>
+      buildStationCardIdentityMeta(
+        station.name,
+        station.tool,
+        resolveAgentModelDisplayLabel(station.tool, station.launchCommand),
+      ),
+    [station.name, station.tool, station.launchCommand],
   )
   const identityTitle = useMemo(() => identityMeta.map((item) => item.label).join(' · '), [identityMeta])
   const agentRunningForDisplay = hasTerminalSession

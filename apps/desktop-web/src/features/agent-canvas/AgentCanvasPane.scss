@@ -170,6 +170,7 @@
 }
 
 .agent-canvas-node {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: #{rem(4)};
@@ -192,6 +193,25 @@
     justify-content: center;
     gap: #{rem(2)};
     padding: #{rem(6)} #{rem(10)};
+
+    // Smaller card, smaller button — and the title needs room reserved on
+    // its right so a long name's ellipsis kicks in before running under the
+    // (hover-only, but still hit-testable) gear button.
+    .agent-canvas-node-header {
+      padding-right: #{rem(18)};
+    }
+
+    .agent-canvas-node-edit-btn {
+      top: #{rem(2)};
+      right: #{rem(2)};
+      width: #{rem(16)};
+      height: #{rem(16)};
+
+      svg {
+        width: #{rem(10)};
+        height: #{rem(10)};
+      }
+    }
   }
 }
 
@@ -237,9 +257,10 @@
 
 .agent-canvas-node-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: #{rem(8)};
+  gap: #{rem(4)} #{rem(8)};
   font-size: #{rem(11)};
   color: var(--vb-text-muted);
 }
@@ -248,6 +269,51 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-canvas-node-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vb-accent);
+}
+
+// Gear button, top-right of the node — hidden until the node (or the button
+// itself, for keyboard focus) is hovered, so it doesn't compete visually with
+// the title/status row the rest of the time.
+.agent-canvas-node-edit-btn {
+  position: absolute;
+  top: #{rem(4)};
+  right: #{rem(4)};
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: #{rem(20)};
+  height: #{rem(20)};
+  padding: 0;
+  border: none;
+  border-radius: #{rem(5)};
+  background: var(--vb-surface-muted);
+  color: var(--vb-text-muted);
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  cursor: default;
+
+  svg {
+    width: #{rem(12)};
+    height: #{rem(12)};
+  }
+
+  &:hover {
+    background: var(--vb-border);
+    color: var(--vb-text);
+  }
+}
+
+.agent-canvas-node-shell:hover .agent-canvas-node-edit-btn,
+.agent-canvas-node-edit-btn:focus-visible {
+  opacity: 1;
 }
 
 // Grasshopper-style connection ports (docs/cw/04_客製化設計.md §1, P4.5/P4.6):

@@ -1949,9 +1949,14 @@ dependencies = [
 name = "gt-agent"
 version = "0.7.5"
 dependencies = [
+ "gt-tools",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.18",
+ "toml 0.8.2",
+ "tracing",
 ]
 
 [[package]]
@@ -1959,6 +1964,7 @@ name = "gt-agent-session"
 version = "0.7.5"
 dependencies = [
  "anyhow",
+ "gt-agent",
  "rusqlite",
  "serde",
  "serde_json",

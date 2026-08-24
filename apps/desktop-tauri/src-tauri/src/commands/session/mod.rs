@@ -281,17 +281,28 @@ pub fn session_resume_check(
             }
         }
         let check = ResumeService::validate_resumable(&session);
-        let launch_command =
-            ResumeService::build_relaunch_launch_command(Some(&session), session.provider, mode);
-        let steps = ResumeService::build_relaunch_commands(Some(&session), session.provider, mode);
+        // TODO(docs/cw/08_MCP_Hook_Skill掛載設計.md §2.4): once
+        // `gt_agent::materialize_claude_capability` is wired to a capability
+        // snapshot + provider-support lookup for this agent, pass `Some(&paths)`
+        // here instead of `None` so a resumed Claude session actually gets its
+        // `--mcp-config`/`--settings` overlay. Not yet wired — this call site
+        // was only updated for the new parameter, no behavior change.
+        let launch_command = ResumeService::build_relaunch_launch_command(
+            Some(&session),
+            session.provider,
+            mode,
+            None,
+        );
+        let steps =
+            ResumeService::build_relaunch_commands(Some(&session), session.provider, mode, None);
         return Ok(json!({ "check": check, "launchCommand": launch_command, "steps": steps }));
     }
 
     let Some(provider) = expected else {
         return Err("expected_provider is required for continueLast and forkLast".to_string());
     };
-    let launch_command = ResumeService::build_relaunch_launch_command(None, provider, mode);
-    let steps = ResumeService::build_relaunch_commands(None, provider, mode);
+    let launch_command = ResumeService::build_relaunch_launch_command(None, provider, mode, None);
+    let steps = ResumeService::build_relaunch_commands(None, provider, mode, None);
     Ok(json!({
         "check": "canResume",
         "launchCommand": launch_command,

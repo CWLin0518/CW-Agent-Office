@@ -320,7 +320,7 @@
         <!-- 頁面標題與需求總覽 -->
         <header>
             <h1>GT Office 改版規劃看板</h1>
-            <p class="subtitle">基於《04 客製化設計》文件 | 更新於 2026-08-23：P0～P4.6 已完成並通過 code review；P4.5、P4.6 尚待真人在桌面 App 內做操作驗證</p>
+            <p class="subtitle">基於《04 客製化設計》與《08 Agent 能力掛載設計》文件 | 更新於 2026-08-24：P0～P4.6 已完成並通過 code review（P4.5、P4.6 尚待真人在桌面 App 內做操作驗證）；新增 P3.5-capability 四階段（按 Agent 掛載 MCP／Tool／Hook／Skill），設計已定案、尚未動工</p>
             <div class="requirements">
                 <div class="requirement-item">
                     <strong>需求 1:</strong> 節點式 Agent 協作畫布（Grasshopper 風格）
@@ -339,6 +339,9 @@
                 </div>
                 <div class="requirement-item">
                     <strong>需求 6:</strong> 終端機渲染修復 + 遊戲化辦公室首頁
+                </div>
+                <div class="requirement-item">
+                    <strong>需求 7:</strong> 按 Agent 各自掛載 MCP／Tool／Hook／Skill（見 08 文件）
                 </div>
             </div>
         </header>
@@ -404,6 +407,54 @@
                         <div class="card-findings">
                             Code review 抓到 Critical：權限分頁上兩個各自獨立的儲存按鈕，其中一個會悄悄丟棄剛輸入的權限設定，已修成每個分頁只留一個儲存動作。另修正批次建立 Agent 遇拒絕會整批失敗且不回報部分成功的問題。
                         </div>
+                    </div>
+                </div>
+
+                <!-- P3.5-capability-0 -->
+                <div class="kanban-column">
+                    <div class="column-header">P3.5-capability-0</div>
+                    <div class="card">
+                        <div class="card-title">能力掛載：資料模型地基</div>
+                        <div class="card-description">
+                            新表 `agent_capability_snapshots`（比照 `agent_policy_snapshots` 不可變快照）、`AgentProfile.capability_snapshot_id`（ADD COLUMN）、`crates/gt-tools` 新增 `ProviderCapabilitySupport` 探測邏輯（跑 `--help` 比對 CLI 是否支援 `--mcp-config`/`--settings`/skills 目錄旗標，結果快取於 `.gtoffice/cache/provider-capability.json`）。不接 UI，先求可測試。詳見 <code>docs/cw/08_MCP_Hook_Skill掛載設計.md</code>。
+                        </div>
+                        <div class="card-status">待開始</div>
+                    </div>
+                </div>
+
+                <!-- P3.5-capability-1 -->
+                <div class="kanban-column">
+                    <div class="column-header">P3.5-capability-1</div>
+                    <div class="card">
+                        <div class="card-title">能力掛載：Claude 路徑</div>
+                        <div class="card-description">
+                            `crates/gt-agent/src/capability.rs` 的 `materialize()`：MCP／Hooks 用 `--mcp-config`/`--settings` 疊加；Skills 依探測結果決定用旗標或複製進 `.claude/skills/`（只動自己管的檔案）。改 `resume.rs` 的 `build_relaunch_launch_command`/`build_resume_launch_command` 簽名接受 `MaterializedPaths`，回傳型別改成 command+args。含 content-hash 快取與 per-agent 併發鎖，驗證同一 agent 多個畫布節點時不互相覆蓋。
+                        </div>
+                        <div class="card-status">待開始</div>
+                    </div>
+                </div>
+
+                <!-- P3.5-capability-2 -->
+                <div class="kanban-column">
+                    <div class="column-header">P3.5-capability-2</div>
+                    <div class="card">
+                        <div class="card-title">能力掛載：Codex 路徑</div>
+                        <div class="card-description">
+                            v1 僅支援 MCP。啟動 PTY 時透過既有的 `TerminalCreateRequest::env` 注入 `CODEX_HOME`，指向每個 agent 專屬的隔離目錄；materialize 時讀使用者原本 `~/.codex/config.toml` 的非 `mcp_servers` 內容複製一份，再併入 agent 專屬的 `mcp_servers`。Skills／Hooks 對 Codex agent 明確擋下、UI 標示未支援，避免假掛載。工程風險最高的一段，安排在 Claude 路徑驗證過後再做。
+                        </div>
+                        <div class="card-status">待開始</div>
+                    </div>
+                </div>
+
+                <!-- P3.5-capability-3 -->
+                <div class="kanban-column">
+                    <div class="column-header">P3.5-capability-3</div>
+                    <div class="card">
+                        <div class="card-title">能力掛載：UI + Hook Preview</div>
+                        <div class="card-description">
+                            `StationManageModal.tsx` 新增「能力 / Capabilities」分頁，含 MCP servers、Skills、Hooks 三個子分頁。Hook 開放自訂指令，但送出前強制逐條列出「事件／matcher／實際指令」的完整 preview，並比照 04 文件 Provider Descriptor 的 version-lock（content hash + 強制 confirm）；每次 apply 寫入 `gt-ai-config` 既有的 audit_repository。
+                        </div>
+                        <div class="card-status">待開始</div>
                     </div>
                 </div>
 
@@ -584,6 +635,65 @@
                     </div>
                     <div class="decision-context">
                         Agent 一律在使用者目前所在的 workspace 內建立與執行。不新建承接用的 workspace，也不需要 local bridge 做跨 workspace 轉發。「我在哪個專案的介面，Agent 就在那個介面」。
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 已拍板決策：能力掛載設計 -->
+        <div class="decisions-section">
+            <div class="decisions-header">
+                <h2>已拍板決策：Agent 能力掛載（08 文件）</h2>
+                <span class="decision-badge">4 項決策已定案</span>
+                <span class="decision-date">2026-08-24</span>
+            </div>
+            <div class="decisions-list">
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">1</span>
+                        <span class="decision-question">Skills 掛載方式</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 旗標優先，複製 fallback
+                    </div>
+                    <div class="decision-context">
+                        先用 `ProviderCapabilitySupport` 探測目前釘選的 Claude Code CLI 是否支援疊加旗標；有旗標就用旗標，沒有就 fallback 成啟動前複製進 `.claude/skills/`（只動自己管的檔案，不覆蓋使用者原有的 skill）。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">2</span>
+                        <span class="decision-question">Codex 支援範圍</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ v1 兩個 provider 一起做，Codex 先求最小可用
+                    </div>
+                    <div class="decision-context">
+                        Codex v1 只支援 MCP，用 `CODEX_HOME` 環境變數隔離每個 agent。Skills／Hooks 對 Codex agent 明確擋下並在 UI 標示未支援，不做假掛載。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">3</span>
+                        <span class="decision-question">Hook 開放程度</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 開放自訂指令 + 完整 preview UI
+                    </div>
+                    <div class="decision-context">
+                        使用者可自行填 hook 指令，但送出前強制逐條列出「事件／matcher／實際指令」的 preview，並比照 04 文件 Provider Descriptor 的 version-lock（content hash + 強制 confirm）機制，每次 apply 都寫入稽核紀錄。
+                    </div>
+                </div>
+                <div class="decision-item">
+                    <div>
+                        <span class="decision-number">4</span>
+                        <span class="decision-question">多畫布節點快取</span>
+                    </div>
+                    <div class="decision-resolution">
+                        ✓ 這次一併設計快取策略
+                    </div>
+                    <div class="decision-context">
+                        用 content-hash 判斷 capability 是否變更、沒變就跳過重新 materialize；併發啟動同一 agent 時用 per-agent 鎖 + 寫暫存檔再 rename，避免互相覆蓋。
                     </div>
                 </div>
             </div>

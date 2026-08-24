@@ -21,7 +21,7 @@ export interface StationCardStatusRuntime {
 }
 
 export interface StationCardIdentityMetaItem {
-  kind: 'name' | 'tool'
+  kind: 'name' | 'tool' | 'model'
   label: string
 }
 
@@ -64,11 +64,16 @@ interface StationCardPrimaryLaunchInput {
 export function buildStationCardIdentityMeta(
   nameText: string,
   toolText: string,
+  modelText?: string,
 ): StationCardIdentityMetaItem[] {
-  return [
+  const items: StationCardIdentityMetaItem[] = [
     { kind: 'name', label: nameText },
     { kind: 'tool', label: toolText },
   ]
+  if (modelText) {
+    items.push({ kind: 'model', label: modelText })
+  }
+  return items
 }
 
 export function resolveStationCardLaunchState(

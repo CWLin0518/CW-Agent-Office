@@ -1,4 +1,8 @@
-use crate::{AgentLink, AgentPolicy, AgentProfile, AgentScope, AgentState};
+use std::collections::HashSet;
+
+use crate::{
+    AgentCapabilitySnapshot, AgentLink, AgentPolicy, AgentProfile, AgentScope, AgentState,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -83,6 +87,90 @@ pub trait AgentPolicyRepository: Send + Sync {
     /// no snapshot yet, so agents created before this feature existed behave
     /// unchanged.
     fn get_agent_policy(&self, workspace_id: &str, agent_id: &str) -> AgentResult<AgentPolicy>;
+}
+
+/// Backed by `agent_capability_snapshots` (docs/cw/08_MCP_Hook_Skill掛載設計.md
+/// §2.1): same immutable-snapshot-append pattern as `AgentPolicyRepository` —
+/// every save appends a new row and repoints `agents.capability_snapshot_id`.
+pub trait AgentCapabilityRepository: Send + Sync {
+    /// Returns the new snapshot id. Implementations must reject (not
+    /// silently accept) a snapshot that fails
+    /// `AgentCapabilitySnapshot::validate_for_tool` for this agent's stored
+    /// `tool` — see that method's doc comment for why.
+    fn save_agent_capability(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        capability: &AgentCapabilitySnapshot,
+    ) -> AgentResult<String>;
+
+    /// Returns `AgentCapabilitySnapshot::default()` (nothing mounted) when
+    /// the agent has no snapshot yet.
+    fn get_agent_capability(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> AgentResult<AgentCapabilitySnapshot>;
+}
+
+/// One row of `agent_capability_audit_logs` — what `agent_capability_save`
+/// (Tauri command layer) writes for every hook rule actually included in a
+/// saved snapshot, per docs/cw/08_MCP_Hook_Skill掛載設計.md §3's requirement
+/// that "每條 hook 的 apply 動作都要寫進 audit_repository".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookAuditEntry {
+    pub id: String,
+    pub workspace_id: String,
+    pub agent_id: String,
+    pub hook_hash: String,
+    pub event: String,
+    pub matcher: Option<String>,
+    pub command: String,
+    pub confirmed_by: String,
+    pub created_at_ms: i64,
+}
+
+/// Backed by `agent_hook_confirmations` / `agent_capability_audit_logs`
+/// (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.5 決策3, §3) — the version-lock
+/// gate and audit trail for hook rules specifically. MCP servers and skills
+/// have no equivalent: they're not user-authored shell commands, so they
+/// don't carry the same "silently executes something the user never
+/// actually reviewed" risk §3 calls out.
+pub trait AgentCapabilityAuditRepository: Send + Sync {
+    /// Every hook content hash (`HookCapability::content_hash`) already
+    /// confirmed for this `(workspace_id, agent_id)`. A hook not in this
+    /// set has never been shown to the user in the preview UI and confirmed
+    /// — `agent_capability_save`'s caller must reject saving it.
+    fn confirmed_hook_hashes(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> AgentResult<HashSet<String>>;
+
+    /// Idempotent: confirming an already-confirmed hash again is a no-op,
+    /// not a duplicate row or an error — re-confirming the same content
+    /// shouldn't be possible to get wrong.
+    fn confirm_hook_hashes(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        hook_hashes: &[String],
+        confirmed_by: &str,
+    ) -> AgentResult<()>;
+
+    /// Appends one row per entry. Append-only — never updates or deletes an
+    /// existing audit row.
+    fn record_hook_audit(&self, entries: &[HookAuditEntry]) -> AgentResult<()>;
+
+    /// Newest first. Not currently surfaced in the UI (no history view in
+    /// this phase), but kept queryable — an audit trail nobody can read
+    /// isn't meaningfully an audit trail.
+    fn list_hook_audit_logs(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> AgentResult<Vec<HookAuditEntry>>;
 }
 
 /// Backed by `agent_links` (docs/cw/04_客製化設計.md §1) and `agents.layout_x`/

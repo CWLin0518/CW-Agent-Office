@@ -1880,6 +1880,9 @@ export interface AgentProfile {
   state: AgentState
   employeeNo?: string | null
   policySnapshotId?: string | null
+  /** Points at the most recently saved MCP/skill/hook mount snapshot
+   * (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.1). `null`/absent = nothing mounted. */
+  capabilitySnapshotId?: string | null
   promptFileName?: string | null
   promptFileRelativePath?: string | null
   launchCommand?: string | null
@@ -2079,6 +2082,94 @@ export interface AgentPolicySaveRequest {
 }
 
 export interface AgentPolicySaveResponse {
+  snapshotId: string
+}
+
+// Mirrors crates/gt-agent/src/capability/mod.rs — docs/cw/08_MCP_Hook_Skill掛載設計.md
+// §2.1. Distinct from AgentPolicy above (is/isn't allowed): this is what's
+// mounted (MCP servers / skills / hooks) in the first place.
+export type McpTransport = 'stdio' | 'sse' | 'http'
+
+export interface McpServerCapability {
+  id: string
+  transport: McpTransport
+  /** Required for `stdio`; unused for `sse`/`http`. */
+  command?: string | null
+  args: string[]
+  env: Record<string, string>
+  /** Required for `sse`/`http`; unused for `stdio`. */
+  url?: string | null
+}
+
+export interface SkillCapability {
+  id: string
+  sourcePath: string
+  enabled: boolean
+}
+
+export interface HookCapability {
+  event: string
+  matcher?: string | null
+  command: string
+}
+
+export interface AgentCapabilitySnapshot {
+  mcpServers: McpServerCapability[]
+  skills: SkillCapability[]
+  hooks: HookCapability[]
+}
+
+export function createDefaultAgentCapability(): AgentCapabilitySnapshot {
+  return { mcpServers: [], skills: [], hooks: [] }
+}
+
+export interface AgentCapabilityReadRequest {
+  workspaceId: string
+  agentId: string
+}
+
+export interface AgentCapabilityReadResponse {
+  capability: AgentCapabilitySnapshot
+  confirmedHookHashes: string[]
+}
+
+export interface AgentCapabilityPreviewHooksRequest {
+  workspaceId: string
+  agentId: string
+  hooks: HookCapability[]
+}
+
+export interface AgentCapabilityHookPreviewItem {
+  event: string
+  matcher?: string | null
+  command: string
+  hash: string
+  alreadyConfirmed: boolean
+}
+
+export interface AgentCapabilityPreviewHooksResponse {
+  items: AgentCapabilityHookPreviewItem[]
+}
+
+export interface AgentCapabilityConfirmHooksRequest {
+  workspaceId: string
+  agentId: string
+  hookHashes: string[]
+  confirmedBy: string
+}
+
+export interface AgentCapabilityConfirmHooksResponse {
+  confirmed: boolean
+}
+
+export interface AgentCapabilitySaveRequest {
+  workspaceId: string
+  agentId: string
+  capability: AgentCapabilitySnapshot
+  confirmedBy: string
+}
+
+export interface AgentCapabilitySaveResponse {
   snapshotId: string
 }
 
@@ -4559,6 +4650,43 @@ export const desktopApi = {
         workspaceId: request.workspaceId,
         agentId: request.agentId,
         policy: request.policy,
+      },
+    })
+  },
+  agentCapabilityRead(request: AgentCapabilityReadRequest) {
+    return invokeCommand<AgentCapabilityReadResponse>('agent_capability_read', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+      },
+    })
+  },
+  agentCapabilityPreviewHooks(request: AgentCapabilityPreviewHooksRequest) {
+    return invokeCommand<AgentCapabilityPreviewHooksResponse>('agent_capability_preview_hooks', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+        hooks: request.hooks,
+      },
+    })
+  },
+  agentCapabilityConfirmHooks(request: AgentCapabilityConfirmHooksRequest) {
+    return invokeCommand<AgentCapabilityConfirmHooksResponse>('agent_capability_confirm_hooks', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+        hookHashes: request.hookHashes,
+        confirmedBy: request.confirmedBy,
+      },
+    })
+  },
+  agentCapabilitySave(request: AgentCapabilitySaveRequest) {
+    return invokeCommand<AgentCapabilitySaveResponse>('agent_capability_save', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+        capability: request.capability,
+        confirmedBy: request.confirmedBy,
       },
     })
   },

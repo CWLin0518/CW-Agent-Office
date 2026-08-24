@@ -179,6 +179,7 @@ pub async fn install_agent(window: tauri::Window, agent: AgentType) -> Result<()
     );
 
     AgentInstaller::invalidate_install_status_cache(Some(agent));
+    AgentInstaller::invalidate_capability_support_cache(Some(agent));
     let verified = AgentInstaller::install_status_fresh(agent);
     if !verified.installed {
         let diagnostic = AgentInstallDiagnosticCode::VerificationFailed;
@@ -291,6 +292,7 @@ pub async fn uninstall_agent(window: tauri::Window, agent: AgentType) -> Result<
     }
 
     AgentInstaller::invalidate_install_status_cache(Some(agent));
+    AgentInstaller::invalidate_capability_support_cache(Some(agent));
     let verified = AgentInstaller::install_status_fresh(agent);
     if verified.installed {
         return Err(format!(

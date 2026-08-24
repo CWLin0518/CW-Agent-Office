@@ -117,6 +117,8 @@ Core third-party dependencies used by the Tauri shell and workspace crates. Work
 | | `serde_json` | workspace dependency `1` | ✅ Used | JSON serialization |
 | | `bincode` | `apps/desktop-tauri/src-tauri/Cargo.toml` `1.3` | ✅ Used | Binary protocol framing |
 | Storage | `rusqlite` | workspace dependency `0.31` with `bundled` | ✅ Used | Embedded SQLite |
+| Crypto / encoding | `sha2` | `crates/gt-agent/Cargo.toml` `0.10` | ✅ Used | Persisted, build-stable content hash for the hook version-lock gate (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.5 決策3/§3) — `agent_hook_confirmations` rows must stay valid across a Rust/std upgrade, unlike the `DefaultHasher` used elsewhere in the same design purely for in-process cache invalidation. Already present transitively (git2/rustls/reqwest pull it in) — this only promotes it to a direct dependency, no new crate enters the tree |
+| Serialization | `toml` | `crates/gt-ai-config/Cargo.toml`, `apps/desktop-tauri/src-tauri/Cargo.toml`, `crates/gt-agent/Cargo.toml` `0.8` | ✅ Used | TOML read/write — `gt-agent` uses it to write the Codex per-agent MCP-servers profile overlay (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.4 決策2) |
 | Terminal | `portpicker` | not in current manifests | ❌ Unused | No current install |
 | | `vt100` | `apps/desktop-tauri/src-tauri/Cargo.toml` `0.15` | ✅ Used | Terminal state parsing and rendered screen recovery |
 | | `strip-ansi-escapes` | `apps/desktop-tauri/src-tauri/Cargo.toml` `0.2` | ✅ Used | ANSI stripping for normalized output |
@@ -135,6 +137,7 @@ Core third-party dependencies used by the Tauri shell and workspace crates. Work
 | Dialog / UX | `rfd` | `apps/desktop-tauri/src-tauri/Cargo.toml` `0.14` | ✅ Used | Native file dialogs |
 | | `open` | `apps/desktop-tauri/src-tauri/Cargo.toml` `5.3` | ✅ Used | Open paths and URLs in the system shell |
 | Security | `keyring` | not in current manifests | ❌ Unused | No current install |
+| Testing | `tempfile` | workspace crate dev-dependencies (`gt-agent-session`, `gt-agent`) `3` | ✅ Used | Scratch directories for filesystem-touching unit tests (session discovery fixtures; capability `materialize()` fixtures, docs/cw/08_MCP_Hook_Skill掛載設計.md) — dev-dependency only, never ships |
 | Logging | `tracing` | workspace dependency `0.1` | ✅ Used | Structured logging and instrumentation |
 | Identity | `uuid` | workspace dependency `1` | ✅ Used | Stable IDs across workspace models |
 | Crypto / encoding | `qrcode` | `apps/desktop-tauri/src-tauri/Cargo.toml` `0.14` | ✅ Used | QR code generation |
