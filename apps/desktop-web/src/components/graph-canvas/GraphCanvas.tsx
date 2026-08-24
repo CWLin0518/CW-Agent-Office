@@ -763,7 +763,21 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
               <marker
                 id={arrowMarkerId}
                 viewBox="0 0 10 10"
-                refX="9"
+                // The anchor point (refX, refY) is placed exactly at the
+                // path's endpoint; the visible tip sits at local x=10 in this
+                // viewBox. Any refX < 10 leaves a gap between the anchor and
+                // the tip, which "auto"/"auto-start-reverse" then rotates
+                // into the path's tangent direction — for `markerEnd` that
+                // overshoots the tip a bit further FORWARD past the true
+                // endpoint (usually hidden under the port dot painted on top
+                // of the wire), but for `markerStart` (`orient="auto-start-
+                // reverse"` flips the start marker 180°) it overshoots
+                // BACKWARD, i.e. visibly past the dot on a bidirectional
+                // wire's tail end. refX="10" (== the tip's own x) puts the
+                // tip exactly on the path's mathematical endpoint in both
+                // cases, matching the port-dot-center math in
+                // `agent-canvas-graph.ts`'s `PORT_EDGE_HANG`.
+                refX="10"
                 refY="5"
                 markerWidth="7"
                 markerHeight="7"

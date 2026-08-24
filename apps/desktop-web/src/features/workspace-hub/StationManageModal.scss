@@ -743,29 +743,70 @@
 
 .station-capabilities-row-header {
   display: flex;
-  align-items: center;
-  gap: rem(8);
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: rem(10);
+}
 
-  input[type='text'] {
-    flex: 1;
-  }
+.station-capabilities-row-name-field,
+.station-capabilities-row-id-field {
+  flex: 1 1 rem(180);
+  min-width: rem(140);
 
-  select {
-    flex: 0 0 auto;
+  input {
+    min-width: 0;
   }
 }
 
-.station-capabilities-row-enabled-toggle {
+.station-capabilities-row-transport-field {
+  flex: 0 1 rem(110);
+  min-width: rem(96);
+
+  select {
+    min-width: 0;
+  }
+}
+
+.station-capabilities-row-actions {
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
-  gap: rem(4);
-  white-space: nowrap;
-  font-size: rem(12);
-  color: var(--vb-text-muted);
+  gap: rem(10);
+  margin-left: auto;
+  padding-bottom: rem(2);
+}
 
-  input[type='checkbox'] {
-    margin: 0;
+.station-capabilities-row-enabled-toggle {
+  width: rem(40);
+  height: rem(24);
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 999rem;
+  padding: rem(2);
+  background: color-mix(in srgb, var(--vb-chip) 80%, transparent);
+  cursor: pointer;
+  transition: background 0.2s ease;
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  &.active {
+    background: color-mix(in srgb, var(--vb-accent) 82%, transparent);
+  }
+}
+
+.station-capabilities-row-enabled-toggle-thumb {
+  display: block;
+  width: rem(18);
+  height: rem(18);
+  border-radius: 50%;
+  background: var(--vb-surface);
+  box-shadow: 0 rem(2) rem(6) rgba(0, 0, 0, 0.18);
+  transition: transform 0.2s ease;
+
+  .station-capabilities-row-enabled-toggle.active & {
+    transform: translateX(rem(16));
   }
 }
 

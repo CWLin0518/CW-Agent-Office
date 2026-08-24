@@ -176,7 +176,22 @@
   display: flex;
   flex-direction: column;
   gap: #{rem(4)};
-  height: 100%;
+  // Literal (not percentage, not rem()) min-height matching AGENT_NODE_HEIGHT
+  // (agent-canvas-graph.ts) — the shell (`GraphCanvas.tsx`) only ever sets
+  // `minHeight` on itself, never a definite `height`, so a percentage
+  // `height: 100%` here would resolve to `auto` (shrink-to-fit content)
+  // instead of actually filling the shell. That left this card visually
+  // shorter than its shell, so the ownership ports anchored to the shell's
+  // edges (`.agent-canvas-port--bottom/--top`, both `top/bottom: 50%` of the
+  // *shell*) floated below/above the card's real, shorter border. A literal
+  // min-height sidesteps the percentage-of-indefinite-parent problem so the
+  // card and its shell agree on a height and the ports land flush again.
+  // Deliberately px, not rem() — see `.agent-canvas-port`'s comment below:
+  // rem()'s 14px basis vs. the app's actual (user-adjustable, 16px-default)
+  // root font-size inflated this card ~14% taller than the 92 canvas units
+  // `computePortEdgeGeometry` assumes, which is exactly what pushed the wire
+  // endpoint/arrow out of alignment with the port dot's visual center.
+  min-height: 92px;
   padding: #{rem(10)} #{rem(12)};
   border-radius: #{rem(10)};
   // `--agent-canvas-node-color` is an inline custom property (set by
@@ -194,6 +209,9 @@
   &--subagent {
     justify-content: center;
     gap: #{rem(2)};
+    // Matches SUBAGENT_NODE_HEIGHT, same reasoning as the base min-height
+    // above — literal px, not rem(), for the same wire-alignment reason.
+    min-height: 68px;
     padding: #{rem(6)} #{rem(10)};
 
     // Smaller card, smaller button — and the title needs room reserved on
@@ -329,7 +347,14 @@
   align-items: center;
   justify-content: space-between;
   gap: #{rem(6)};
-  height: 100%;
+  // Literal min-height matching MCP_NODE_HEIGHT — see the same-reasoning
+  // comment on `.agent-canvas-node`'s min-height above; `height: 100%` here
+  // resolved to `auto` against the shell's indefinite (min-height-only)
+  // height, so the card rendered shorter than its shell and
+  // `.agent-canvas-port--mcp-anchor` (centered on the *shell*) sat below the
+  // card's real visual center instead of on it. Literal px, not rem(), for
+  // the same wire-alignment reason as `.agent-canvas-node` above.
+  min-height: 48px;
   padding: 0 #{rem(8)} 0 #{rem(12)};
   border-radius: #{rem(10)};
   border: var(--vb-border-width) dashed var(--vb-accent);
@@ -355,28 +380,37 @@
   display: flex;
   flex: none;
   align-items: center;
-  justify-content: center;
-  width: #{rem(20)};
-  height: #{rem(20)};
-  padding: 0;
+  justify-content: flex-start;
+  width: #{rem(28)};
+  height: #{rem(16)};
+  padding: #{rem(2)};
   border: none;
-  border-radius: #{rem(5)};
-  background: transparent;
-  color: var(--vb-text-muted);
+  border-radius: 999rem;
+  background: color-mix(in srgb, var(--vb-chip) 80%, transparent);
   cursor: default;
-
-  svg {
-    width: #{rem(12)};
-    height: #{rem(12)};
-  }
+  overflow: hidden;
+  transition: background 0.15s ease;
 
   &:hover {
     background: var(--vb-border);
-    color: var(--vb-text);
   }
 
-  &[aria-pressed='true'] {
-    color: var(--vb-accent);
+  &.active {
+    background: color-mix(in srgb, var(--vb-accent) 82%, transparent);
+  }
+}
+
+.agent-canvas-mcp-node-toggle-thumb {
+  display: block;
+  width: #{rem(12)};
+  height: #{rem(12)};
+  border-radius: 50%;
+  background: var(--vb-surface);
+  box-shadow: 0 #{rem(1)} #{rem(3)} rgba(0, 0, 0, 0.18);
+  transition: transform 0.15s ease;
+
+  .agent-canvas-mcp-node-toggle.active & {
+    transform: translateX(#{rem(12)});
   }
 }
 
@@ -393,8 +427,20 @@
 .agent-canvas-port {
   position: absolute;
   top: 50%;
-  width: #{rem(10)};
-  height: #{rem(10)};
+  // Deliberately literal px, not rem() — unlike the rest of this
+  // stylesheet, this element's box must line up exactly with a wire
+  // endpoint computed in `agent-canvas-graph.ts`
+  // (`computePortSlotCenterOffset`), which operates in raw canvas units
+  // that are always 1:1 with CSS px (same basis the node shell's own
+  // width/height use, via `GraphCanvas.tsx`'s unitless inline styles).
+  // `rem()`'s px argument assumes a 14px root font-size, but the app's
+  // actual root font-size is the user's adjustable UI-font-size
+  // preference (16px at the default "medium" setting, more at
+  // large/xlarge) — going through rem() here would scale this dot's
+  // rendered position by that ratio while the geometry math it must
+  // match stays fixed.
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   transform: translateY(-50%);
   background: var(--vb-surface);
@@ -408,12 +454,21 @@
   }
 }
 
+// -5px (== -radius, half this dot's own 10px width) puts the dot's CENTER
+// exactly ON the node's edge — half the dot overlaps the border, half hangs
+// outside it — instead of some other offset whose center has to be
+// re-derived by subtracting the radius back out. `computePortEdgeGeometry`/
+// `computeVerticalPortEdgeGeometry` anchor wires straight at `from.x +
+// fromWidth` / `to.x` (the bare node edge, no extra constant) BECAUSE this
+// offset is exactly the radius — the two deliberately need no shared "hang"
+// constant to stay in sync, so they can't drift apart the way they did
+// across several earlier fix attempts for this same alignment bug.
 .agent-canvas-port--input {
-  left: #{rem(-6)};
+  left: -5px;
 }
 
 .agent-canvas-port--output {
-  right: #{rem(-6)};
+  right: -5px;
 }
 
 // Ownership (parent <-> subagent, docs request) — a straight top-down
@@ -423,7 +478,8 @@
 // override the base's `cursor: context-menu` back to `default`.
 .agent-canvas-port--bottom {
   top: auto;
-  bottom: #{rem(-6)};
+  // -radius — see `.agent-canvas-port--input`'s comment above.
+  bottom: -5px;
   left: 50%;
   transform: translateX(-50%);
   cursor: default;
@@ -431,7 +487,8 @@
 }
 
 .agent-canvas-port--top {
-  top: #{rem(-6)};
+  // -radius — see `.agent-canvas-port--input`'s comment above.
+  top: -5px;
   left: 50%;
   transform: translateX(-50%);
   cursor: default;
@@ -456,7 +513,8 @@
 // right side — it sits to the agent's left, wired via `computePortEdgeGeometry`
 // same as any other `from`-side port).
 .agent-canvas-port--mcp-anchor {
-  right: #{rem(-6)};
+  // -radius — see `.agent-canvas-port--input`'s comment above.
+  right: -5px;
   cursor: default;
   pointer-events: none;
 }
@@ -464,14 +522,16 @@
 // The "+" (add connection) slot — visually distinct from a connected dot
 // (square, not round, no fill) so it reads as "not yet a connection," and
 // this is the only slot that's still an actual drag source. Same footprint
-// as a connected dot (10px, -6px offset) so it doesn't read as a bigger,
+// as a connected dot (10px, -radius offset) so it doesn't read as a bigger,
 // more prominent control than the dots it sits alongside.
 .agent-canvas-port--add {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: #{rem(10)};
-  height: #{rem(10)};
+  // Literal px — see `.agent-canvas-port`'s comment above (same footprint
+  // as a connected dot, so it must match its geometry the same way).
+  width: 10px;
+  height: 10px;
   border-radius: #{rem(2)};
   background: var(--vb-surface-muted);
   border: #{rem(1.5)} solid var(--vb-text-muted);
@@ -490,11 +550,13 @@
 }
 
 .agent-canvas-port--input.agent-canvas-port--add {
-  left: #{rem(-6)};
+  // -radius — see `.agent-canvas-port--input`'s comment above.
+  left: -5px;
 }
 
 .agent-canvas-port--output.agent-canvas-port--add {
-  right: #{rem(-6)};
+  // -radius — see `.agent-canvas-port--input`'s comment above.
+  right: -5px;
 }
 
 // Live wire-drag preview: deliberately a `position: fixed` overlay in raw

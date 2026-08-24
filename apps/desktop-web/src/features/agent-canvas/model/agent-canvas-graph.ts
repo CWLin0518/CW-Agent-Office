@@ -117,6 +117,19 @@ export type AgentCanvasNodeData = AgentCanvasAgentNodeData | AgentCanvasMcpNodeD
  * a node. */
 export const PORT_SLOT_SPACING = 22
 
+// A port dot's CSS offset (`AgentCanvasPane.scss`'s `.agent-canvas-port--*`
+// rules — `left`/`right`/`top`/`bottom: -5px`) is exactly `-radius` (the dot
+// is 10px wide), so its CENTER lands exactly ON the node's bare edge — half
+// the dot overlaps the border, half hangs outside it. Because of that,
+// `computePortEdgeGeometry`/`computeVerticalPortEdgeGeometry` below need no
+// extra compensation constant: `from.x + fromWidth` / `to.x` (and their
+// vertical equivalents) already ARE the dot's center. A previous version of
+// this file tried to keep a separate "how far the dot hangs past the edge"
+// constant in sync with the CSS by hand — it drifted (twice) as the CSS
+// value or unit changed underneath it. Keeping the CSS offset pinned to
+// `-radius` removes the second number entirely, so there's nothing left to
+// go out of sync.
+
 /** Offset from a node's vertical CENTER for the `index`-th of `total`
  * stacked port slots — symmetric around 0, so `total === 1` (no connections
  * yet, just the "+") lands exactly on center, identical to the single fixed

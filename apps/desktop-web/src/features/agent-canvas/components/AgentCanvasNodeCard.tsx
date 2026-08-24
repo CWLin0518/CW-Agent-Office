@@ -271,9 +271,10 @@ export function AgentCanvasMcpNodeCard({ node, locale, onToggleEnabled }: AgentC
         <span className="agent-canvas-mcp-node-title">{title}</span>
         <button
           type="button"
-          className="agent-canvas-mcp-node-toggle"
+          role="switch"
+          aria-checked={server.enabled}
+          className={`agent-canvas-mcp-node-toggle${server.enabled ? ' active' : ''}`}
           data-no-drag
-          aria-pressed={server.enabled}
           title={t(
             locale,
             server.enabled ? '停用此 MCP' : '啟用此 MCP',
@@ -290,7 +291,7 @@ export function AgentCanvasMcpNodeCard({ node, locale, onToggleEnabled }: AgentC
             onToggleEnabled(agentId, server.id, !server.enabled)
           }}
         >
-          <AppIcon name={server.enabled ? 'eye' : 'eye-off'} aria-hidden="true" />
+          <span className="agent-canvas-mcp-node-toggle-thumb" />
         </button>
       </div>
       <div className="agent-canvas-port agent-canvas-port--mcp-anchor" aria-hidden="true" />

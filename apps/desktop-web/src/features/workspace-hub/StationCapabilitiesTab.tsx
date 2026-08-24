@@ -395,47 +395,60 @@ function McpServersEditor({
       {servers.map((server, index) => (
         <div key={index} className="station-form-surface station-capabilities-row">
           <div className="station-capabilities-row-header">
-            <input
-              type="text"
-              placeholder={locale === 'zh-CN' ? '名称（显示用）' : 'Name (display only)'}
-              disabled={disabled}
-              value={server.name ?? ''}
-              onChange={(event) => updateAt(index, { name: event.target.value })}
-            />
-            <input
-              type="text"
-              placeholder="Server ID"
-              disabled={disabled}
-              value={server.id}
-              onChange={(event) => updateAt(index, { id: event.target.value })}
-            />
-            <select
-              disabled={disabled}
-              value={server.transport}
-              onChange={(event) => updateAt(index, { transport: event.target.value as McpTransport })}
-            >
-              <option value="stdio">stdio</option>
-              <option value="sse">sse</option>
-              <option value="http">http</option>
-            </select>
-            <label className="station-capabilities-row-enabled-toggle">
+            <label className="station-form-field station-capabilities-row-name-field">
+              <span>{locale === 'zh-CN' ? '显示名称（Agent Canvas 节点用）' : 'Display name (used on Agent Canvas node)'}</span>
               <input
-                type="checkbox"
+                type="text"
+                placeholder={locale === 'zh-CN' ? '例如：文件搜索' : 'e.g. File Search'}
                 disabled={disabled}
-                checked={server.enabled}
-                onChange={(event) => updateAt(index, { enabled: event.target.checked })}
+                value={server.name ?? ''}
+                onChange={(event) => updateAt(index, { name: event.target.value })}
               />
-              <span>{locale === 'zh-CN' ? '启用' : 'Enabled'}</span>
             </label>
-            <button
-              type="button"
-              className="station-form-tag-chip-delete"
-              disabled={disabled}
-              onClick={() => removeAt(index)}
-              aria-label={locale === 'zh-CN' ? '移除' : 'Remove'}
-            >
-              <AppIcon name="close" className="vb-icon" aria-hidden="true" />
-            </button>
+            <label className="station-form-field station-capabilities-row-id-field">
+              <span>Server ID</span>
+              <input
+                type="text"
+                placeholder="server-id"
+                disabled={disabled}
+                value={server.id}
+                onChange={(event) => updateAt(index, { id: event.target.value })}
+              />
+            </label>
+            <label className="station-form-field station-capabilities-row-transport-field">
+              <span>{locale === 'zh-CN' ? '传输方式' : 'Transport'}</span>
+              <select
+                disabled={disabled}
+                value={server.transport}
+                onChange={(event) => updateAt(index, { transport: event.target.value as McpTransport })}
+              >
+                <option value="stdio">stdio</option>
+                <option value="sse">sse</option>
+                <option value="http">http</option>
+              </select>
+            </label>
+            <div className="station-capabilities-row-actions">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={server.enabled}
+                aria-label={locale === 'zh-CN' ? '启用此 MCP 服务' : 'Enable this MCP server'}
+                className={`station-capabilities-row-enabled-toggle${server.enabled ? ' active' : ''}`}
+                disabled={disabled}
+                onClick={() => updateAt(index, { enabled: !server.enabled })}
+              >
+                <span className="station-capabilities-row-enabled-toggle-thumb" />
+              </button>
+              <button
+                type="button"
+                className="station-form-tag-chip-delete"
+                disabled={disabled}
+                onClick={() => removeAt(index)}
+                aria-label={locale === 'zh-CN' ? '移除' : 'Remove'}
+              >
+                <AppIcon name="close" className="vb-icon" aria-hidden="true" />
+              </button>
+            </div>
           </div>
           {server.transport === 'stdio' ? (
             <>
