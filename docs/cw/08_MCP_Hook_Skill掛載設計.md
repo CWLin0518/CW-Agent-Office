@@ -188,9 +188,127 @@ Hook 是「使用者定義、啟動時會被實際執行的指令」，風險等
 
 ---
 
-## 6. 已拍板決策（2026-08-24）
+## 6. 三種能力的設定流程
 
-以下 4 題已由使用者逐一拍板，內容已同步反映進第 1-5 節：
+三者共用同一份 `AgentCapabilitySnapshot` 資料模型與同一個 materialize 進場口，但「使用者要不要手動確認」「materialize 後怎麼疊加進 CLI」不一樣，分開說明。
+
+### 6.1 MCP 設定流程
+
+```text
+使用者在 StationManageModal →「能力」分頁 → MCP servers 子分頁
+  │
+  ├─ 1. 選來源：Settings 全域已註冊的 MCP server（下拉選）
+  │        或手動填 stdio/sse/http 連線資訊（command/args/env 或 url）
+  │
+  ├─ 2. 儲存 → capability command 寫入新的一筆 agent_capability_snapshots
+  │        （不可變快照，追加不覆寫）
+  │        AgentProfile.capability_snapshot_id 改指向這筆新快照
+  │
+  └─ 3. 下次這個 agent 啟動／resume PTY 時：
+        │
+        ├─ a. 讀 capability_json，算 content hash，跟
+        │      .gtoffice/agents/<agent_id>/runtime/.capability-hash 比對
+        │      → 沒變就跳過 materialize，直接沿用既有的 MaterializedPaths
+        │
+        ├─ b. 有變：呼叫 materialize()
+        │      ├─ Claude：ProviderCapabilitySupport.supports_mcp_config_flag=true
+        │      │     → 寫 mcp.json，組 --mcp-config <path> 疊加進啟動指令
+        │      └─ Codex：寫進使用者真實、未隔離的 $CODEX_HOME 底下一個
+        │            GT-Office-namespaced 的 sibling 檔案
+        │            `<profile_name>.config.toml`（只含這個 agent 的
+        │            [mcp_servers] 表），never 動 CODEX_HOME/config.toml
+        │            本身，也 never 隔離或改寫 CODEX_HOME 環境變數——
+        │            $CODEX_HOME 底下還放著 auth.json 等登入憑證，隔離
+        │            會直接把 Codex 登入弄壞（`codex doctor` 會報
+        │            `✗ auth`），改用 `-p <profile_name>` 疊加旗標即可
+        │            merge 進 base config，不需要隔離（見
+        │            materialize_codex_capability 的完整說明）
+        │
+        └─ c. resume.rs 的 build_relaunch_launch_command（resume/relaunch）
+              或 apply_capability_overlay_to_command（agent 第一次啟動）
+              組出最終 command，寫進 PTY → CLI 啟動時載入這個 MCP server；
+              Codex 的 `-p <profile_name>` 一定接在 subcommand 之前
+```
+
+**確認強度**：跟第 3 節 Hook 不同，MCP 設定 v1 不強制逐條 preview——存檔即成立新快照，下次啟動就生效。理由：MCP server 本身「能不能被呼叫」的風險管制屬於 04 文件 Phase B「工具/MCP」政策類別的範圍（見 2.7 節），這份文件負責的是「掛不掛得上」，不是「掛上後准不准用」。如果之後發現使用者常常誤填 MCP server 造成啟動失敗或安全疑慮，可以再補一層輕量 preview，但不在這次 v1 範圍內。
+
+### 6.2 Skill 設定流程
+
+```text
+使用者在「能力」分頁 → Skills 子分頁（Codex agent：此分頁停用，顯示「尚未支援」）
+  │
+  ├─ 1. 匯入方式：從本機路徑選一個 SKILL.md
+  │        或勾選 workspace 內已存在、其他 agent 也在用的技能
+  │
+  ├─ 2. 儲存 → 新的 capability snapshot（skills 陣列：id / sourcePath / enabled）
+  │
+  └─ 3. 下次啟動時 materialize：
+        │
+        ├─ a. 讀 ProviderCapabilitySupport.supports_skills_dir_flag
+        │
+        ├─ b. true：用旗標疊加一個額外 skills 目錄
+        │      （實際旗標名稱要對照目前釘選的 Claude Code CLI 版本，見 2.2 節）
+        │
+        ├─ c. false（fallback）：啟動前把 profile 裡的 skill
+        │      複製進 agent 自己 workdir 的 .claude/skills/<skill-id>/
+        │      → 用一份 manifest 記錄「這些檔案是 GT Office 寫的」
+        │      → 不覆蓋使用者原本手動放在該目錄下的其他 skill
+        │
+        └─ d. content-hash 沒變就跳過重新複製（見 2.6 節）
+              → Claude Code CLI 啟動時原生掃描 .claude/skills/，自動載入
+```
+
+**確認強度**：跟 MCP 一樣，v1 不強制 preview——Skill 本身是「文字內容的能力說明」，執行風險遠低於 Hook（Hook 是會被直接執行的指令）。
+
+### 6.3 Hook 設定流程（三者中管制最嚴）
+
+```text
+使用者在「能力」分頁 → Hooks 子分頁（Codex agent：此分頁停用）
+  │
+  ├─ 1. 填寫一條規則：事件類型（PreToolUse/PostToolUse/…）
+  │        + matcher（比對什麼工具/路徑）+ 實際要執行的指令
+  │
+  ├─ 2. 送出前：強制彈出完整 preview 畫面
+  │        逐條列出「這個 hook 會在『{event}』事件、比對『{matcher}』時，
+  │        實際執行『{command}』這一行指令」——不是丟一整包 JSON 給使用者看
+  │
+  ├─ 3. 判斷是否需要使用者手動點「確認」：
+  │        │
+  │        ├─ 這條規則第一次建立，或內容 hash 跟上次使用者確認過的不一樣
+  │        │     → 一定要等使用者手動確認，才把這個 hash 記為「已確認」
+  │        │
+  │        └─ hash 沒變（沒改過內容）
+  │              → 不用每次重新跳確認對話框，但 preview 畫面本身仍會顯示
+  │                （只是不擋流程，比照 04 文件 Provider Descriptor 的 version-lock）
+  │
+  ├─ 4. 確認後 apply：
+  │        ├─ 寫入新的 agent_capability_snapshots 快照
+  │        └─ 寫一筆 gt-ai-config 既有的 audit_repository 紀錄
+  │              （誰、何時、確認了哪個 hash、指令內容是什麼）
+  │
+  └─ 5. 下次啟動時 materialize：
+        ├─ 先做基本格式驗證（serde 反序列化失敗要擋下，壞掉的 hook
+        │    定義不能靜默略過讓 CLI 自己炸開）
+        ├─ 寫進 agent runtime 目錄下的 settings.json 的 hooks 欄位
+        └─ Claude：附加 --settings <path> 疊加進啟動指令（Codex v1 不支援）
+```
+
+### 6.4 三者一覽
+
+| | MCP | Skill | Hook |
+|---|---|---|---|
+| 風險等級 | 中（會連外部服務/執行 stdio 指令） | 低（純文字內容） | 高（啟動時會被直接執行的指令） |
+| 是否強制 preview | 否 | 否 | **是**，逐條列出事件/matcher/指令 |
+| 是否需要手動 confirm | 否（存檔即生效） | 否 | **是**，內容 hash 變更時強制 |
+| 是否寫入 audit | 選配 | 選配 | **是**，每次 apply 都寫 |
+| Claude 疊加方式 | `--mcp-config` | 旗標優先、複製 fallback | `--settings` |
+| Codex v1 支援 | ✓ | ✗（UI 停用） | ✗（UI 停用） |
+
+---
+
+## 7. 已拍板決策（2026-08-24）
+
+以下 4 題已由使用者逐一拍板，內容已同步反映進第 1-6 節：
 
 1. **Skills 掛載方式**：兩者都做，旗標優先、複製 fallback（見 2.4 節）。判斷依據來自 2.2 節新增的 `ProviderCapabilitySupport` 探測。
 2. **Codex 支援範圍**：v1 兩個 provider 一起做，Codex 先求最小可用，只支援 MCP，Skills/Hooks 明確擋下並在 UI 標示未支援（見 2.1、2.4 節）。

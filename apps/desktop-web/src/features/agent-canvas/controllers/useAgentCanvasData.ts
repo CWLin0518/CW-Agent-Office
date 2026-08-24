@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { desktopApi } from '@shell/integration/desktop-api'
 import type { AgentLink, AgentProfile, AgentRuntimeStatus } from '@shell/integration/desktop-api'
 import { buildAgentCanvasGraph, type AgentCanvasGraphView, type CanvasNodeInstance } from '../model/agent-canvas-graph'
@@ -59,6 +59,19 @@ function saveInstances(workspaceId: string, instances: CanvasNodeInstance[]): vo
   }
 }
 
+/** Whether an agent has a real, backend-persisted canvas layout position —
+ * shared by every undo entry below that needs to know what to revert an
+ * agent's position back to (or that there's nothing to revert to). */
+function persistedAgentLayout(agent: AgentProfile | undefined): { x: number; y: number } | null {
+  return agent &&
+    typeof agent.layoutX === 'number' &&
+    Number.isFinite(agent.layoutX) &&
+    typeof agent.layoutY === 'number' &&
+    Number.isFinite(agent.layoutY)
+    ? { x: agent.layoutX, y: agent.layoutY }
+    : null
+}
+
 function loadLegacyRemovedAgentIds(workspaceId: string): Set<string> {
   try {
     const raw = window.localStorage.getItem(`${LEGACY_REMOVED_AGENT_IDS_STORAGE_PREFIX}:${workspaceId}`)
@@ -105,6 +118,12 @@ interface UseAgentCanvasDataResult {
    * authored links, addressed by `AgentLink.id` (docs/cw/04_客製化設計.md §8,
    * P4.6). */
   setLinkBidirectional: (linkIds: string[], bidirectional: boolean) => void
+  /** Reverts the most recent undoable canvas action (node move/add/remove,
+   * authored link create/delete, agent/link color, link bidirectional) —
+   * no-op if there's nothing to undo. Derived-link deletion is intentionally
+   * not undoable (there's no "create a derived link" operation to reverse
+   * it with). */
+  undo: () => void
 }
 
 /** Data loading + polling for agent-canvas, kept out of the presentational
@@ -115,6 +134,17 @@ export function useAgentCanvasData(
   active: boolean,
 ): UseAgentCanvasDataResult {
   const [agents, setAgents] = useState<AgentProfile[]>([])
+  // Mirrors `agents` for callbacks (`commitAgentLayout`/`addInstance`) that
+  // only need the latest value to compute an undo entry's "previous state"
+  // — reading through this ref instead of depending on `agents` directly
+  // keeps those callbacks' identity stable across the 8s poll tick (which
+  // replaces `agents` with a new array reference every time, changed or
+  // not), instead of recreating them — and every callback built on top of
+  // them in `AgentCanvasPane.tsx` — on every single poll.
+  const agentsRef = useRef(agents)
+  useEffect(() => {
+    agentsRef.current = agents
+  })
   const [links, setLinks] = useState<AgentLink[]>([])
   const [statuses, setStatuses] = useState<AgentRuntimeStatus[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -134,17 +164,75 @@ export function useAgentCanvasData(
     return () => window.clearTimeout(id)
   }, [workspaceId])
 
+  // Undo history: a stack of inverse-action closures, pushed by every
+  // mutator below right after it applies its change. `isUndoingRef` guards
+  // against an undo closure's own calls (e.g. `deleteAuthoredLink` re-run to
+  // undo a `createAuthoredLink`) re-recording themselves — undo only ever
+  // walks backward, there's no redo.
+  const historyRef = useRef<Array<() => void | Promise<void>>>([])
+  const isUndoingRef = useRef(false)
+  const HISTORY_LIMIT = 50
+
+  const pushHistory = useCallback((entry: () => void | Promise<void>) => {
+    if (isUndoingRef.current) return
+    historyRef.current.push(entry)
+    if (historyRef.current.length > HISTORY_LIMIT) historyRef.current.shift()
+  }, [])
+
+  // Chains every backend write onto the previous one's completion — both
+  // undo entries AND the forward mutators' own writes route through this,
+  // so a fire-and-forget forward write (e.g. `setAgentColor`'s
+  // `desktopApi.agentCanvasSetAgentColor` call) can never be overtaken by
+  // an undo issued right after it: the undo's write simply waits its turn
+  // in the same queue instead of racing the still-in-flight original and
+  // possibly landing first, which would otherwise leave the backend on the
+  // ORIGINAL (post-change) value even though the UI shows the reverted one.
+  const writeQueueRef = useRef<Promise<void>>(Promise.resolve())
+
+  const enqueueWrite = useCallback((write: () => unknown) => {
+    writeQueueRef.current = writeQueueRef.current.then(async () => {
+      try {
+        await write()
+      } catch (error) {
+        console.error('[agent-canvas] write failed', error)
+      }
+    })
+  }, [])
+
+  const undo = useCallback(() => {
+    const entry = historyRef.current.pop()
+    if (!entry) return
+    enqueueWrite(async () => {
+      isUndoingRef.current = true
+      try {
+        await entry()
+      } finally {
+        isUndoingRef.current = false
+      }
+    })
+  }, [enqueueWrite])
+
   const removeInstancesFromCanvas = useCallback(
     (instanceIds: string[]) => {
       if (!workspaceId || instanceIds.length === 0) return
       const idSet = new Set(instanceIds)
+      const removed = instances.filter((instance) => idSet.has(instance.instanceId))
       setInstances((previous) => {
         const next = previous.filter((instance) => !idSet.has(instance.instanceId))
         saveInstances(workspaceId, next)
         return next
       })
+      if (removed.length === 0) return
+      pushHistory(() => {
+        setInstances((previous) => {
+          const existingIds = new Set(previous.map((instance) => instance.instanceId))
+          const restored = [...previous, ...removed.filter((instance) => !existingIds.has(instance.instanceId))]
+          saveInstances(workspaceId, restored)
+          return restored
+        })
+      })
     },
-    [workspaceId],
+    [workspaceId, instances, pushHistory],
   )
 
   const reload = useCallback(async () => {
@@ -202,15 +290,27 @@ export function useAgentCanvasData(
 
   const commitAgentLayout = useCallback(
     (agentId: string, position: { x: number; y: number }) => {
+      const previousPosition = persistedAgentLayout(
+        agentsRef.current.find((agent) => agent.id === agentId),
+      )
       setAgents((previous) =>
         previous.map((agent) =>
           agent.id === agentId ? { ...agent, layoutX: position.x, layoutY: position.y } : agent,
         ),
       )
-      if (!workspaceId) return
-      void desktopApi.agentCanvasSetLayout(workspaceId, agentId, position.x, position.y)
+      if (workspaceId) {
+        enqueueWrite(() => desktopApi.agentCanvasSetLayout(workspaceId, agentId, position.x, position.y))
+      }
+      // Nothing meaningful to revert to if the agent never had a persisted
+      // layout before (e.g. its very first canvas placement) — leaving it as
+      // the newly-committed position is harmless since that case is only
+      // ever hit via `addInstance`, which supplies its own combined undo
+      // entry covering both the instance and this layout together.
+      if (previousPosition) {
+        pushHistory(() => commitAgentLayout(agentId, previousPosition))
+      }
     },
-    [workspaceId],
+    [workspaceId, pushHistory, enqueueWrite],
   )
 
   const commitInstancePosition = useCallback(
@@ -220,6 +320,8 @@ export function useAgentCanvasData(
         return
       }
       if (!workspaceId) return
+      const previousInstance = instances.find((instance) => instance.instanceId === instanceId)
+      const previousPosition = previousInstance?.position
       setInstances((previous) => {
         const next = previous.map((instance) =>
           instance.instanceId === instanceId ? { ...instance, position } : instance,
@@ -227,8 +329,21 @@ export function useAgentCanvasData(
         saveInstances(workspaceId, next)
         return next
       })
+      pushHistory(() => {
+        setInstances((previous) => {
+          const next = previous.map((instance) =>
+            instance.instanceId === instanceId
+              ? previousPosition
+                ? { ...instance, position: previousPosition }
+                : { instanceId: instance.instanceId, agentId: instance.agentId }
+              : instance,
+          )
+          saveInstances(workspaceId, next)
+          return next
+        })
+      })
     },
-    [workspaceId, commitAgentLayout],
+    [workspaceId, instances, commitAgentLayout, pushHistory],
   )
 
   const addInstance = useCallback(
@@ -246,15 +361,38 @@ export function useAgentCanvasData(
       const instanceId = isFirstInstanceForAgent
         ? agentId
         : `${agentId}:${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`
+      const previousAgentLayout = isFirstInstanceForAgent
+        ? persistedAgentLayout(agentsRef.current.find((agent) => agent.id === agentId))
+        : null
       const next: CanvasNodeInstance[] = [
         ...instances,
         isFirstInstanceForAgent ? { instanceId, agentId } : { instanceId, agentId, position },
       ]
       setInstances(next)
       saveInstances(workspaceId, next)
-      if (isFirstInstanceForAgent) commitAgentLayout(agentId, position)
+      if (isFirstInstanceForAgent) {
+        // Suppress `commitAgentLayout`'s own undo entry here — this
+        // action's undo entry below already restores the prior agent
+        // layout (if any) as part of undoing the whole "add" as one step,
+        // e.g. re-dragging a previously-removed default instance back onto
+        // the canvas shouldn't cost two Ctrl+Z presses to fully reverse.
+        const wasUndoing = isUndoingRef.current
+        isUndoingRef.current = true
+        commitAgentLayout(agentId, position)
+        isUndoingRef.current = wasUndoing
+      }
+      pushHistory(() => {
+        setInstances((previous) => {
+          const reverted = previous.filter((instance) => instance.instanceId !== instanceId)
+          saveInstances(workspaceId, reverted)
+          return reverted
+        })
+        if (previousAgentLayout) {
+          commitAgentLayout(agentId, previousAgentLayout)
+        }
+      })
     },
-    [workspaceId, instances, commitAgentLayout],
+    [workspaceId, instances, commitAgentLayout, pushHistory],
   )
 
   const createAuthoredLink = useCallback(
@@ -262,59 +400,177 @@ export function useAgentCanvasData(
       if (!workspaceId) return
       await desktopApi.agentCanvasCreateAuthoredLink(workspaceId, fromAgentId, toAgentId)
       await reload()
+      pushHistory(async () => {
+        await desktopApi.agentCanvasDeleteAuthoredLink(workspaceId, fromAgentId, toAgentId)
+        await reload()
+      })
     },
-    [workspaceId, reload],
+    [workspaceId, reload, pushHistory],
   )
 
   const deleteAuthoredLink = useCallback(
     async (fromAgentId: string, toAgentId: string) => {
       if (!workspaceId) return
+      // Captured before the delete so undo can restore the link's display
+      // attributes too — the recreated link gets a brand new backend id, so
+      // this can't be re-addressed by the old `AgentLink.id` afterward, only
+      // by the (still-stable) agent pair, directly via `desktopApi`.
+      const previousLink = links.find(
+        (link) => link.kind === 'authored' && link.fromAgentId === fromAgentId && link.toAgentId === toAgentId,
+      )
       await desktopApi.agentCanvasDeleteAuthoredLink(workspaceId, fromAgentId, toAgentId)
       await reload()
+      if (previousLink) {
+        pushHistory(async () => {
+          await desktopApi.agentCanvasCreateAuthoredLink(workspaceId, fromAgentId, toAgentId)
+          if (previousLink.color) {
+            await desktopApi.agentCanvasSetLinkColor(workspaceId, fromAgentId, toAgentId, previousLink.color)
+          }
+          if (previousLink.bidirectional) {
+            await desktopApi.agentCanvasSetLinkBidirectional(workspaceId, fromAgentId, toAgentId, true)
+          }
+          await reload()
+        })
+      }
     },
-    [workspaceId, reload],
+    [workspaceId, links, reload, pushHistory],
   )
 
   const setAgentColor = useCallback(
     (agentIds: string[], color: string | null) => {
       if (!workspaceId || agentIds.length === 0) return
       const agentIdSet = new Set(agentIds)
+      const previousColors = new Map(
+        agents.filter((agent) => agentIdSet.has(agent.id)).map((agent) => [agent.id, agent.color ?? null] as const),
+      )
       setAgents((previous) =>
         previous.map((agent) => (agentIdSet.has(agent.id) ? { ...agent, color } : agent)),
       )
-      for (const agentId of agentIds) {
-        void desktopApi.agentCanvasSetAgentColor(workspaceId, agentId, color)
-      }
+      enqueueWrite(() =>
+        Promise.all(
+          agentIds.map((agentId) => desktopApi.agentCanvasSetAgentColor(workspaceId, agentId, color)),
+        ),
+      )
+      pushHistory(async () => {
+        setAgents((previous) =>
+          previous.map((agent) =>
+            agentIdSet.has(agent.id) ? { ...agent, color: previousColors.get(agent.id) ?? null } : agent,
+          ),
+        )
+        // Awaited directly (not `enqueueWrite` again) — `undo()` already
+        // runs this whole entry inside its own queued turn, so awaiting
+        // here is what makes that turn (and so the shared queue) actually
+        // wait for this write before letting anything queued after it run.
+        await Promise.all(
+          [...previousColors].map(([agentId, previousColor]) =>
+            desktopApi.agentCanvasSetAgentColor(workspaceId, agentId, previousColor),
+          ),
+        )
+      })
     },
-    [workspaceId],
+    [workspaceId, agents, pushHistory, enqueueWrite],
   )
 
   const setLinkColor = useCallback(
     (linkIds: string[], color: string | null) => {
       if (!workspaceId || linkIds.length === 0) return
       const linkIdSet = new Set(linkIds)
-      setLinks((previous) => previous.map((link) => (linkIdSet.has(link.id) ? { ...link, color } : link)))
-      for (const link of links) {
-        if (!linkIdSet.has(link.id)) continue
-        void desktopApi.agentCanvasSetLinkColor(workspaceId, link.fromAgentId, link.toAgentId, color)
-      }
+      // Keyed by `AgentLink.id` (not agent pair) — an authored and a
+      // derived link can share the same (fromAgentId, toAgentId) pair (see
+      // `AgentCanvasPane.tsx`'s `resolveSelectedAuthoredLinks`, which only
+      // ever selects authored ones), so matching by pair alone would also
+      // revert an unrelated derived link's color on undo. `id` stays valid
+      // here since this function never recreates the link (unlike
+      // `deleteAuthoredLink`'s undo, which has to re-address by pair because
+      // the recreated link gets a new id).
+      const previous = links
+        .filter((link) => linkIdSet.has(link.id))
+        .map((link) => ({
+          id: link.id,
+          fromAgentId: link.fromAgentId,
+          toAgentId: link.toAgentId,
+          previousColor: link.color ?? null,
+        }))
+      setLinks((previousLinks) => previousLinks.map((link) => (linkIdSet.has(link.id) ? { ...link, color } : link)))
+      enqueueWrite(() =>
+        Promise.all(
+          links
+            .filter((link) => linkIdSet.has(link.id))
+            .map((link) => desktopApi.agentCanvasSetLinkColor(workspaceId, link.fromAgentId, link.toAgentId, color)),
+        ),
+      )
+      pushHistory(async () => {
+        setLinks((previousLinks) =>
+          previousLinks.map((link) => {
+            const match = previous.find((entry) => entry.id === link.id)
+            return match ? { ...link, color: match.previousColor } : link
+          }),
+        )
+        // Awaited directly (not `enqueueWrite`) — `undo()` already runs this
+        // whole entry inside its own queued turn on the shared write queue,
+        // so awaiting here is what makes that turn (and so the queue) wait
+        // for this write before anything queued after it runs — see the
+        // forward write above, which enqueues onto that same queue.
+        await Promise.all(
+          previous.map((entry) =>
+            desktopApi.agentCanvasSetLinkColor(workspaceId, entry.fromAgentId, entry.toAgentId, entry.previousColor),
+          ),
+        )
+      })
     },
-    [workspaceId, links],
+    [workspaceId, links, pushHistory, enqueueWrite],
   )
 
   const setLinkBidirectional = useCallback(
     (linkIds: string[], bidirectional: boolean) => {
       if (!workspaceId || linkIds.length === 0) return
       const linkIdSet = new Set(linkIds)
-      setLinks((previous) =>
-        previous.map((link) => (linkIdSet.has(link.id) ? { ...link, bidirectional } : link)),
+      // Keyed by `AgentLink.id`, same reasoning as `setLinkColor` above.
+      const previous = links
+        .filter((link) => linkIdSet.has(link.id))
+        .map((link) => ({
+          id: link.id,
+          fromAgentId: link.fromAgentId,
+          toAgentId: link.toAgentId,
+          previousBidirectional: Boolean(link.bidirectional),
+        }))
+      setLinks((previousLinks) =>
+        previousLinks.map((link) => (linkIdSet.has(link.id) ? { ...link, bidirectional } : link)),
       )
-      for (const link of links) {
-        if (!linkIdSet.has(link.id)) continue
-        void desktopApi.agentCanvasSetLinkBidirectional(workspaceId, link.fromAgentId, link.toAgentId, bidirectional)
-      }
+      enqueueWrite(() =>
+        Promise.all(
+          links
+            .filter((link) => linkIdSet.has(link.id))
+            .map((link) =>
+              desktopApi.agentCanvasSetLinkBidirectional(
+                workspaceId,
+                link.fromAgentId,
+                link.toAgentId,
+                bidirectional,
+              ),
+            ),
+        ),
+      )
+      pushHistory(async () => {
+        setLinks((previousLinks) =>
+          previousLinks.map((link) => {
+            const match = previous.find((entry) => entry.id === link.id)
+            return match ? { ...link, bidirectional: match.previousBidirectional } : link
+          }),
+        )
+        await Promise.all(
+          previous.map((entry) =>
+            desktopApi.agentCanvasSetLinkBidirectional(
+              workspaceId,
+              entry.fromAgentId,
+              entry.toAgentId,
+              entry.previousBidirectional,
+            ),
+          ),
+        )
+      })
     },
-    [workspaceId, links],
+    [workspaceId, links, pushHistory, enqueueWrite],
   )
 
   const deleteDerivedLink = useCallback(
@@ -339,5 +595,6 @@ export function useAgentCanvasData(
     setAgentColor,
     setLinkColor,
     setLinkBidirectional,
+    undo,
   }
 }

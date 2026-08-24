@@ -1,7 +1,12 @@
+use std::path::Path;
+
 use gt_agent::{
     AgentCapabilityAuditRepository, AgentCapabilityRepository, AgentCapabilitySnapshot,
-    AgentRepository, HookAuditEntry, HookCapability,
+    AgentRepository, HookAuditEntry, HookCapability, MaterializedCapability,
 };
+use gt_storage::SqliteAgentRepository;
+use gt_task::AgentToolKind;
+use gt_tools::agent_installer::{AgentInstaller, AgentType};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, State};
@@ -9,6 +14,95 @@ use tauri::{AppHandle, State};
 use crate::app_state::AppState;
 
 use super::{ensure_workspace_exists, resolve_agent_repository, to_command_error};
+
+/// Runs whichever of `gt_agent::materialize_claude_capability` /
+/// `materialize_codex_capability` matches `tool_kind` for this agent's
+/// stored MCP capability snapshot (docs/cw/08_MCP_Hook_Skill掛載設計.md
+/// §2.3/§2.4) — shared by an agent's very first launch
+/// (`tool_adapter::tool_profiles::resolve_launch_command`) and every later
+/// resume/relaunch (`session::session_resume_check`), so both mount the
+/// identical thing instead of drifting apart. Previously neither call site
+/// actually invoked materialize at all (only `agent_capability_save` wrote
+/// the snapshot to the database) — a saved MCP server was never folded into
+/// any launched CLI's `--mcp-config`/`-p` flag, so it never actually
+/// mounted regardless of session state.
+///
+/// Best-effort throughout: any failure (repo read, CLI capability probe,
+/// materialize IO) is logged and treated as "nothing to overlay" rather
+/// than propagated — launching unmounted beats not launching at all.
+pub(crate) fn materialize_capability_for_launch(
+    repo: &SqliteAgentRepository,
+    workspace_id: &str,
+    workspace_root: &Path,
+    agent_id: &str,
+    agent_workdir: &Path,
+    tool_kind: AgentToolKind,
+) -> Option<MaterializedCapability> {
+    let snapshot = match repo.get_agent_capability(workspace_id, agent_id) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(
+                agent_id,
+                %error,
+                "failed to read agent capability snapshot; launching unmounted"
+            );
+            return None;
+        }
+    };
+    if snapshot.mcp_servers.is_empty() {
+        return None;
+    }
+
+    match tool_kind {
+        AgentToolKind::Claude => {
+            let support = AgentInstaller::detect_capability_support(AgentType::ClaudeCode);
+            match gt_agent::materialize_claude_capability(
+                workspace_root,
+                agent_id,
+                agent_workdir,
+                &snapshot,
+                &support,
+            ) {
+                Ok(paths) => Some(MaterializedCapability::Claude(paths)),
+                Err(error) => {
+                    tracing::warn!(
+                        agent_id,
+                        %error,
+                        "failed to materialize Claude MCP capability; launching unmounted"
+                    );
+                    None
+                }
+            }
+        }
+        AgentToolKind::Codex => {
+            let Some(codex_home) = gt_agent::resolve_codex_home() else {
+                tracing::warn!(
+                    agent_id,
+                    "could not resolve CODEX_HOME; launching unmounted"
+                );
+                return None;
+            };
+            match gt_agent::materialize_codex_capability(
+                &codex_home,
+                workspace_id,
+                agent_id,
+                &snapshot,
+            ) {
+                Ok(Some(profile)) => Some(MaterializedCapability::Codex(profile)),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        agent_id,
+                        %error,
+                        "failed to materialize Codex MCP capability; launching unmounted"
+                    );
+                    None
+                }
+            }
+        }
+        AgentToolKind::Shell | AgentToolKind::Unknown => None,
+    }
+}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()

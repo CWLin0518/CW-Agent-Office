@@ -2,6 +2,7 @@ use gt_agent_session::{
     run_discovery, DiscoveryCache, Provider, ProviderScanner, ResumeService, SessionRelaunchMode,
 };
 use gt_changefeed::{GitStatusSnapshot, SessionActivityEvent};
+use gt_task::AgentToolKind;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,6 +10,9 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
+use crate::commands::agent::{
+    capability::materialize_capability_for_launch, resolve_agent_repository,
+};
 
 static DISCOVERY_CACHE: Mutex<Option<HashMap<String, DiscoveryCache>>> = Mutex::new(None);
 
@@ -245,6 +249,7 @@ pub fn session_resume_check(
     relaunch_mode: Option<String>,
     expected_provider: Option<String>,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Value, String> {
     let mode = relaunch_mode
         .as_deref()
@@ -281,20 +286,38 @@ pub fn session_resume_check(
             }
         }
         let check = ResumeService::validate_resumable(&session);
-        // TODO(docs/cw/08_MCP_Hook_Skill掛載設計.md §2.4): once
-        // `gt_agent::materialize_claude_capability` is wired to a capability
-        // snapshot + provider-support lookup for this agent, pass `Some(&paths)`
-        // here instead of `None` so a resumed Claude session actually gets its
-        // `--mcp-config`/`--settings` overlay. Not yet wired — this call site
-        // was only updated for the new parameter, no behavior change.
+        // Materialize this agent's MCP capability snapshot (docs/cw/08_MCP_Hook_Skill掛載設計.md
+        // §2.4) so a resumed session actually gets its `--mcp-config`/`-p`
+        // overlay — best-effort: any failure along the way (repo, CLI probe,
+        // materialize IO) just falls back to `None` (launch unmounted)
+        // rather than failing the whole resume check.
+        let materialized = resolve_agent_repository(&app).ok().and_then(|repo| {
+            let workspace_root = state.workspace_root_path(&session.workspace_id).ok()?;
+            let tool_kind = match session.provider {
+                Provider::Claude => AgentToolKind::Claude,
+                Provider::Codex => AgentToolKind::Codex,
+            };
+            materialize_capability_for_launch(
+                &repo,
+                &session.workspace_id,
+                &workspace_root,
+                &session.agent_id,
+                Path::new(&session.cwd),
+                tool_kind,
+            )
+        });
         let launch_command = ResumeService::build_relaunch_launch_command(
             Some(&session),
             session.provider,
             mode,
-            None,
+            materialized.as_ref(),
         );
-        let steps =
-            ResumeService::build_relaunch_commands(Some(&session), session.provider, mode, None);
+        let steps = ResumeService::build_relaunch_commands(
+            Some(&session),
+            session.provider,
+            mode,
+            materialized.as_ref(),
+        );
         return Ok(json!({ "check": check, "launchCommand": launch_command, "steps": steps }));
     }
 

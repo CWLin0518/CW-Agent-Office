@@ -115,6 +115,42 @@ impl ResumeService {
         vec![ResumeStep::StartCli { command }]
     }
 
+    /// Applies the same capability overlay used for resume/relaunch
+    /// (`--mcp-config`/`--settings` appended for Claude, `-p <profile>`
+    /// spliced right after the program name for Codex — see
+    /// `apply_capability_overlay`/`codex_profile_flag`) to an
+    /// already-built base command. For an agent's very first launch
+    /// (`tool_launch` in desktop-tauri), which has no `GtoSession`/resume
+    /// mode to build a command through `build_relaunch_launch_command`, but
+    /// still needs the identical flag-placement rules materialize
+    /// (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.3/§2.4) produces.
+    ///
+    /// `command` is the program invocation to overlay — either the bare
+    /// default (`"claude"`/`"codex"`, no subcommand) or a caller-supplied
+    /// custom override that already starts with that same program name
+    /// followed by its own extra flags (e.g. `"codex
+    /// --dangerously-bypass-approvals-and-sandbox"`). Codex's `-p
+    /// <profile>` is spliced in right after the first (program-name) token,
+    /// not blindly appended at the end — for the bare-command case those
+    /// are identical (nothing follows), but a custom override's trailing
+    /// flags must come AFTER `-p`, never before it.
+    pub fn apply_capability_overlay_to_command(
+        command: String,
+        provider: Provider,
+        materialized: Option<&MaterializedCapability>,
+    ) -> String {
+        let flag = codex_profile_flag(provider, materialized);
+        let command = if flag.is_empty() {
+            command
+        } else {
+            match command.find(char::is_whitespace) {
+                Some(index) => format!("{}{flag}{}", &command[..index], &command[index..]),
+                None => format!("{command}{flag}"),
+            }
+        };
+        apply_capability_overlay(command, provider, materialized)
+    }
+
     pub fn validate_resumable(session: &GtoSession) -> ResumeCheck {
         let Some(log_path) = &session.provider_log_path else {
             return ResumeCheck::CanResume;
@@ -424,6 +460,82 @@ mod tests {
         assert_eq!(
             ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
             Some("claude --continue")
+        );
+    }
+
+    #[test]
+    fn test_first_launch_overlay_appends_claude_flags_to_bare_command() {
+        let materialized = MaterializedCapability::Claude(MaterializedPaths {
+            runtime_dir: PathBuf::from("/ws/.gtoffice/agents/a1/runtime"),
+            mcp_config_path: Some(PathBuf::from("/ws/.gtoffice/agents/a1/runtime/mcp.json")),
+            settings_path: None,
+            skills_copied_to: None,
+        });
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "claude".to_string(),
+                Provider::Claude,
+                Some(&materialized),
+            ),
+            "claude --mcp-config \"/ws/.gtoffice/agents/a1/runtime/mcp.json\""
+        );
+    }
+
+    #[test]
+    fn test_first_launch_overlay_inserts_codex_profile_flag_after_bare_command() {
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "codex".to_string(),
+                Provider::Codex,
+                Some(&materialized),
+            ),
+            "codex -p gtoffice-agent-a"
+        );
+    }
+
+    #[test]
+    fn test_first_launch_overlay_splices_codex_profile_flag_before_a_custom_command_s_own_trailing_flags(
+    ) {
+        // A custom `agent.launch_command` override (e.g.
+        // `"codex --dangerously-bypass-approvals-and-sandbox"`) already
+        // carries its own flags after the program name — `-p <profile>`
+        // must land BEFORE those, not appended at the very end (which would
+        // put it after the subcommand-position it needs to precede).
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-leader-a1b2c3d4".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-leader-a1b2c3d4.config.toml"),
+        });
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "codex --dangerously-bypass-approvals-and-sandbox".to_string(),
+                Provider::Codex,
+                Some(&materialized),
+            ),
+            "codex -p gtoffice-leader-a1b2c3d4 --dangerously-bypass-approvals-and-sandbox"
+        );
+    }
+
+    #[test]
+    fn test_first_launch_overlay_is_a_no_op_when_nothing_materialized() {
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "claude".to_string(),
+                Provider::Claude,
+                None,
+            ),
+            "claude"
+        );
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "codex".to_string(),
+                Provider::Codex,
+                None,
+            ),
+            "codex"
         );
     }
 

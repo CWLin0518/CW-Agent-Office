@@ -204,6 +204,7 @@ export function AgentCanvasPane({
     setAgentColor,
     setLinkColor,
     setLinkBidirectional,
+    undo,
   } = useAgentCanvasData(workspaceId, active)
   const [wireDrag, setWireDrag] = useState<WireDragState | null>(null)
   const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null)
@@ -269,6 +270,23 @@ export function AgentCanvasPane({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [isDragging, hasOpenMenu, closeMenus])
+
+  // Ctrl/Cmd+Z reverts the most recent canvas action (node move/add/remove,
+  // link create/delete, color, bidirectional — see `useAgentCanvasData`'s
+  // `undo`) — a window listener, not scoped to the canvas viewport, mirrors
+  // this pane's existing Escape/Delete listeners. Shift+Z (redo) is
+  // deliberately left unhandled — there's no redo stack, so it falls
+  // through as a no-op rather than silently doing something unexpected.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key.toLowerCase() !== 'z' || !(event.ctrlKey || event.metaKey) || event.shiftKey) return
+      if (event.repeat || isEditableEventTarget(event.target)) return
+      event.preventDefault()
+      undo()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [undo])
 
   const reportLinkActionError = useCallback(
     (error: unknown) => {

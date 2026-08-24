@@ -20,6 +20,14 @@
   background-size: auto, #{rem(28)} #{rem(28)};
   overflow: hidden;
   cursor: default;
+  // The canvas is a drag/click surface (nodes, wires, marquee, pan), not a
+  // text document — a fast pointer gesture over a node card's title/status
+  // text (or between two cards) would otherwise leave the browser's native
+  // text-selection highlight behind. Unconditional (not just during
+  // `.is-panning`/`.is-marqueeing` below) so this also covers plain node
+  // dragging and quick clicks, which never toggle either of those classes.
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .agent-canvas-viewport {
@@ -36,16 +44,10 @@
 
   &.is-panning {
     cursor: grabbing;
-    user-select: none;
   }
 
-  // A marquee drag sweeps the cursor across node cards, which contain real
-  // text (name/status labels) — without `user-select: none` the browser's
-  // native text-selection highlight would race visually under the custom
-  // `.agent-canvas-marquee` overlay for the whole gesture.
   &.is-marqueeing {
     cursor: crosshair;
-    user-select: none;
   }
 }
 

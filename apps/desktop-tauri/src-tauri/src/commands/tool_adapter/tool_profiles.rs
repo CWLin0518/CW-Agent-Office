@@ -9,6 +9,7 @@ use gt_abstractions::{
     AbstractionError, TerminalCreateRequest, TerminalCwdMode, TerminalProvider, WorkspaceId,
 };
 use gt_agent::AgentRepository;
+use gt_agent_session::{Provider, ResumeService};
 use gt_ai_config::{AiConfigService, AiConfigSnapshot, ClaudeConfigSnapshot, CodexConfigSnapshot};
 use gt_storage::{SqliteAgentRepository, SqliteAiConfigRepository, SqliteStorage};
 use gt_task::{AgentRuntimeRegistration, AgentToolKind};
@@ -19,6 +20,7 @@ use uuid::Uuid;
 use crate::{
     app_state::AppState,
     commands::{
+        agent::capability::materialize_capability_for_launch,
         settings::ai_config::augment_terminal_env_for_agent,
         task_center::{write_terminal_command_with_submit, write_terminal_with_submit},
     },
@@ -59,7 +61,9 @@ fn default_launch_command(tool_kind: AgentToolKind) -> &'static str {
 fn resolve_launch_command(
     app: &AppHandle,
     workspace_id: &str,
+    workspace_root: &Path,
     agent_id: &str,
+    agent_workdir: &Path,
     tool_kind: AgentToolKind,
 ) -> String {
     let base_dir = match app.path().app_data_dir() {
@@ -72,21 +76,54 @@ fn resolve_launch_command(
         Err(_) => return default_launch_command(tool_kind).to_string(),
     };
     let repo = SqliteAgentRepository::new(storage);
-    if let Ok(agents) = repo.list_agents(workspace_id) {
-        if let Some(agent) = agents
-            .iter()
-            .find(|a: &&gt_agent::AgentProfile| a.id == agent_id)
-        {
-            if let Some(cmd) = agent
-                .launch_command
-                .as_deref()
-                .filter(|c: &&str| !c.trim().is_empty())
-            {
-                return cmd.trim().to_string();
-            }
-        }
+    let custom_command = repo.list_agents(workspace_id).ok().and_then(|agents| {
+        agents
+            .into_iter()
+            .find(|agent: &gt_agent::AgentProfile| agent.id == agent_id)
+            .and_then(|agent| agent.launch_command)
+            .map(|cmd| cmd.trim().to_string())
+            .filter(|cmd| !cmd.is_empty())
+    });
+    let command = custom_command.unwrap_or_else(|| default_launch_command(tool_kind).to_string());
+
+    // Only overlay a command that literally starts with the tool's own
+    // program name — true for the default bare command above, and for
+    // every realistic custom `launch_command` override too (e.g.
+    // `"codex --dangerously-bypass-approvals-and-sandbox"`), since a custom
+    // command exists to add flags to the real launch, not to replace it
+    // with something else entirely. A command that DOESN'T start with the
+    // program name (e.g. wrapped through `env` or an absolute path) is left
+    // untouched rather than guessing where to splice the overlay in.
+    let canonical_program = canonical_profile_id(tool_kind);
+    let starts_with_canonical_program = command
+        .split_whitespace()
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case(canonical_program));
+    if !starts_with_canonical_program {
+        return command;
     }
-    default_launch_command(tool_kind).to_string()
+
+    let materialized = materialize_capability_for_launch(
+        &repo,
+        workspace_id,
+        workspace_root,
+        agent_id,
+        agent_workdir,
+        tool_kind,
+    );
+    match tool_kind {
+        AgentToolKind::Claude => ResumeService::apply_capability_overlay_to_command(
+            command,
+            Provider::Claude,
+            materialized.as_ref(),
+        ),
+        AgentToolKind::Codex => ResumeService::apply_capability_overlay_to_command(
+            command,
+            Provider::Codex,
+            materialized.as_ref(),
+        ),
+        AgentToolKind::Shell | AgentToolKind::Unknown => command,
+    }
 }
 
 fn to_terminal_error(error: AbstractionError) -> String {
@@ -568,9 +605,22 @@ pub fn tool_launch(
         .create_session(request)
         .map_err(to_terminal_error)?;
 
+    let agent_workdir = resolved_cwd
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or(workspace_root.as_path());
     let launch_command = context_string(context.as_ref(), &["launchCommand", "launch_command"])
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| resolve_launch_command(&app, &workspace_id, &agent_id, tool_kind));
+        .unwrap_or_else(|| {
+            resolve_launch_command(
+                &app,
+                &workspace_id,
+                &workspace_root,
+                &agent_id,
+                agent_workdir,
+                tool_kind,
+            )
+        });
     // Bootstrapping the CLI is a shell command, not an in-tool prompt submission.
     write_terminal_command_with_submit(
         state.inner(),
