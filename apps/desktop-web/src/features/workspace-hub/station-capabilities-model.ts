@@ -16,7 +16,7 @@ export function isSkillsOrHooksSupportedForToolKind(toolKind: string): boolean {
 }
 
 export function createEmptyMcpServer(): McpServerCapability {
-  return { id: '', transport: 'stdio', command: '', args: [], env: {}, url: '' }
+  return { id: '', name: '', transport: 'stdio', command: '', args: [], env: {}, url: '', enabled: true }
 }
 
 export function createEmptySkill(): SkillCapability {
@@ -103,6 +103,7 @@ export function buildSavableCapabilitySnapshot(
     mcpServers: draft.mcpServers.filter(isMcpServerDraftValid).map((server) => ({
       ...server,
       id: server.id.trim(),
+      name: server.name?.trim() || null,
       command: server.transport === 'stdio' ? (server.command?.trim() || null) : null,
       url: server.transport === 'stdio' ? null : (server.url?.trim() || null),
     })),

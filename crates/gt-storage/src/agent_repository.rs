@@ -1286,11 +1286,13 @@ mod p3_5_agent_capability_tests {
         let mut capability = AgentCapabilitySnapshot::default();
         capability.mcp_servers.push(McpServerCapability {
             id: "fs".to_string(),
+            name: None,
             transport: McpTransport::Stdio,
             command: Some("npx".to_string()),
             args: vec!["-y".to_string(), "mcp-server-fs".to_string()],
             env: Default::default(),
             url: None,
+            enabled: true,
         });
         capability
     }

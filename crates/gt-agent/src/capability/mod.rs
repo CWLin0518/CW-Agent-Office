@@ -81,6 +81,11 @@ pub enum McpTransport {
 #[serde(rename_all = "camelCase")]
 pub struct McpServerCapability {
     pub id: String,
+    /// User-facing display label only — never written into `mcp.json` /
+    /// Codex `config.toml` (those stay keyed by `id`, which the CLIs treat
+    /// as the server's identity). `None`/blank means "show `id` instead."
+    #[serde(default)]
+    pub name: Option<String>,
     pub transport: McpTransport,
     /// Required (non-empty) for `Stdio`; unused for `Sse`/`Http`.
     #[serde(default)]
@@ -92,6 +97,12 @@ pub struct McpServerCapability {
     /// Required (non-empty) for `Sse`/`Http`; unused for `Stdio`.
     #[serde(default)]
     pub url: Option<String>,
+    /// When `false`, materialize skips this server entirely (same "absent
+    /// = not mounted" semantics as everywhere else in this module) without
+    /// dropping it from the snapshot — lets a user temporarily disable a
+    /// mount without losing its configuration.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 impl McpServerCapability {
@@ -182,11 +193,13 @@ mod tests {
     fn stdio_mcp(id: &str, command: &str) -> McpServerCapability {
         McpServerCapability {
             id: id.to_string(),
+            name: None,
             transport: McpTransport::Stdio,
             command: Some(command.to_string()),
             args: vec![],
             env: BTreeMap::new(),
             url: None,
+            enabled: true,
         }
     }
 
@@ -241,11 +254,13 @@ mod tests {
     fn sse_and_http_transports_require_url_not_command() {
         let sse_missing_url = McpServerCapability {
             id: "remote".to_string(),
+            name: None,
             transport: McpTransport::Sse,
             command: None,
             args: vec![],
             env: BTreeMap::new(),
             url: None,
+            enabled: true,
         };
         assert!(sse_missing_url.validate_transport_fields().is_err());
 

@@ -108,7 +108,8 @@ pub fn materialize_claude_capability(
 
     std::fs::create_dir_all(&runtime_dir).map_err(|error| io_err(&runtime_dir, error))?;
 
-    let mcp_config_path = if !snapshot.mcp_servers.is_empty() {
+    let enabled_mcp_server_count = snapshot.mcp_servers.iter().filter(|s| s.enabled).count();
+    let mcp_config_path = if enabled_mcp_server_count > 0 {
         if support.supports_mcp_config_flag {
             let path = runtime_dir.join("mcp.json");
             write_atomic(
@@ -119,9 +120,10 @@ pub fn materialize_claude_capability(
         } else {
             tracing::warn!(
                 agent_id,
-                "agent has {} MCP server(s) configured but the pinned Claude Code CLI does not \
-                 support --mcp-config; skipping (no safe fallback exists for MCP overlays)",
-                snapshot.mcp_servers.len()
+                "agent has {} enabled MCP server(s) configured but the pinned Claude Code CLI \
+                 does not support --mcp-config; skipping (no safe fallback exists for MCP \
+                 overlays)",
+                enabled_mcp_server_count
             );
             None
         }
@@ -237,7 +239,7 @@ fn read_cached_paths_if_hash_matches(
 
 fn build_mcp_config_json(servers: &[McpServerCapability]) -> Value {
     let mut mcp_servers = serde_json::Map::new();
-    for server in servers {
+    for server in servers.iter().filter(|server| server.enabled) {
         let entry = match server.transport {
             McpTransport::Stdio => json!({
                 "command": server.command.clone().unwrap_or_default(),
@@ -555,10 +557,12 @@ pub fn materialize_codex_capability(
     let profile_path = codex_home.join(format!("{profile_name}.config.toml"));
     let hash_path = codex_home.join(format!("{profile_name}.capability-hash"));
 
-    if snapshot.mcp_servers.is_empty() {
-        // Nothing to overlay. Clean up a stale profile from a previous
-        // snapshot that did have servers, so a leftover file never gets
-        // picked up by a future `-p` launch that assumes it's current.
+    if !snapshot.mcp_servers.iter().any(|s| s.enabled) {
+        // Nothing enabled to overlay (either no servers at all, or every
+        // one of them is toggled off). Clean up a stale profile from a
+        // previous snapshot that did have enabled servers, so a leftover
+        // file never gets picked up by a future `-p` launch that assumes
+        // it's current.
         if let Err(error) = std::fs::remove_file(&profile_path) {
             if error.kind() != io::ErrorKind::NotFound {
                 tracing::warn!(
@@ -651,7 +655,7 @@ pub fn resolve_codex_home() -> Option<PathBuf> {
 /// and `McpTransport::Http` map to the same `url`-only shape here).
 fn build_codex_profile_toml(servers: &[McpServerCapability]) -> Result<String, toml::ser::Error> {
     let mut mcp_servers = toml::value::Table::new();
-    for server in servers {
+    for server in servers.iter().filter(|server| server.enabled) {
         let mut entry = toml::value::Table::new();
         match server.transport {
             McpTransport::Stdio => {
@@ -708,11 +712,13 @@ mod tests {
     fn stdio_mcp(id: &str, command: &str) -> McpServerCapability {
         McpServerCapability {
             id: id.to_string(),
+            name: None,
             transport: McpTransport::Stdio,
             command: Some(command.to_string()),
             args: vec!["-y".to_string()],
             env: BTreeMap::new(),
             url: None,
+            enabled: true,
         }
     }
 
@@ -774,6 +780,55 @@ mod tests {
         assert!(result
             .runtime_dir
             .ends_with(Path::new(".gtoffice/agents/agent-a/runtime")));
+    }
+
+    #[test]
+    fn disabled_mcp_server_is_omitted_from_mcp_json_and_from_the_is_anything_to_write_check() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace_root = temp.path().join("workspace");
+        let agent_workdir = workspace_root.join("agent-a");
+        std::fs::create_dir_all(&agent_workdir).expect("create workdir");
+
+        let mut enabled_server = stdio_mcp("fs", "npx");
+        enabled_server.name = Some("Filesystem".to_string());
+        let mut disabled_server = stdio_mcp("git", "npx");
+        disabled_server.enabled = false;
+
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        snapshot.mcp_servers.push(enabled_server);
+        snapshot.mcp_servers.push(disabled_server);
+
+        let result = materialize_claude_capability(
+            &workspace_root,
+            "agent-a",
+            &agent_workdir,
+            &snapshot,
+            &full_support(),
+        )
+        .expect("materialize");
+
+        let mcp_path = result.mcp_config_path.expect("mcp config written");
+        let mcp_json: Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).expect("read mcp.json"))
+                .expect("parse mcp.json");
+        assert!(mcp_json["mcpServers"]["fs"].is_object());
+        assert!(mcp_json["mcpServers"]["git"].is_null());
+
+        // Every server disabled must behave like "nothing configured" —
+        // no mcp.json written, regardless of CLI flag support.
+        let mut all_disabled_snapshot = AgentCapabilitySnapshot::default();
+        let mut only_server = stdio_mcp("fs", "npx");
+        only_server.enabled = false;
+        all_disabled_snapshot.mcp_servers.push(only_server);
+        let unsupported_result = materialize_claude_capability(
+            &workspace_root,
+            "agent-a",
+            &agent_workdir,
+            &all_disabled_snapshot,
+            &ProviderCapabilitySupport::default(),
+        )
+        .expect("materialize with unsupported flags");
+        assert_eq!(unsupported_result.mcp_config_path, None);
     }
 
     #[test]
@@ -1157,11 +1212,13 @@ mod tests {
         snapshot.mcp_servers.push(stdio_mcp("fs", "npx"));
         snapshot.mcp_servers.push(McpServerCapability {
             id: "remote".to_string(),
+            name: None,
             transport: McpTransport::Http,
             command: None,
             args: vec![],
             env: BTreeMap::new(),
             url: Some("https://example.com/mcp".to_string()),
+            enabled: true,
         });
 
         let result = materialize_codex_capability(&codex_home, "ws-1", "agent-a", &snapshot)
@@ -1183,6 +1240,43 @@ mod tests {
             Some("https://example.com/mcp")
         );
         assert!(parsed["mcp_servers"]["remote"].get("command").is_none());
+    }
+
+    #[test]
+    fn codex_omits_disabled_servers_and_returns_none_when_every_server_is_disabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).expect("create codex home");
+
+        let mut enabled_server = stdio_mcp("fs", "npx");
+        enabled_server.name = Some("Filesystem".to_string());
+        let mut disabled_server = stdio_mcp("git", "npx");
+        disabled_server.enabled = false;
+
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        snapshot.mcp_servers.push(enabled_server);
+        snapshot.mcp_servers.push(disabled_server);
+
+        let result = materialize_codex_capability(&codex_home, "ws-1", "agent-a", &snapshot)
+            .expect("materialize")
+            .expect("one enabled server, some profile written");
+        let parsed = read_toml(&result.profile_path);
+        assert!(parsed["mcp_servers"]["fs"].as_table().is_some());
+        assert!(parsed["mcp_servers"].get("git").is_none());
+
+        let mut all_disabled = AgentCapabilitySnapshot::default();
+        let mut only_server = stdio_mcp("fs", "npx");
+        only_server.enabled = false;
+        all_disabled.mcp_servers.push(only_server);
+        let all_disabled_result =
+            materialize_codex_capability(&codex_home, "ws-1", "agent-a", &all_disabled)
+                .expect("materialize with everything disabled");
+        assert_eq!(all_disabled_result, None);
+        assert!(
+            !result.profile_path.exists(),
+            "a stale profile from the earlier (partially enabled) snapshot must be removed \
+             once every server becomes disabled"
+        );
     }
 
     #[test]

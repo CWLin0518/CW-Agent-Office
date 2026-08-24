@@ -2,7 +2,11 @@ import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, 
 import { t, type Locale } from '@shell/i18n/ui-locale'
 import { AppIcon } from '@shell/ui/icons'
 import { resolveAgentModelDisplayLabel } from '@features/workspace-hub/agent-management-model'
-import { computePortSlotCenterOffset, type AgentCanvasNodeData } from '../model/agent-canvas-graph'
+import {
+  computePortSlotCenterOffset,
+  type AgentCanvasAgentNodeData,
+  type AgentCanvasMcpNodeData,
+} from '../model/agent-canvas-graph'
 import { statusLabel } from '../model/agent-canvas-status-label'
 
 export type AgentPortKind = 'input' | 'output'
@@ -15,7 +19,7 @@ export interface AgentPortHandlers {
 }
 
 interface AgentCanvasNodeCardProps {
-  node: AgentCanvasNodeData
+  node: AgentCanvasAgentNodeData
   locale: Locale
   /** Grasshopper-style connection ports (docs/cw/04_客製化設計.md §1, P4.5) —
    * the drag-to-connect gesture, its pointer-capture lifecycle, and the
@@ -90,6 +94,75 @@ function PortSlots({
   )
 }
 
+/** Input side only — same shape as `PortSlots` above, but fans a SECOND,
+ * non-interactive list of MCP-mount ids into the same stack after the
+ * authored-link ids (link items keep their original index within
+ * `linkIds`, so `computePortEdgeGeometry`'s `toIndex = inputLinkIds.indexOf(link.id)`
+ * elsewhere still lines up — only the mount dots and the trailing "+" shift
+ * to make room). A mount dot gets its own modifier class so it reads as "a
+ * mounted tool," not another agent's wire — see `agentCanvas-graph.ts`'s
+ * `AgentCanvasAgentNodeData.mcpMountIds` doc comment for why they share
+ * this side at all. */
+function InputPortSlots({
+  linkIds,
+  mcpMountIds,
+  agentId,
+  locale,
+  getPortHandlers,
+  onPortSlotContextMenu,
+}: {
+  linkIds: string[]
+  mcpMountIds: string[]
+  agentId: string
+  locale: Locale
+  getPortHandlers: (portKind: AgentPortKind, rewireLinkId?: string) => AgentPortHandlers
+  onPortSlotContextMenu: (portKind: AgentPortKind, linkId: string, event: ReactMouseEvent<HTMLDivElement>) => void
+}) {
+  const total = linkIds.length + mcpMountIds.length + 1
+  const addHandlers = getPortHandlers('input')
+  return (
+    <>
+      {linkIds.map((linkId, index) => (
+        <div
+          key={linkId}
+          className="agent-canvas-port agent-canvas-port--input"
+          style={{ transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(index, total)}px))` }}
+          data-no-drag
+          data-port="input"
+          data-agent-id={agentId}
+          title={t(locale, 'agentCanvas.port.input')}
+          onContextMenu={(event) => onPortSlotContextMenu('input', linkId, event)}
+          {...getPortHandlers('input', linkId)}
+        />
+      ))}
+      {mcpMountIds.map((mountId, index) => (
+        <div
+          key={mountId}
+          className="agent-canvas-port agent-canvas-port--input agent-canvas-port--mcp"
+          style={{
+            transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(linkIds.length + index, total)}px))`,
+          }}
+          title={t(locale, '掛載的 MCP', 'Mounted MCP')}
+          aria-hidden="true"
+        />
+      ))}
+      <div
+        className="agent-canvas-port agent-canvas-port--input agent-canvas-port--add"
+        style={{
+          transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(linkIds.length + mcpMountIds.length, total)}px))`,
+        }}
+        data-no-drag
+        data-port="input"
+        data-agent-id={agentId}
+        title={t(locale, 'agentCanvas.port.addInput')}
+        {...addHandlers}
+      >
+        <AppIcon name="plus" aria-hidden="true" />
+      </div>
+    </>
+  )
+}
+
 /** Inner card content only — `<GraphCanvas>` owns the interactive shell
  * (ref/position/drag wiring) around this. Ports are siblings of the card,
  * not children, so their `position: absolute` anchors to the shell (the box
@@ -101,7 +174,7 @@ export function AgentCanvasNodeCard({
   onPortSlotContextMenu,
   onRequestEdit,
 }: AgentCanvasNodeCardProps) {
-  const { agent, runtimeState, outputLinkIds, inputLinkIds } = node
+  const { agent, runtimeState, outputLinkIds, inputLinkIds, childAgentIds, mcpMountIds } = node
   const title = agent.name || agent.id
   const isSubagent = Boolean(agent.parentAgentId)
   const modelLabel = resolveAgentModelDisplayLabel(agent.tool, agent.launchCommand)
@@ -144,9 +217,9 @@ export function AgentCanvasNodeCard({
           </div>
         )}
       </div>
-      <PortSlots
-        portKind="input"
+      <InputPortSlots
         linkIds={inputLinkIds}
+        mcpMountIds={mcpMountIds}
         agentId={agent.id}
         locale={locale}
         getPortHandlers={getPortHandlers}
@@ -160,6 +233,67 @@ export function AgentCanvasNodeCard({
         getPortHandlers={getPortHandlers}
         onPortSlotContextMenu={onPortSlotContextMenu}
       />
+      {childAgentIds.map((childAgentId, index) => (
+        <div
+          key={childAgentId}
+          className="agent-canvas-port agent-canvas-port--bottom"
+          style={{
+            transform: `translateX(calc(-50% + ${computePortSlotCenterOffset(index, childAgentIds.length)}px))`,
+          }}
+          aria-hidden="true"
+        />
+      ))}
+      {isSubagent && <div className="agent-canvas-port agent-canvas-port--top" aria-hidden="true" />}
+    </>
+  )
+}
+
+interface AgentCanvasMcpNodeCardProps {
+  node: AgentCanvasMcpNodeData
+  locale: Locale
+  /** Flips `McpServerCapability.enabled` for this one server within its
+   * agent's capability snapshot (`useAgentCanvasData`'s
+   * `setMcpServerEnabled`) — never removes the mount, just toggles whether
+   * the next materialize actually includes it. */
+  onToggleEnabled: (agentId: string, serverId: string, enabled: boolean) => void
+}
+
+/** MCP-mount node — connects from its own right side into the owning
+ * agent's left-side port stack (see `InputPortSlots` above); the anchor
+ * dot here is a single, non-interactive point since a mount node only ever
+ * has the one outgoing edge. */
+export function AgentCanvasMcpNodeCard({ node, locale, onToggleEnabled }: AgentCanvasMcpNodeCardProps) {
+  const { agentId, server } = node
+  const title = server.name?.trim() || server.id
+  return (
+    <>
+      <div className={`agent-canvas-mcp-node${server.enabled ? '' : ' agent-canvas-mcp-node--disabled'}`}>
+        <span className="agent-canvas-mcp-node-title">{title}</span>
+        <button
+          type="button"
+          className="agent-canvas-mcp-node-toggle"
+          data-no-drag
+          aria-pressed={server.enabled}
+          title={t(
+            locale,
+            server.enabled ? '停用此 MCP' : '啟用此 MCP',
+            server.enabled ? 'Disable this MCP' : 'Enable this MCP',
+          )}
+          aria-label={t(
+            locale,
+            server.enabled ? '停用此 MCP' : '啟用此 MCP',
+            server.enabled ? 'Disable this MCP' : 'Enable this MCP',
+          )}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleEnabled(agentId, server.id, !server.enabled)
+          }}
+        >
+          <AppIcon name={server.enabled ? 'eye' : 'eye-off'} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="agent-canvas-port agent-canvas-port--mcp-anchor" aria-hidden="true" />
     </>
   )
 }

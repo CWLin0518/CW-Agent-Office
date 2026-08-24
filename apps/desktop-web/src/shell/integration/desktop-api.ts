@@ -2092,6 +2092,9 @@ export type McpTransport = 'stdio' | 'sse' | 'http'
 
 export interface McpServerCapability {
   id: string
+  /** User-facing display label only — never sent to the CLI's own MCP
+   * config (that stays keyed by `id`). `null`/absent = show `id` instead. */
+  name?: string | null
   transport: McpTransport
   /** Required for `stdio`; unused for `sse`/`http`. */
   command?: string | null
@@ -2099,6 +2102,9 @@ export interface McpServerCapability {
   env: Record<string, string>
   /** Required for `sse`/`http`; unused for `stdio`. */
   url?: string | null
+  /** When `false`, materialize skips this server without dropping it from
+   * the snapshot — a temporary disable, not a delete. */
+  enabled: boolean
 }
 
 export interface SkillCapability {

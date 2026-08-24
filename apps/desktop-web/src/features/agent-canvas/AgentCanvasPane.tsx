@@ -17,14 +17,38 @@ import {
   type GraphCanvasHandle,
   type GraphCanvasMarqueeMode,
   type GraphCanvasMarqueeRect,
+  type GraphCanvasNode,
 } from '@/components/graph-canvas'
 import { AgentCanvasColorSwatches } from './components/AgentCanvasColorSwatches'
-import { AgentCanvasNodeCard, type AgentPortHandlers, type AgentPortKind } from './components/AgentCanvasNodeCard'
+import {
+  AgentCanvasMcpNodeCard,
+  AgentCanvasNodeCard,
+  type AgentPortHandlers,
+  type AgentPortKind,
+} from './components/AgentCanvasNodeCard'
 import { useAgentCanvasData } from './controllers/useAgentCanvasData'
 import { parseAgentCanvasDragPayload } from './model/agent-canvas-drag'
-import { AGENT_NODE_HEIGHT, AGENT_NODE_WIDTH, computePortEdgeGeometry } from './model/agent-canvas-graph'
+import {
+  AGENT_NODE_HEIGHT,
+  AGENT_NODE_WIDTH,
+  computePortEdgeGeometry,
+  computeVerticalPortEdgeGeometry,
+  type AgentCanvasAgentNodeData,
+  type AgentCanvasNodeData,
+} from './model/agent-canvas-graph'
 import { statusLabel } from './model/agent-canvas-status-label'
 import './AgentCanvasPane.scss'
+
+/** Narrows a canvas node to its agent-kind variant — MCP-mount nodes never
+ * anchor a `link`/`ownership` edge or enter node selection (see
+ * `handleNodeClick`/`handleMarqueeSelect` below), so every call site that
+ * reaches this already knows at runtime it's an agent node; this only
+ * teaches TypeScript the same thing. */
+function isAgentNode(
+  node: GraphCanvasNode<AgentCanvasNodeData>,
+): node is GraphCanvasNode<AgentCanvasAgentNodeData> {
+  return node.data.kind === 'agent'
+}
 
 interface AgentCanvasPaneProps {
   locale: Locale
@@ -196,6 +220,8 @@ export function AgentCanvasPane({
     graph,
     isEmpty,
     commitInstancePosition,
+    commitMcpNodePosition,
+    setMcpServerEnabled,
     createAuthoredLink,
     deleteAuthoredLink,
     deleteDerivedLink,
@@ -438,15 +464,24 @@ export function AgentCanvasPane({
     [handlePortPointerDown, handlePortPointerMove, handlePortPointerUp, handlePortPointerCancel],
   )
 
-  const handleNodeClick = useCallback((nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => {
-    setSelection((previous) => {
-      if (!event.shiftKey) return { nodeIds: new Set([nodeId]), edgeIds: new Set() }
-      const nodeIds = new Set(previous.nodeIds)
-      if (nodeIds.has(nodeId)) nodeIds.delete(nodeId)
-      else nodeIds.add(nodeId)
-      return { nodeIds, edgeIds: previous.edgeIds }
-    })
-  }, [])
+  // MCP-mount nodes are draggable but not part of the click/marquee
+  // selection system (no align/distribute/color/context-menu — that
+  // machinery is agent-specific) — a click on one is a no-op here rather
+  // than adding its id to `selection.nodeIds`.
+  const handleNodeClick = useCallback(
+    (nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => {
+      const node = graph.nodes.find((candidate) => candidate.id === nodeId)
+      if (!node || !isAgentNode(node)) return
+      setSelection((previous) => {
+        if (!event.shiftKey) return { nodeIds: new Set([nodeId]), edgeIds: new Set() }
+        const nodeIds = new Set(previous.nodeIds)
+        if (nodeIds.has(nodeId)) nodeIds.delete(nodeId)
+        else nodeIds.add(nodeId)
+        return { nodeIds, edgeIds: previous.edgeIds }
+      })
+    },
+    [graph.nodes],
+  )
 
   // Modifier -> what a marquee drag targets (feature 4 in
   // docs/cw/06_P4.5開發進度.md's P4.6 follow-up): plain drag = nodes only;
@@ -461,6 +496,7 @@ export function AgentCanvasPane({
       const edgeIds = new Set<string>()
       if (wantsNodes) {
         for (const node of graph.nodes) {
+          if (!isAgentNode(node)) continue
           const hit = mode === 'contain' ? isNodeFullyContained(node, rect) : isNodeIntersecting(node, rect)
           if (hit) nodeIds.add(node.id)
         }
@@ -491,16 +527,22 @@ export function AgentCanvasPane({
   // whether this is a default instance (backend-persisted) or a duplicate
   // (client-only).
   const handleCommitNodePosition = useCallback(
-    (instanceId: string, position: { x: number; y: number }) => {
-      const node = graph.nodes.find((candidate) => candidate.id === instanceId)
+    (nodeId: string, position: { x: number; y: number }) => {
+      const node = graph.nodes.find((candidate) => candidate.id === nodeId)
       if (!node) return
-      commitInstancePosition(instanceId, node.data.agent.id, position)
+      if (node.data.kind === 'mcp') {
+        commitMcpNodePosition(nodeId, position)
+        return
+      }
+      commitInstancePosition(nodeId, node.data.agent.id, position)
     },
-    [graph.nodes, commitInstancePosition],
+    [graph.nodes, commitInstancePosition, commitMcpNodePosition],
   )
 
   const handleNodeContextMenu = useCallback(
     (nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+      const node = graph.nodes.find((candidate) => candidate.id === nodeId)
+      if (!node || !isAgentNode(node)) return
       event.preventDefault()
       // Right-clicking a node outside the current selection replaces it (a
       // stray right-click shouldn't bulk-affect an unrelated multi-selection);
@@ -511,7 +553,7 @@ export function AgentCanvasPane({
       )
       setNodeContextMenu({ instanceId: nodeId, clientX: event.clientX, clientY: event.clientY })
     },
-    [],
+    [graph.nodes],
   )
 
   const handleViewportClick = useCallback(
@@ -586,7 +628,10 @@ export function AgentCanvasPane({
       // instances of the same agent naturally collapse to one call each
       // via the Set below, which is harmless — same value, same agent).
       const agentIds = new Set(
-        graph.nodes.filter((node) => selection.nodeIds.has(node.id)).map((node) => node.data.agent.id),
+        graph.nodes
+          .filter(isAgentNode)
+          .filter((node) => selection.nodeIds.has(node.id))
+          .map((node) => node.data.agent.id),
       )
       setAgentColor([...agentIds], color)
     },
@@ -710,7 +755,7 @@ export function AgentCanvasPane({
   )
 
   const getSelectedNodeBoxes = useCallback(
-    () => graph.nodes.filter((node) => selection.nodeIds.has(node.id)),
+    () => graph.nodes.filter(isAgentNode).filter((node) => selection.nodeIds.has(node.id)),
     [graph.nodes, selection.nodeIds],
   )
 
@@ -801,7 +846,10 @@ export function AgentCanvasPane({
   // agrees on it — a mixed multi-selection shows no active swatch, same as
   // how a mixed text selection shows no active style in a rich text editor.
   const selectedNodeColors = new Set(
-    graph.nodes.filter((node) => selection.nodeIds.has(node.id)).map((node) => node.data.agent.color ?? null),
+    graph.nodes
+      .filter(isAgentNode)
+      .filter((node) => selection.nodeIds.has(node.id))
+      .map((node) => node.data.agent.color ?? null),
   )
   const activeNodeColor = selectedNodeColors.size === 1 ? [...selectedNodeColors][0] : null
 
@@ -833,32 +881,53 @@ export function AgentCanvasPane({
       nodeShellClassName="agent-canvas-node-shell"
       marqueeClassName="agent-canvas-marquee"
       getNodeClassName={(node) =>
-        `agent-canvas-node-shell--${node.data.runtimeState}${
-          selection.nodeIds.has(node.id) ? ' agent-canvas-node-shell--selected' : ''
-        }`
+        node.data.kind === 'mcp'
+          ? `agent-canvas-node-shell--mcp${node.data.server.enabled ? '' : ' agent-canvas-node-shell--mcp-disabled'}`
+          : `agent-canvas-node-shell--${node.data.runtimeState}${
+              selection.nodeIds.has(node.id) ? ' agent-canvas-node-shell--selected' : ''
+            }`
       }
       getNodeAriaPressed={(node) => selection.nodeIds.has(node.id)}
       pinnedNodeIds={selection.nodeIds}
       getNodeAriaLabel={(node) =>
-        t(locale, 'agentCanvas.nodeLabel', {
-          name: node.data.agent.name || node.data.agent.id,
-          status: statusLabel(locale, node.data.runtimeState),
-        })
+        node.data.kind === 'mcp'
+          ? node.data.server.name?.trim() || node.data.server.id
+          : t(locale, 'agentCanvas.nodeLabel', {
+              name: node.data.agent.name || node.data.agent.id,
+              status: statusLabel(locale, node.data.runtimeState),
+            })
       }
-      renderNode={(node) => (
-        <AgentCanvasNodeCard
-          node={node.data}
-          locale={locale}
-          getPortHandlers={(portKind, rewireLinkId) => getPortHandlers(node.data.agent.id, portKind, rewireLinkId)}
-          onPortSlotContextMenu={handlePortSlotContextMenu}
-          onRequestEdit={onRequestEditAgent}
-        />
-      )}
+      renderNode={(node) => {
+        // Narrowed into a local first — narrowing `node.data.kind` inline
+        // doesn't survive into the nested `getPortHandlers` closure below
+        // (TS can't rule out `node.data` changing between accesses the way
+        // it can for a never-reassigned local).
+        const data = node.data
+        if (data.kind === 'mcp') {
+          return <AgentCanvasMcpNodeCard node={data} locale={locale} onToggleEnabled={setMcpServerEnabled} />
+        }
+        return (
+          <AgentCanvasNodeCard
+            node={data}
+            locale={locale}
+            getPortHandlers={(portKind, rewireLinkId) => getPortHandlers(data.agent.id, portKind, rewireLinkId)}
+            onPortSlotContextMenu={handlePortSlotContextMenu}
+            onRequestEdit={onRequestEditAgent}
+          />
+        )
+      }}
       renderEdge={(edge, from, to, _engineGeometry, arrowMarkerUrl) => {
         if (edge.data.kind === 'ownership') {
-          // Center-anchored (no slot args) — ownership lines don't consume a
-          // port dot, unchanged from before per-connection slots existed.
-          const geometry = computePortEdgeGeometry(from, to)
+          if (!isAgentNode(from) || !isAgentNode(to)) return null
+          // Bottom-of-parent -> top-of-child (docs request) — anchored to
+          // the same per-child slot the new bottom port dot in
+          // AgentCanvasNodeCard renders at, via `childAgentIds.indexOf`,
+          // mirroring how authored links resolve their own slot below.
+          const childIndex = from.data.childAgentIds.indexOf(to.data.agent.id)
+          const geometry = computeVerticalPortEdgeGeometry(from, to, {
+            index: childIndex === -1 ? 0 : childIndex,
+            total: Math.max(from.data.childAgentIds.length, 1),
+          })
           return (
             <g pointerEvents="none">
               <title>{t(locale, 'agentCanvas.edge.ownershipTitle')}</title>
@@ -866,6 +935,27 @@ export function AgentCanvasPane({
             </g>
           )
         }
+        if (edge.data.kind === 'mcp-mount') {
+          if (!isAgentNode(to)) return null
+          // From the MCP node's single anchor (default CENTER_SLOT, it only
+          // ever has this one edge) into its slot within the agent's
+          // COMBINED left-side stack — link items occupy the first
+          // `inputLinkIds.length` slots (see `InputPortSlots`), so a mount
+          // id's position in that same stack is offset by that count.
+          const combinedTotal = to.data.inputLinkIds.length + to.data.mcpMountIds.length + 1
+          const mountIndex = to.data.mcpMountIds.indexOf(edge.data.mountId)
+          const geometry = computePortEdgeGeometry(from, to, undefined, {
+            index: to.data.inputLinkIds.length + (mountIndex === -1 ? 0 : mountIndex),
+            total: combinedTotal,
+          })
+          return (
+            <g pointerEvents="none">
+              <title>{t(locale, '掛載的 MCP', 'Mounted MCP')}</title>
+              <path d={geometry.path} className="agent-canvas-edge agent-canvas-edge--mcp-mount" />
+            </g>
+          )
+        }
+        if (!isAgentNode(from) || !isAgentNode(to)) return null
         const { link, reverseLinkId } = edge.data
         if (link.kind === 'derived') {
           // Also center-anchored — derived lines are read-only observations,
@@ -905,9 +995,13 @@ export function AgentCanvasPane({
         // exact same slot the dot renders at, via `outputLinkIds`/
         // `inputLinkIds`' index of this specific link, so the line visually
         // starts/ends right at its own dot instead of the node's center.
+        // The input side's total/index account for `mcpMountIds` too (see
+        // `InputPortSlots`) — link items keep their original index within
+        // `inputLinkIds` since mount dots are fanned in AFTER them, not
+        // interleaved, so only `toTotal` needs the extra count.
         const fromTotal = from.data.outputLinkIds.length + 1
         const fromIndex = from.data.outputLinkIds.indexOf(link.id)
-        const toTotal = to.data.inputLinkIds.length + 1
+        const toTotal = to.data.inputLinkIds.length + to.data.mcpMountIds.length + 1
         const toIndex = to.data.inputLinkIds.indexOf(link.id)
         // Should be unreachable — `outputLinkIds`/`inputLinkIds` are built
         // from the same pass over `links` that produces this very edge (see
@@ -1069,7 +1163,7 @@ export function AgentCanvasPane({
                     // instance's id happens to already equal its agent id,
                     // but a dragged-in duplicate's does not).
                     const node = graph.nodes.find((candidate) => candidate.id === nodeContextMenu.instanceId)
-                    if (node) onRequestCreateSubagent?.(node.data.agent.id)
+                    if (node && isAgentNode(node)) onRequestCreateSubagent?.(node.data.agent.id)
                     closeMenus()
                   }}
                 >

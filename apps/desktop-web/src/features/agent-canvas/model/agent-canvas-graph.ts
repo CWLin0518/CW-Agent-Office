@@ -12,6 +12,7 @@ import type {
   AgentProfile,
   AgentRuntimeState,
   AgentRuntimeStatus,
+  McpServerCapability,
 } from '@shell/integration/desktop-api'
 import type { GraphCanvasEdge, GraphCanvasNode } from '@/components/graph-canvas'
 
@@ -22,8 +23,22 @@ export const AGENT_NODE_HEIGHT = 92
 /** Subagents (`agent.parentAgentId` set) render smaller — see P4.5 §1. */
 export const SUBAGENT_NODE_WIDTH = 156
 export const SUBAGENT_NODE_HEIGHT = 68
+/** MCP-mount nodes — one per (agent, mounted MCP server) pair, smaller still
+ * since they only ever show a name + on/off toggle. */
+export const MCP_NODE_WIDTH = 160
+export const MCP_NODE_HEIGHT = 48
+const MCP_NODE_VSPACING = 12
 const NODE_HSPACING = 64
 const NODE_VSPACING = 56
+
+/** The synthetic node/position-storage id for one agent's one mounted MCP
+ * server — shared between `buildAgentCanvasGraph` (node/edge construction)
+ * and the controller (`useAgentCanvasData`'s client-only position storage +
+ * `commitMcpNodePosition`/`setMcpServerEnabled`), so both sides always
+ * agree on the same id for the same (agent, server) pair. */
+export function buildMcpNodeId(agentId: string, serverId: string): string {
+  return `mcp:${agentId}:${serverId}`
+}
 
 function nodeSizeForAgent(agent: AgentProfile): { width: number; height: number } {
   return agent.parentAgentId
@@ -50,7 +65,8 @@ export interface CanvasNodeInstance {
   position?: { x: number; y: number }
 }
 
-export interface AgentCanvasNodeData {
+export interface AgentCanvasAgentNodeData {
+  kind: 'agent'
   instanceId: string
   agent: AgentProfile
   runtimeState: AgentRuntimeState
@@ -66,7 +82,36 @@ export interface AgentCanvasNodeData {
    * called with no slot args). */
   outputLinkIds: string[]
   inputLinkIds: string[]
+  /** Live `agent.id`s whose `parentAgentId` is this agent, in stable order —
+   * one bottom-center port dot per id (docs request: subagents connect from
+   * the parent's bottom point, not the left/right Grasshopper-style anchor
+   * every other edge kind uses). Only populated on an agent's primary
+   * instance, same reasoning as `outputLinkIds`/`inputLinkIds` above. */
+  childAgentIds: string[]
+  /** `buildMcpNodeId(agentId, server.id)` for every MCP server currently
+   * mounted on this agent, in the same order as `mcpServersByAgentId`'s
+   * list — fanned into the SAME left-side port stack as `inputLinkIds`
+   * (link items first, then these), so a mounted tool reads as another
+   * kind of "input" alongside authored-link connections, just visually
+   * distinguished. Only populated on the primary instance, same as above. */
+  mcpMountIds: string[]
 }
+
+/** One MCP-server-mount node — a draggable canvas citizen (position is
+ * client-only, see `useAgentCanvasData`'s `mcpNodePositions`), auto-created
+ * whenever `server` appears in its owning agent's capability snapshot and
+ * removed the moment it doesn't (never orphaned on canvas after an
+ * unmount). `server.enabled` (not this node's presence) is what the on/off
+ * switch actually controls — disabling never deletes the mount, so the node
+ * stays visible either way, just dimmed. */
+export interface AgentCanvasMcpNodeData {
+  kind: 'mcp'
+  id: string
+  agentId: string
+  server: McpServerCapability
+}
+
+export type AgentCanvasNodeData = AgentCanvasAgentNodeData | AgentCanvasMcpNodeData
 
 /** Vertical spacing (canvas units) between stacked port slots on one side of
  * a node. */
@@ -103,6 +148,11 @@ export type AgentCanvasEdgeData =
       reverseLinkId?: string
     }
   | { kind: 'ownership' }
+  /** From an `AgentCanvasMcpNodeData` node to the agent it's mounted on —
+   * `mountId` matches the MCP node's own `id` (== `buildMcpNodeId(agentId,
+   * server.id)`), used to resolve this edge's slot within the agent's
+   * combined left-side port stack (see `AgentCanvasAgentNodeData.mcpMountIds`). */
+  | { kind: 'mcp-mount'; agentId: string; mountId: string }
 
 export interface AgentCanvasGraphView {
   nodes: GraphCanvasNode<AgentCanvasNodeData>[]
@@ -151,6 +201,8 @@ export function buildAgentCanvasGraph(
   links: AgentLink[],
   statuses: AgentRuntimeStatus[],
   instances: CanvasNodeInstance[],
+  mcpServersByAgentId: Record<string, McpServerCapability[]>,
+  mcpNodePositions: Record<string, { x: number; y: number }>,
 ): AgentCanvasGraphView {
   const agentById = new Map(agents.map((agent) => [agent.id, agent]))
   const statusByAgentId = new Map(statuses.map((status) => [status.agentId, status.state]))
@@ -192,8 +244,26 @@ export function buildAgentCanvasGraph(
     inputLinkIdsByAgentId.set(link.toAgentId, inputList)
   }
 
+  // Same "only populated on the primary instance" rule as the two maps
+  // above, keyed by the PARENT's agentId — `agent.parentAgentId` itself
+  // stays live-checked via `primaryInstanceIdByAgentId.has(...)` so a
+  // subagent whose parent was deleted never contributes a dangling entry.
+  const childAgentIdsByParentAgentId = new Map<string, string[]>()
+  for (const agent of agents) {
+    if (!agent.parentAgentId) continue
+    if (!primaryInstanceIdByAgentId.has(agent.parentAgentId) || !primaryInstanceIdByAgentId.has(agent.id)) continue
+    const children = childAgentIdsByParentAgentId.get(agent.parentAgentId) ?? []
+    children.push(agent.id)
+    childAgentIdsByParentAgentId.set(agent.parentAgentId, children)
+  }
+
   let maxX = 0
   let maxY = 0
+  // Resolved canvas position of each agent's PRIMARY instance only — the
+  // one an MCP-mount node auto-positions relative to (see the MCP node
+  // loop below); a duplicate instance never anchors a mount node, same
+  // "primary only" rule the link/ownership maps above already follow.
+  const primaryAgentPositions = new Map<string, { x: number; y: number }>()
   const nodes: GraphCanvasNode<AgentCanvasNodeData>[] = liveInstances.map((instance, index) => {
     const agent = agentById.get(instance.agentId) as AgentProfile
     const position = resolveNodePosition(instance, agent, index, columns)
@@ -201,6 +271,7 @@ export function buildAgentCanvasGraph(
     maxX = Math.max(maxX, position.x + size.width)
     maxY = Math.max(maxY, position.y + size.height)
     const isPrimaryInstance = primaryInstanceIdByAgentId.get(agent.id) === instance.instanceId
+    if (isPrimaryInstance) primaryAgentPositions.set(agent.id, position)
     return {
       id: instance.instanceId,
       x: position.x,
@@ -208,14 +279,58 @@ export function buildAgentCanvasGraph(
       width: size.width,
       height: size.height,
       data: {
+        kind: 'agent' as const,
         instanceId: instance.instanceId,
         agent,
         runtimeState: statusByAgentId.get(agent.id) ?? 'unknown',
         outputLinkIds: isPrimaryInstance ? outputLinkIdsByAgentId.get(agent.id) ?? [] : [],
         inputLinkIds: isPrimaryInstance ? inputLinkIdsByAgentId.get(agent.id) ?? [] : [],
+        childAgentIds: isPrimaryInstance ? childAgentIdsByParentAgentId.get(agent.id) ?? [] : [],
+        mcpMountIds: isPrimaryInstance
+          ? (mcpServersByAgentId[agent.id] ?? []).map((server) => buildMcpNodeId(agent.id, server.id))
+          : [],
       },
     }
   })
+
+  // One node + one `mcp-mount` edge per (agent, mounted MCP server) pair,
+  // anchored to the agent's primary instance only. Position is client-only
+  // and draggable (see `useAgentCanvasData`'s `mcpNodePositions`) — falls
+  // back to a computed default (to the agent's left, fanned vertically for
+  // more than one server) exactly like `resolveNodePosition` already does
+  // for an agent instance with no stored position, only ever "seeded" for
+  // real once the user actually drags it.
+  const mcpNodes: GraphCanvasNode<AgentCanvasNodeData>[] = []
+  const mcpMountEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = []
+  for (const [agentId, agentPosition] of primaryAgentPositions) {
+    const servers = mcpServersByAgentId[agentId] ?? []
+    const primaryInstanceId = primaryInstanceIdByAgentId.get(agentId) as string
+    servers.forEach((server, serverIndex) => {
+      const mountId = buildMcpNodeId(agentId, server.id)
+      const stored = mcpNodePositions[mountId]
+      const position = stored
+        ? { x: Math.max(0, stored.x), y: Math.max(0, stored.y) }
+        : {
+            x: Math.max(0, agentPosition.x - MCP_NODE_WIDTH - NODE_HSPACING),
+            y: Math.max(0, agentPosition.y + serverIndex * (MCP_NODE_HEIGHT + MCP_NODE_VSPACING)),
+          }
+      maxX = Math.max(maxX, position.x + MCP_NODE_WIDTH)
+      maxY = Math.max(maxY, position.y + MCP_NODE_HEIGHT)
+      mcpNodes.push({
+        id: mountId,
+        x: position.x,
+        y: position.y,
+        width: MCP_NODE_WIDTH,
+        height: MCP_NODE_HEIGHT,
+        data: { kind: 'mcp' as const, id: mountId, agentId, server },
+      })
+      mcpMountEdges.push({
+        fromId: mountId,
+        toId: primaryInstanceId,
+        data: { kind: 'mcp-mount' as const, agentId, mountId },
+      })
+    })
+  }
 
   const liveLinks = links.filter(
     (link) => primaryInstanceIdByAgentId.has(link.fromAgentId) && primaryInstanceIdByAgentId.has(link.toAgentId),
@@ -289,10 +404,10 @@ export function buildAgentCanvasGraph(
       data: { kind: 'ownership' },
     }))
 
-  const edges = [...linkEdges, ...ownershipEdges]
+  const edges = [...linkEdges, ...ownershipEdges, ...mcpMountEdges]
 
   return {
-    nodes,
+    nodes: [...nodes, ...mcpNodes],
     edges,
     bounds: {
       width: Math.max(maxX + NODE_HSPACING, 800),
@@ -323,12 +438,15 @@ const CENTER_SLOT: PortSlot = { index: 0, total: 1 }
  * position — unlike `computeQuadraticEdgeGeometry` (the shared engine's
  * generic node-to-node heuristic, which picks whichever side is closer),
  * ports have a fixed side, so the wire is a horizontal S-curve that loops
- * around when `to` sits above/below/left of `from`. Used for `link` and
- * `ownership` edges so ports and wires visually line up consistently —
- * `ownership` and derived `link` edges call this with no slot args (center
- * anchor, unchanged pre-multi-slot behavior); authored `link` edges pass
- * each side's actual slot so multiple connections fan out to their own
- * distinct port dot instead of converging on one point. */
+ * around when `to` sits above/below/left of `from`. Used for `link` edges
+ * (derived edges call this with no slot args — center anchor, unchanged
+ * pre-multi-slot behavior; authored edges pass each side's actual slot so
+ * multiple connections fan out to their own distinct port dot) and for
+ * `mcp-mount` edges (`from` = the MCP node, `to` = the owning agent — the
+ * MCP node sits to the agent's left, so "exit `from`'s right, enter `to`'s
+ * left" is exactly the anchor wanted). `ownership` edges use the vertical
+ * sibling below instead — a parent-to-subagent relationship reads top-down,
+ * not left-to-right. */
 export function computePortEdgeGeometry(
   from: { x: number; y: number; width?: number; height?: number },
   to: { x: number; y: number; width?: number; height?: number },
@@ -349,6 +467,43 @@ export function computePortEdgeGeometry(
   const offset = Math.min(120, Math.max(32, Math.abs(end.x - start.x) / 2))
   const c1 = { x: start.x + offset, y: start.y }
   const c2 = { x: end.x - offset, y: end.y }
+  return {
+    start,
+    end,
+    path: `M ${start.x} ${start.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${end.x} ${end.y}`,
+  }
+}
+
+/** Vertical sibling of `computePortEdgeGeometry`, rotated 90°: always exits
+ * the bottom-center of `from` and enters the top-center of `to`, regardless
+ * of actual relative position — same fixed-side philosophy (a vertical
+ * S-curve loops around if `to` isn't actually below `from`). Used
+ * exclusively for `ownership` (parent → subagent) edges, matching the
+ * reference layout: a parent box above, a straight-reading connector down
+ * to each subagent box below it. `fromSlot`'s offset fans out along the
+ * parent's bottom edge (X axis) when it owns more than one subagent, so
+ * multiple children don't all converge on the exact same pixel; `toSlot`
+ * stays centered (`CENTER_SLOT`) since a subagent has exactly one parent. */
+export function computeVerticalPortEdgeGeometry(
+  from: { x: number; y: number; width?: number; height?: number },
+  to: { x: number; y: number; width?: number; height?: number },
+  fromSlot: PortSlot = CENTER_SLOT,
+  toSlot: PortSlot = CENTER_SLOT,
+): PortEdgeGeometry {
+  const fromWidth = from.width ?? AGENT_NODE_WIDTH
+  const fromHeight = from.height ?? AGENT_NODE_HEIGHT
+  const toWidth = to.width ?? AGENT_NODE_WIDTH
+  const start = {
+    x: from.x + fromWidth / 2 + computePortSlotCenterOffset(fromSlot.index, fromSlot.total),
+    y: from.y + fromHeight,
+  }
+  const end = {
+    x: to.x + toWidth / 2 + computePortSlotCenterOffset(toSlot.index, toSlot.total),
+    y: to.y,
+  }
+  const offset = Math.min(120, Math.max(32, Math.abs(end.y - start.y) / 2))
+  const c1 = { x: start.x, y: start.y + offset }
+  const c2 = { x: end.x, y: end.y - offset }
   return {
     start,
     end,

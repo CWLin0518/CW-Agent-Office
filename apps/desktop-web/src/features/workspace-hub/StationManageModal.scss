@@ -755,6 +755,20 @@
   }
 }
 
+.station-capabilities-row-enabled-toggle {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: rem(4);
+  white-space: nowrap;
+  font-size: rem(12);
+  color: var(--vb-text-muted);
+
+  input[type='checkbox'] {
+    margin: 0;
+  }
+}
+
 .station-hook-preview-backdrop {
   position: fixed;
   inset: 0;

@@ -318,6 +318,68 @@
   opacity: 1;
 }
 
+// MCP-mount node — one per (agent, mounted MCP server) pair, connected into
+// the owning agent's left side (see `.agent-canvas-port--mcp` below). Kept
+// visually distinct from `.agent-canvas-node` (a dashed border instead of
+// solid, a different accent) so it reads as "a mounted tool," not another
+// agent.
+.agent-canvas-mcp-node {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: #{rem(6)};
+  height: 100%;
+  padding: 0 #{rem(8)} 0 #{rem(12)};
+  border-radius: #{rem(10)};
+  border: var(--vb-border-width) dashed var(--vb-accent);
+  background: var(--vb-surface);
+  box-shadow: 0 #{rem(2)} #{rem(6)} rgba(0, 0, 0, 0.08);
+
+  &--disabled {
+    opacity: 0.5;
+    border-style: dotted;
+  }
+}
+
+.agent-canvas-mcp-node-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: #{rem(12)};
+  font-weight: 600;
+  color: var(--vb-text);
+}
+
+.agent-canvas-mcp-node-toggle {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: #{rem(20)};
+  height: #{rem(20)};
+  padding: 0;
+  border: none;
+  border-radius: #{rem(5)};
+  background: transparent;
+  color: var(--vb-text-muted);
+  cursor: default;
+
+  svg {
+    width: #{rem(12)};
+    height: #{rem(12)};
+  }
+
+  &:hover {
+    background: var(--vb-border);
+    color: var(--vb-text);
+  }
+
+  &[aria-pressed='true'] {
+    color: var(--vb-accent);
+  }
+}
+
 // Grasshopper-style connection ports (docs/cw/04_客製化設計.md §1, P4.5/P4.6):
 // one dot per already-connected authored link, stacked vertically, plus a
 // trailing "+" to start a new one — `AgentCanvasNodeCard`'s `PortSlots`
@@ -352,6 +414,51 @@
 
 .agent-canvas-port--output {
   right: #{rem(-6)};
+}
+
+// Ownership (parent <-> subagent, docs request) — a straight top-down
+// connector instead of the left/right Grasshopper anchor above. Purely
+// decorative (no drag/context-menu handlers in AgentCanvasNodeCard, hence
+// `pointer-events: none` — ownership isn't user-editable), so these
+// override the base's `cursor: context-menu` back to `default`.
+.agent-canvas-port--bottom {
+  top: auto;
+  bottom: #{rem(-6)};
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: default;
+  pointer-events: none;
+}
+
+.agent-canvas-port--top {
+  top: #{rem(-6)};
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: default;
+  pointer-events: none;
+}
+
+// MCP-mount dot in an agent's left-side port stack (see `InputPortSlots`) —
+// a diamond instead of a circle so it reads as a different kind of
+// connection than an authored-link input dot beside it, and non-interactive
+// (mounting/unmounting happens in Capabilities or via the mount node's own
+// on/off switch, never by dragging this dot) just like the ownership dots
+// above.
+.agent-canvas-port--mcp {
+  border-radius: #{rem(2)};
+  border-color: var(--vb-accent);
+  transform-origin: center;
+  cursor: default;
+  pointer-events: none;
+}
+
+// The MCP-mount node's own single, non-interactive anchor point (always its
+// right side — it sits to the agent's left, wired via `computePortEdgeGeometry`
+// same as any other `from`-side port).
+.agent-canvas-port--mcp-anchor {
+  right: #{rem(-6)};
+  cursor: default;
+  pointer-events: none;
 }
 
 // The "+" (add connection) slot — visually distinct from a connected dot
@@ -450,6 +557,16 @@
 // AgentCanvasEdgeData doc comment in model/agent-canvas-graph.ts.
 .agent-canvas-edge--ownership {
   stroke: var(--vb-text-muted);
+  stroke-dasharray: #{rem(1.5)} #{rem(4)};
+  stroke-linecap: round;
+  opacity: 0.6;
+}
+
+// A mounted-MCP connection — same non-interactive, derived treatment as
+// ownership above, but keyed to the accent color (matching the mount
+// node's own dashed border) so it reads as "a tool," not "a relationship."
+.agent-canvas-edge--mcp-mount {
+  stroke: var(--vb-accent);
   stroke-dasharray: #{rem(1.5)} #{rem(4)};
   stroke-linecap: round;
   opacity: 0.6;

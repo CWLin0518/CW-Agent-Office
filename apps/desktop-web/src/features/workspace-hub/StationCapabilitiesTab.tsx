@@ -397,7 +397,14 @@ function McpServersEditor({
           <div className="station-capabilities-row-header">
             <input
               type="text"
-              placeholder={locale === 'zh-CN' ? 'Server ID' : 'Server ID'}
+              placeholder={locale === 'zh-CN' ? '名称（显示用）' : 'Name (display only)'}
+              disabled={disabled}
+              value={server.name ?? ''}
+              onChange={(event) => updateAt(index, { name: event.target.value })}
+            />
+            <input
+              type="text"
+              placeholder="Server ID"
               disabled={disabled}
               value={server.id}
               onChange={(event) => updateAt(index, { id: event.target.value })}
@@ -411,6 +418,15 @@ function McpServersEditor({
               <option value="sse">sse</option>
               <option value="http">http</option>
             </select>
+            <label className="station-capabilities-row-enabled-toggle">
+              <input
+                type="checkbox"
+                disabled={disabled}
+                checked={server.enabled}
+                onChange={(event) => updateAt(index, { enabled: event.target.checked })}
+              />
+              <span>{locale === 'zh-CN' ? '启用' : 'Enabled'}</span>
+            </label>
             <button
               type="button"
               className="station-form-tag-chip-delete"

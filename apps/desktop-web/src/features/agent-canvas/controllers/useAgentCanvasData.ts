@@ -1,7 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { desktopApi } from '@shell/integration/desktop-api'
-import type { AgentLink, AgentProfile, AgentRuntimeStatus } from '@shell/integration/desktop-api'
+import type {
+  AgentCapabilitySnapshot,
+  AgentLink,
+  AgentProfile,
+  AgentRuntimeStatus,
+  McpServerCapability,
+} from '@shell/integration/desktop-api'
 import { buildAgentCanvasGraph, type AgentCanvasGraphView, type CanvasNodeInstance } from '../model/agent-canvas-graph'
+
+/** Mirrors `StationCapabilitiesTab.tsx`'s own constant of the same name and
+ * purpose — this file can't import that one (it's feature-local, not
+ * exported), and it's a one-line primitive, not worth plumbing through a
+ * shared module for. See that file's doc comment for why "System Admin" is
+ * the right value here (no per-user identity in this app yet). */
+const CAPABILITY_CONFIRMED_BY = 'System Admin'
 
 /** How often to re-poll links + runtime status while the pane is active.
  * There is no push/event mechanism for either yet (see docs/cw/04_客製化設計.md
@@ -72,6 +85,45 @@ function persistedAgentLayout(agent: AgentProfile | undefined): { x: number; y: 
     : null
 }
 
+/** Client-only, same reasoning as `INSTANCES_STORAGE_PREFIX` above — an MCP
+ * mount node has no backend column to persist a position in. Keyed by
+ * `buildMcpNodeId(agentId, server.id)`, so it survives a server's own `id`
+ * changing identity server-side is a non-issue (a rename would just seed a
+ * fresh default position, same as any other never-seen mount). */
+const MCP_POSITIONS_STORAGE_PREFIX = 'agent-canvas.mcpPositions'
+
+function buildMcpPositionsStorageKey(workspaceId: string): string {
+  return `${MCP_POSITIONS_STORAGE_PREFIX}:${workspaceId}`
+}
+
+function isValidMcpPositionsRecord(value: unknown): value is Record<string, { x: number; y: number }> {
+  if (typeof value !== 'object' || value === null) return false
+  return Object.values(value as Record<string, unknown>).every((position) => {
+    if (typeof position !== 'object' || position === null) return false
+    const candidate = position as Partial<{ x: unknown; y: unknown }>
+    return Number.isFinite(candidate.x) && Number.isFinite(candidate.y)
+  })
+}
+
+function loadMcpPositions(workspaceId: string): Record<string, { x: number; y: number }> {
+  try {
+    const raw = window.localStorage.getItem(buildMcpPositionsStorageKey(workspaceId))
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    return isValidMcpPositionsRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveMcpPositions(workspaceId: string, positions: Record<string, { x: number; y: number }>): void {
+  try {
+    window.localStorage.setItem(buildMcpPositionsStorageKey(workspaceId), JSON.stringify(positions))
+  } catch {
+    // Ignore local storage quota/runtime errors — same tradeoff as `saveInstances`.
+  }
+}
+
 function loadLegacyRemovedAgentIds(workspaceId: string): Set<string> {
   try {
     const raw = window.localStorage.getItem(`${LEGACY_REMOVED_AGENT_IDS_STORAGE_PREFIX}:${workspaceId}`)
@@ -92,6 +144,17 @@ interface UseAgentCanvasDataResult {
    * agentId`) node — unchanged from pre-P4.6 — or to purely client-side
    * `instances` storage for any other (duplicate) instance. */
   commitInstancePosition: (instanceId: string, agentId: string, position: { x: number; y: number }) => void
+  /** Commits a dragged position for one MCP-mount node — always client-only
+   * (there's no backend column for this, unlike an agent instance's
+   * default-position path), keyed by the node's own id
+   * (`buildMcpNodeId(agentId, server.id)`). */
+  commitMcpNodePosition: (mcpNodeId: string, position: { x: number; y: number }) => void
+  /** Flips one MCP server's `enabled` flag within its agent's capability
+   * snapshot and re-saves the whole snapshot (skills/hooks carried through
+   * unchanged) — the canvas node's on/off switch, mirrored from the same
+   * field editable in the Capabilities tab. Never removes the mount, only
+   * whether the next materialize actually includes it. */
+  setMcpServerEnabled: (agentId: string, serverId: string, enabled: boolean) => void
   createAuthoredLink: (fromAgentId: string, toAgentId: string) => Promise<void>
   deleteAuthoredLink: (fromAgentId: string, toAgentId: string) => Promise<void>
   deleteDerivedLink: (fromAgentId: string, toAgentId: string) => Promise<void>
@@ -160,6 +223,37 @@ export function useAgentCanvasData(
   useEffect(() => {
     const id = window.setTimeout(() => {
       setInstances(workspaceId ? loadInstancesOrNull(workspaceId) ?? [] : [])
+    }, 0)
+    return () => window.clearTimeout(id)
+  }, [workspaceId])
+
+  // `AgentCapabilitySnapshot` per agent — no bulk "capabilities for every
+  // agent in a workspace" endpoint exists yet, so `reload()` below fires one
+  // `agentCapabilityRead` per agent (this workspace's agent counts are
+  // small; a bulk endpoint can be added later if that stops being cheap).
+  // Kept as the FULL snapshot, not just `mcpServers`, so `setMcpServerEnabled`
+  // can re-save without clobbering an agent's skills/hooks it never touched.
+  const [capabilityByAgentId, setCapabilityByAgentId] = useState<Record<string, AgentCapabilitySnapshot>>({})
+  // Read by `reload()`'s per-agent failure fallback below — `reload` is a
+  // stable-identity `useCallback` (deps: `[workspaceId]`, same reasoning as
+  // `agentsRef` above), so it can't close over `capabilityByAgentId`
+  // directly without going stale after the first successful read.
+  const capabilityByAgentIdRef = useRef(capabilityByAgentId)
+  useEffect(() => {
+    capabilityByAgentIdRef.current = capabilityByAgentId
+  })
+  const mcpServersByAgentId = useMemo<Record<string, McpServerCapability[]>>(
+    () => Object.fromEntries(Object.entries(capabilityByAgentId).map(([agentId, capability]) => [agentId, capability.mcpServers])),
+    [capabilityByAgentId],
+  )
+
+  const [mcpNodePositions, setMcpNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
+    workspaceId ? loadMcpPositions(workspaceId) : {},
+  )
+  // Same re-read-on-workspace-change shape as `instances` above.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setMcpNodePositions(workspaceId ? loadMcpPositions(workspaceId) : {})
     }, 0)
     return () => window.clearTimeout(id)
   }, [workspaceId])
@@ -248,6 +342,22 @@ export function useAgentCanvasData(
       setStatuses(statusResponse.statuses)
       setLoaded(true)
 
+      // Best-effort per agent — one failed read shouldn't blank out every
+      // other agent's already-known MCP nodes on canvas.
+      const capabilityEntries = await Promise.all(
+        agentsResponse.agents.map(async (agent) => {
+          try {
+            const response = await desktopApi.agentCapabilityRead({ workspaceId, agentId: agent.id })
+            return [agent.id, response.capability] as const
+          } catch {
+            return [agent.id, capabilityByAgentIdRef.current[agent.id]] as const
+          }
+        }),
+      )
+      setCapabilityByAgentId(
+        Object.fromEntries(capabilityEntries.filter((entry): entry is [string, AgentCapabilitySnapshot] => Boolean(entry[1]))),
+      )
+
       // One-time migration: a workspace that never had an `instances` key
       // predates multi-instance support — seed one default instance
       // (`instanceId === agentId`, so it keeps using `agent.layoutX/layoutY`)
@@ -284,8 +394,8 @@ export function useAgentCanvasData(
   }, [active, workspaceId, reload])
 
   const graph = useMemo(
-    () => buildAgentCanvasGraph(agents, links, statuses, instances),
-    [agents, links, statuses, instances],
+    () => buildAgentCanvasGraph(agents, links, statuses, instances, mcpServersByAgentId, mcpNodePositions),
+    [agents, links, statuses, instances, mcpServersByAgentId, mcpNodePositions],
   )
 
   const commitAgentLayout = useCallback(
@@ -344,6 +454,71 @@ export function useAgentCanvasData(
       })
     },
     [workspaceId, instances, commitAgentLayout, pushHistory],
+  )
+
+  const commitMcpNodePosition = useCallback(
+    (mcpNodeId: string, position: { x: number; y: number }) => {
+      if (!workspaceId) return
+      const previousPosition = mcpNodePositions[mcpNodeId]
+      setMcpNodePositions((previous) => {
+        const next = { ...previous, [mcpNodeId]: position }
+        saveMcpPositions(workspaceId, next)
+        return next
+      })
+      pushHistory(() => {
+        setMcpNodePositions((previous) => {
+          const next = { ...previous }
+          if (previousPosition) {
+            next[mcpNodeId] = previousPosition
+          } else {
+            delete next[mcpNodeId]
+          }
+          saveMcpPositions(workspaceId, next)
+          return next
+        })
+      })
+    },
+    [workspaceId, mcpNodePositions, pushHistory],
+  )
+
+  const setMcpServerEnabled = useCallback(
+    (agentId: string, serverId: string, enabled: boolean) => {
+      if (!workspaceId) return
+      const previousSnapshot = capabilityByAgentId[agentId]
+      if (!previousSnapshot) return
+      const previousServer = previousSnapshot.mcpServers.find((server) => server.id === serverId)
+      if (!previousServer || previousServer.enabled === enabled) return
+
+      const applyEnabled = (snapshot: AgentCapabilitySnapshot, nextEnabled: boolean): AgentCapabilitySnapshot => ({
+        ...snapshot,
+        mcpServers: snapshot.mcpServers.map((server) =>
+          server.id === serverId ? { ...server, enabled: nextEnabled } : server,
+        ),
+      })
+
+      const nextSnapshot = applyEnabled(previousSnapshot, enabled)
+      setCapabilityByAgentId((previous) => ({ ...previous, [agentId]: nextSnapshot }))
+      enqueueWrite(() =>
+        desktopApi.agentCapabilitySave({
+          workspaceId,
+          agentId,
+          capability: nextSnapshot,
+          confirmedBy: CAPABILITY_CONFIRMED_BY,
+        }),
+      )
+      pushHistory(async () => {
+        setCapabilityByAgentId((previous) => ({ ...previous, [agentId]: previousSnapshot }))
+        // Awaited directly, same reasoning as every other undo entry in this
+        // file — `undo()` already runs this inside its own queued turn.
+        await desktopApi.agentCapabilitySave({
+          workspaceId,
+          agentId,
+          capability: previousSnapshot,
+          confirmedBy: CAPABILITY_CONFIRMED_BY,
+        })
+      })
+    },
+    [workspaceId, capabilityByAgentId, pushHistory, enqueueWrite],
   )
 
   const addInstance = useCallback(
@@ -587,6 +762,8 @@ export function useAgentCanvasData(
     loaded,
     isEmpty: loaded && agents.length === 0,
     commitInstancePosition,
+    commitMcpNodePosition,
+    setMcpServerEnabled,
     createAuthoredLink,
     deleteAuthoredLink,
     deleteDerivedLink,
