@@ -2117,6 +2117,10 @@ export interface HookCapability {
   event: string
   matcher?: string | null
   command: string
+  /** Free-text note describing when this rule fires and what it does — UI
+   * convenience only, never sent to the CLI and excluded from the hook's
+   * version-lock hash (editing it doesn't require re-confirming the hook). */
+  note?: string | null
 }
 
 export interface AgentCapabilitySnapshot {
@@ -2149,6 +2153,7 @@ export interface AgentCapabilityHookPreviewItem {
   event: string
   matcher?: string | null
   command: string
+  note?: string | null
   hash: string
   alreadyConfirmed: boolean
 }
@@ -2177,6 +2182,58 @@ export interface AgentCapabilitySaveRequest {
 
 export interface AgentCapabilitySaveResponse {
   snapshotId: string
+}
+
+/** Mirrors `crates/gt-agent/src/capability/discovery.rs::SkillScope`. */
+export type SkillScope = 'workspace' | 'global'
+
+/** One skill found on disk by `agent_capability_list_available_skills` —
+ * backs the Skills sub-tab's checklist (split into workspace vs. global
+ * sections) so mounting a skill no longer requires hand-typing an id + path. */
+export interface DiscoveredSkill {
+  id: string
+  name: string
+  description: string
+  sourcePath: string
+  scope: SkillScope
+}
+
+export interface AgentCapabilityListAvailableSkillsRequest {
+  workspaceId: string
+}
+
+export interface AgentCapabilityListAvailableSkillsResponse {
+  skills: DiscoveredSkill[]
+}
+
+/** Mirrors `crates/gt-agent/src/capability/discovery.rs::HookScope`. */
+export type HookScope = 'workspace' | 'global'
+
+/** One hook rule found already configured in a `.claude/settings.json` by
+ * `agent_capability_list_available_hooks` — backs the Hooks sub-tab's
+ * checklist (workspace vs. global sections), same pattern as `DiscoveredSkill`.
+ * Mounting one still goes through the mandatory preview/confirm flow — this
+ * only removes the need to hand-type the event/matcher/command. */
+export interface DiscoveredHook {
+  event: string
+  matcher?: string | null
+  command: string
+  sourcePath: string
+  scope: HookScope
+  /** Best-effort explanation read from the invoked script's leading comment
+   * — `.claude/settings.json` itself has no description field, so this is
+   * the only way to show "what this does" before the hook is even mounted.
+   * `null`/absent when the command isn't a recognizable script file, the
+   * file couldn't be read, or it has no leading comment. */
+  inferredDescription?: string | null
+}
+
+export interface AgentCapabilityListAvailableHooksRequest {
+  workspaceId: string
+}
+
+export interface AgentCapabilityListAvailableHooksResponse {
+  hooks: DiscoveredHook[]
 }
 
 export interface AgentGitTrackingSetRequest {
@@ -4695,6 +4752,26 @@ export const desktopApi = {
         confirmedBy: request.confirmedBy,
       },
     })
+  },
+  agentCapabilityListAvailableSkills(request: AgentCapabilityListAvailableSkillsRequest) {
+    return invokeCommand<AgentCapabilityListAvailableSkillsResponse>(
+      'agent_capability_list_available_skills',
+      {
+        request: {
+          workspaceId: request.workspaceId,
+        },
+      },
+    )
+  },
+  agentCapabilityListAvailableHooks(request: AgentCapabilityListAvailableHooksRequest) {
+    return invokeCommand<AgentCapabilityListAvailableHooksResponse>(
+      'agent_capability_list_available_hooks',
+      {
+        request: {
+          workspaceId: request.workspaceId,
+        },
+      },
+    )
   },
   agentGitTrackingSet(request: AgentGitTrackingSetRequest) {
     return invokeCommand<AgentGitTrackingSetResponse>('agent_git_tracking_set', {

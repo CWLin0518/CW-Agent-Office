@@ -810,6 +810,123 @@
   }
 }
 
+.station-capabilities-skill-group {
+  display: flex;
+  flex-direction: column;
+  gap: rem(8);
+
+  h4 {
+    margin: 0;
+    font-size: rem(13);
+    font-weight: 600;
+    color: var(--vb-text);
+  }
+}
+
+.station-capabilities-skill-empty {
+  margin: 0;
+  font-size: rem(12);
+  color: var(--vb-text-muted);
+}
+
+.station-capabilities-skill-row {
+  display: flex;
+  flex-direction: column;
+  gap: rem(8);
+}
+
+// Compound selector (not just `.station-capabilities-skill-checkbox` alone):
+// `.station-form-grid label` (defined above) sets `flex-direction: column`
+// at specificity (0,1,1), which otherwise beats a single-class selector
+// here and silently turns this checkbox+name row into a *vertically
+// stacked, horizontally centered* pair instead of "checkbox left of name" —
+// exactly the misalignment this class exists to fix.
+.station-form-checkbox.station-capabilities-skill-checkbox {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: row;
+  justify-content: flex-start;
+  text-align: left;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+    white-space: nowrap;
+  }
+}
+
+.station-capabilities-skill-search {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: rem(8);
+  margin-bottom: rem(4);
+
+  .vb-icon {
+    flex: 0 0 auto;
+    width: rem(16);
+    height: rem(16);
+    color: var(--vb-text-muted);
+  }
+
+  input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+.station-capabilities-skill-info-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: rem(24);
+  height: rem(24);
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--vb-text-muted);
+  cursor: pointer;
+  transition:
+    color 150ms var(--vb-ease-smooth),
+    background 150ms var(--vb-ease-smooth);
+
+  .vb-icon {
+    width: rem(14);
+    height: rem(14);
+  }
+
+  &:hover,
+  &[aria-expanded='true'] {
+    color: var(--vb-accent);
+    background: color-mix(in srgb, var(--vb-accent) 12%, transparent);
+  }
+}
+
+.station-capabilities-skill-detail {
+  display: flex;
+  flex-direction: column;
+  gap: rem(4);
+  padding: rem(8) rem(10);
+  border-radius: rem(8);
+  background: color-mix(in srgb, var(--vb-chip) 60%, transparent);
+
+  p {
+    margin: 0;
+    font-size: rem(12);
+    color: var(--vb-text);
+  }
+}
+
+.station-capabilities-skill-path {
+  font-family: var(--vb-font-mono, monospace);
+  font-size: rem(11) !important;
+  color: var(--vb-text-muted) !important;
+  word-break: break-all;
+}
+
 .station-hook-preview-backdrop {
   position: fixed;
   inset: 0;

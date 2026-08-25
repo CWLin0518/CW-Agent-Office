@@ -33,7 +33,7 @@ pub(crate) fn ensure_workspace_exists(state: &AppState, workspace_id: &str) -> R
         .map_err(to_command_error)
 }
 
-fn get_workspace_root(state: &AppState, workspace_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn get_workspace_root(state: &AppState, workspace_id: &str) -> Result<PathBuf, String> {
     let workspace_id = WorkspaceId::new(workspace_id);
     let context = state
         .workspace_service

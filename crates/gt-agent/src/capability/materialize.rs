@@ -749,6 +749,7 @@ mod tests {
             event: "PreToolUse".to_string(),
             matcher: Some("Bash".to_string()),
             command: "echo hi".to_string(),
+            note: None,
         });
 
         let result = materialize_claude_capability(
@@ -844,6 +845,7 @@ mod tests {
             event: "PreToolUse".to_string(),
             matcher: None,
             command: "echo hi".to_string(),
+            note: None,
         });
 
         let unsupported = ProviderCapabilitySupport::default();

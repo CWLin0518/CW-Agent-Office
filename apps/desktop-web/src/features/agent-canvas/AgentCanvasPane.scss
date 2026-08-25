@@ -414,6 +414,143 @@
   }
 }
 
+// Skill/Hook-mount node — one PER AGENT (not per item, unlike the MCP node
+// above), a collapsed dropdown header (`AgentCanvasSkillNodeCard`/
+// `AgentCanvasHookNodeCard`) that expands in place. Shares the MCP node's
+// "auxiliary mounted thing" visual language (dashed accent border) so all
+// three read as the same family, distinguished by their icon/title rather
+// than a different border treatment.
+.agent-canvas-capability-node {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: #{rem(6)};
+  // Literal min-height matching SKILL_NODE_HEIGHT/HOOK_NODE_HEIGHT — same
+  // wire-alignment reasoning as `.agent-canvas-mcp-node`'s min-height above.
+  min-height: 48px;
+  padding: 0 #{rem(8)} 0 #{rem(10)};
+  border-radius: #{rem(10)};
+  border: var(--vb-border-width) dashed var(--vb-accent);
+  background: var(--vb-surface);
+  box-shadow: 0 #{rem(2)} #{rem(6)} rgba(0, 0, 0, 0.08);
+}
+
+.agent-canvas-capability-node-icon {
+  flex: none;
+  width: #{rem(14)};
+  height: #{rem(14)};
+  color: var(--vb-accent);
+}
+
+.agent-canvas-capability-node-title {
+  flex: none;
+  font-size: #{rem(12)};
+  font-weight: 600;
+  color: var(--vb-text);
+}
+
+.agent-canvas-capability-node-count {
+  flex: 1;
+  min-width: 0;
+  font-size: #{rem(11)};
+  color: var(--vb-text-muted);
+}
+
+.agent-canvas-capability-node-toggle {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: #{rem(18)};
+  height: #{rem(18)};
+  padding: 0;
+  border: none;
+  border-radius: #{rem(5)};
+  background: transparent;
+  color: var(--vb-text-muted);
+  cursor: default;
+  transition: background 0.12s ease, color 0.12s ease;
+
+  svg {
+    width: #{rem(11)};
+    height: #{rem(11)};
+  }
+
+  &:hover {
+    background: var(--vb-surface-muted);
+    color: var(--vb-text);
+  }
+}
+
+// Expanded read-only list — an overlay BELOW the collapsed card rather than
+// growing the card's own declared box (`GraphCanvas.tsx` only sets
+// `minHeight` on the node shell, so this paints fine either way, but the
+// mount node's own anchor dot/wire are positioned off the node's DECLARED
+// height — see `AgentCanvasPane.scss`'s `.agent-canvas-port--mcp-anchor`
+// comment — so growing the real box would desync the anchor from the card's
+// visual edge the same way a taller MCP node would).
+.agent-canvas-capability-node-dropdown {
+  position: absolute;
+  top: calc(100% + #{rem(4)});
+  left: 0;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: #{rem(2)};
+  max-height: #{rem(220)};
+  overflow-y: auto;
+  padding: #{rem(6)};
+  border-radius: #{rem(8)};
+  border: var(--vb-border-width) solid var(--vb-border);
+  background: var(--vb-surface);
+  box-shadow: 0 #{rem(8)} #{rem(20)} rgba(0, 0, 0, 0.18);
+  cursor: default;
+}
+
+.agent-canvas-capability-node-dropdown-item {
+  display: flex;
+  flex-direction: column;
+  gap: #{rem(2)};
+  padding: #{rem(4)} #{rem(6)};
+  border-radius: #{rem(5)};
+
+  &:hover {
+    background: var(--vb-surface-muted);
+  }
+
+  &--disabled {
+    opacity: 0.55;
+  }
+}
+
+.agent-canvas-capability-node-dropdown-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: #{rem(11)};
+  font-weight: 600;
+  color: var(--vb-text);
+}
+
+.agent-canvas-capability-node-dropdown-item-tag {
+  align-self: flex-start;
+  padding: 0 #{rem(5)};
+  border-radius: #{rem(4)};
+  background: var(--vb-surface-muted);
+  color: var(--vb-text-muted);
+  font-size: #{rem(10)};
+}
+
+.agent-canvas-capability-node-dropdown-item-command {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vb-font-mono);
+  font-size: #{rem(10)};
+  color: var(--vb-text-muted);
+}
+
 // Grasshopper-style connection ports (docs/cw/04_客製化設計.md §1, P4.5/P4.6):
 // one dot per already-connected authored link, stacked vertically, plus a
 // trailing "+" to start a new one — `AgentCanvasNodeCard`'s `PortSlots`
@@ -501,7 +638,9 @@
 // (mounting/unmounting happens in Capabilities or via the mount node's own
 // on/off switch, never by dragging this dot) just like the ownership dots
 // above.
-.agent-canvas-port--mcp {
+.agent-canvas-port--mcp,
+.agent-canvas-port--skill,
+.agent-canvas-port--hook {
   border-radius: #{rem(2)};
   border-color: var(--vb-accent);
   transform-origin: center;
@@ -624,10 +763,13 @@
   opacity: 0.6;
 }
 
-// A mounted-MCP connection — same non-interactive, derived treatment as
-// ownership above, but keyed to the accent color (matching the mount
-// node's own dashed border) so it reads as "a tool," not "a relationship."
-.agent-canvas-edge--mcp-mount {
+// A mounted-capability connection (MCP/Skill/Hook) — same non-interactive,
+// derived treatment as ownership above, but keyed to the accent color
+// (matching the mount node's own dashed border) so it reads as "a tool,"
+// not "a relationship."
+.agent-canvas-edge--mcp-mount,
+.agent-canvas-edge--skill-mount,
+.agent-canvas-edge--hook-mount {
   stroke: var(--vb-accent);
   stroke-dasharray: #{rem(1.5)} #{rem(4)};
   stroke-linecap: round;

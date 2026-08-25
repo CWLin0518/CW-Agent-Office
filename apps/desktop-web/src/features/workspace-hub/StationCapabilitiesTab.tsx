@@ -11,6 +11,8 @@ import { desktopApi, createDefaultAgentCapability } from '@shell/integration/des
 import type {
   AgentCapabilityHookPreviewItem,
   AgentCapabilitySnapshot,
+  DiscoveredHook,
+  DiscoveredSkill,
   HookCapability,
   McpServerCapability,
   McpTransport,
@@ -23,17 +25,26 @@ import {
   buildSavableCapabilitySnapshot,
   createEmptyHook,
   createEmptyMcpServer,
-  createEmptySkill,
+  filterDiscoveredHooks,
+  filterDiscoveredSkills,
+  filterHookEntries,
+  filterSkillEntries,
+  findMountedHookEntry,
+  findMountedSkillEntry,
   formatArgsTextarea,
   formatEnvTextarea,
   isMcpServerDraftValid,
   isHookDraftValid,
-  isSkillDraftValid,
   isSkillsOrHooksSupportedForToolKind,
   parseArgsTextarea,
   parseEnvTextarea,
   requiresHookPreviewBeforeSave,
+  toggleDiscoveredHook,
+  toggleDiscoveredSkill,
   unconfirmedHookHashes,
+  unmatchedHookEntries,
+  unmatchedSkillEntries,
+  updateMountedHookNote,
   type CapabilitySubTab,
 } from './station-capabilities-model'
 
@@ -264,6 +275,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
             {subTab === 'skills' && skillsHooksSupported && (
               <SkillsEditor
                 locale={locale}
+                workspaceId={workspaceId}
                 skills={draft.skills}
                 disabled={saving}
                 onChange={(skills) => setDraft((previous) => ({ ...previous, skills }))}
@@ -279,6 +291,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
             {subTab === 'hooks' && skillsHooksSupported && (
               <HooksEditor
                 locale={locale}
+                workspaceId={workspaceId}
                 hooks={draft.hooks}
                 disabled={saving}
                 onChange={(hooks) => setDraft((previous) => ({ ...previous, hooks }))}
@@ -332,6 +345,12 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
                       {locale === 'zh-CN' ? '实际指令：' : 'Command: '}
                       <code>{item.command}</code>
                     </p>
+                    {item.note?.trim() && (
+                      <p>
+                        {locale === 'zh-CN' ? '备注：' : 'Note: '}
+                        {item.note}
+                      </p>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -517,168 +536,579 @@ function McpServersEditor({
 
 function SkillsEditor({
   locale,
+  workspaceId,
   skills,
   disabled,
   onChange,
 }: {
   locale: Locale
+  workspaceId: string
   skills: SkillCapability[]
   disabled: boolean
   onChange: (skills: SkillCapability[]) => void
 }) {
-  const updateAt = (index: number, patch: Partial<SkillCapability>) => {
-    onChange(skills.map((skill, i) => (i === index ? { ...skill, ...patch } : skill)))
+  const [available, setAvailable] = useState<DiscoveredSkill[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
+
+  useEffect(() => {
+    // Guards against a stale response from a previous `workspaceId` landing
+    // after this effect has already moved on to a new one (e.g. the modal
+    // is reused for a different agent/workspace before the first scan
+    // finishes) — without this, `setAvailable` could overwrite the current
+    // workspace's checklist with a different workspace's `sourcePath`s.
+    let cancelled = false
+    desktopApi
+      .agentCapabilityListAvailableSkills({ workspaceId })
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+        setAvailable(response.skills)
+        setLoadError(null)
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setLoadError(error instanceof Error ? error.message : String(error))
+        // Fall back to "no scanned skills" (rather than leaving `available`
+        // `null` forever) so the "Other mounted" fallback section below
+        // still renders — a scan failure must not hide already-mounted
+        // skills from view.
+        setAvailable((previous) => previous ?? [])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+
+  const toggleExpanded = (key: string) => {
+    setExpanded((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
   }
-  const removeAt = (index: number) => {
-    onChange(skills.filter((_, i) => i !== index))
-  }
+
+  const workspaceSkillsAll = available?.filter((skill) => skill.scope === 'workspace') ?? []
+  const globalSkillsAll = available?.filter((skill) => skill.scope === 'global') ?? []
+  const unmatchedAll = available ? unmatchedSkillEntries(skills, available) : []
+
+  const hasQuery = searchQuery.trim().length > 0
+  const workspaceSkills = filterDiscoveredSkills(workspaceSkillsAll, searchQuery)
+  const globalSkills = filterDiscoveredSkills(globalSkillsAll, searchQuery)
+  const unmatched = filterSkillEntries(unmatchedAll, searchQuery)
+
+  const noSearchMatchLabel =
+    locale === 'zh-CN' ? '没有符合搜尋條件的技能。' : 'No skills match your search.'
+
   return (
     <div className="station-form-field station-form-span-2 station-capabilities-list">
-      {skills.map((skill, index) => (
-        <div key={index} className="station-form-surface station-capabilities-row">
-          <div className="station-capabilities-row-header">
+      {available === null && !loadError && (
+        <p>{locale === 'zh-CN' ? '正在扫描可用技能…' : 'Scanning available skills…'}</p>
+      )}
+      {loadError && (
+        <p className="station-form-error-text">
+          {locale === 'zh-CN' ? `扫描失败：${loadError}` : `Failed to scan: ${loadError}`}
+        </p>
+      )}
+      {available !== null && (
+        <>
+          <label className="station-capabilities-skill-search">
+            <AppIcon name="search" className="vb-icon" aria-hidden="true" />
             <input
               type="text"
-              placeholder={locale === 'zh-CN' ? 'Skill ID' : 'Skill ID'}
-              disabled={disabled}
-              value={skill.id}
-              onChange={(event) => updateAt(index, { id: event.target.value })}
-            />
-            <label className="station-form-checkbox">
-              <input
-                type="checkbox"
-                disabled={disabled}
-                checked={skill.enabled}
-                onChange={(event) => updateAt(index, { enabled: event.target.checked })}
-              />
-              <span>{locale === 'zh-CN' ? '启用' : 'Enabled'}</span>
-            </label>
-            <button
-              type="button"
-              className="station-form-tag-chip-delete"
-              disabled={disabled}
-              onClick={() => removeAt(index)}
-              aria-label={locale === 'zh-CN' ? '移除' : 'Remove'}
-            >
-              <AppIcon name="close" className="vb-icon" aria-hidden="true" />
-            </button>
-          </div>
-          <label className="station-form-field">
-            <span>{locale === 'zh-CN' ? '本机 SKILL.md 路径' : 'Local SKILL.md path'}</span>
-            <input
-              type="text"
-              disabled={disabled}
-              value={skill.sourcePath}
-              onChange={(event) => updateAt(index, { sourcePath: event.target.value })}
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={
+                locale === 'zh-CN'
+                  ? '搜尋技能名称、ID 或说明…'
+                  : 'Search skills by name, id, or description…'
+              }
+              aria-label={locale === 'zh-CN' ? '搜尋技能' : 'Search skills'}
             />
           </label>
-          {!isSkillDraftValid(skill) && (
-            <p className="station-form-error-text">
-              {locale === 'zh-CN'
-                ? '未完成的项目不会被保存。'
-                : 'Incomplete rows are not saved.'}
-            </p>
+          <SkillChecklistGroup
+            locale={locale}
+            title={locale === 'zh-CN' ? '专案工作区技能' : 'Project Workspace Skills'}
+            emptyLabel={
+              hasQuery && workspaceSkillsAll.length > 0
+                ? noSearchMatchLabel
+                : locale === 'zh-CN'
+                  ? '这个工作区的 .claude/skills/ 底下没有找到技能。'
+                  : 'No skills found under this workspace’s .claude/skills/.'
+            }
+            items={workspaceSkills}
+            skills={skills}
+            disabled={disabled}
+            expanded={expanded}
+            onToggleExpanded={toggleExpanded}
+            onChange={onChange}
+          />
+          <SkillChecklistGroup
+            locale={locale}
+            title={locale === 'zh-CN' ? '全域安装技能' : 'Globally Installed Skills'}
+            emptyLabel={
+              hasQuery && globalSkillsAll.length > 0
+                ? noSearchMatchLabel
+                : locale === 'zh-CN'
+                  ? '没有找到全域安装的技能。'
+                  : 'No globally installed skills found.'
+            }
+            items={globalSkills}
+            skills={skills}
+            disabled={disabled}
+            expanded={expanded}
+            onToggleExpanded={toggleExpanded}
+            onChange={onChange}
+          />
+          {unmatched.length > 0 && (
+            <div className="station-capabilities-skill-group">
+              <h4>
+                {locale === 'zh-CN' ? '其他已挂载（找不到来源文件）' : 'Other mounted (source not found)'}
+              </h4>
+              {unmatched.map((skill) => (
+                <div key={skill.sourcePath} className="station-form-surface station-capabilities-skill-row">
+                  <div className="station-capabilities-row-header">
+                    <label className="station-form-checkbox station-capabilities-skill-checkbox">
+                      <input
+                        type="checkbox"
+                        disabled={disabled}
+                        checked={skill.enabled}
+                        onChange={(event) =>
+                          onChange(
+                            skills.map((entry) =>
+                              entry.sourcePath === skill.sourcePath
+                                ? { ...entry, enabled: event.target.checked }
+                                : entry,
+                            ),
+                          )
+                        }
+                      />
+                      <span>{skill.id}</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="station-form-tag-chip-delete"
+                      disabled={disabled}
+                      onClick={() => onChange(skills.filter((entry) => entry.sourcePath !== skill.sourcePath))}
+                      aria-label={locale === 'zh-CN' ? '移除' : 'Remove'}
+                    >
+                      <AppIcon name="close" className="vb-icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                  <p className="station-capabilities-skill-path">{skill.sourcePath}</p>
+                </div>
+              ))}
+            </div>
           )}
-        </div>
-      ))}
-      <button
-        type="button"
-        className="station-form-inline-action"
-        disabled={disabled}
-        onClick={() => onChange([...skills, createEmptySkill()])}
-      >
-        <AppIcon name="plus" className="vb-icon" aria-hidden="true" />
-        {locale === 'zh-CN' ? '新增 Skill' : 'Add Skill'}
-      </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+function SkillChecklistGroup({
+  locale,
+  title,
+  emptyLabel,
+  items,
+  skills,
+  disabled,
+  expanded,
+  onToggleExpanded,
+  onChange,
+}: {
+  locale: Locale
+  title: string
+  emptyLabel: string
+  items: DiscoveredSkill[]
+  skills: SkillCapability[]
+  disabled: boolean
+  expanded: Set<string>
+  onToggleExpanded: (key: string) => void
+  onChange: (skills: SkillCapability[]) => void
+}) {
+  return (
+    <div className="station-capabilities-skill-group">
+      <h4>{title}</h4>
+      {items.length === 0 ? (
+        <p className="station-capabilities-skill-empty">{emptyLabel}</p>
+      ) : (
+        items.map((item) => {
+          const key = `${item.scope}:${item.sourcePath}`
+          const mounted = findMountedSkillEntry(skills, item)
+          const checked = Boolean(mounted?.enabled)
+          const isExpanded = expanded.has(key)
+          return (
+            <div key={key} className="station-form-surface station-capabilities-skill-row">
+              <div className="station-capabilities-row-header">
+                <label className="station-form-checkbox station-capabilities-skill-checkbox">
+                  <input
+                    type="checkbox"
+                    disabled={disabled}
+                    checked={checked}
+                    onChange={(event) => onChange(toggleDiscoveredSkill(skills, item, event.target.checked))}
+                  />
+                  <span>{item.name}</span>
+                </label>
+                <button
+                  type="button"
+                  className="station-capabilities-skill-info-toggle"
+                  onClick={() => onToggleExpanded(key)}
+                  aria-expanded={isExpanded}
+                  aria-label={locale === 'zh-CN' ? '查看技能说明' : 'View skill details'}
+                >
+                  <AppIcon name="info" className="vb-icon" aria-hidden="true" />
+                </button>
+              </div>
+              {isExpanded && (
+                <div className="station-capabilities-skill-detail">
+                  <p>
+                    {item.description ||
+                      (locale === 'zh-CN' ? '（没有提供说明）' : '(No description provided.)')}
+                  </p>
+                  <p className="station-capabilities-skill-path">{item.sourcePath}</p>
+                </div>
+              )}
+            </div>
+          )
+        })
+      )}
     </div>
   )
 }
 
 function HooksEditor({
   locale,
+  workspaceId,
   hooks,
   disabled,
   onChange,
 }: {
   locale: Locale
+  workspaceId: string
   hooks: HookCapability[]
   disabled: boolean
   onChange: (hooks: HookCapability[]) => void
 }) {
-  const updateAt = (index: number, patch: Partial<HookCapability>) => {
-    onChange(hooks.map((hook, i) => (i === index ? { ...hook, ...patch } : hook)))
+  const [available, setAvailable] = useState<DiscoveredHook[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
+
+  useEffect(() => {
+    // Same stale-response guard as `SkillsEditor` — a scan started for a
+    // previous `workspaceId` must not overwrite the checklist once the
+    // modal has already moved on to a different agent/workspace.
+    let cancelled = false
+    desktopApi
+      .agentCapabilityListAvailableHooks({ workspaceId })
+      .then((response) => {
+        if (cancelled) {
+          return
+        }
+        setAvailable(response.hooks)
+        setLoadError(null)
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return
+        }
+        setLoadError(error instanceof Error ? error.message : String(error))
+        // Fall back to "no scanned hooks" rather than leaving `available`
+        // `null` forever, so hand-typed/unmatched hooks below still render
+        // even when the scan itself failed.
+        setAvailable((previous) => previous ?? [])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId])
+
+  const toggleExpanded = (key: string) => {
+    setExpanded((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
   }
-  const removeAt = (index: number) => {
-    onChange(hooks.filter((_, i) => i !== index))
+
+  const updateManual = (target: HookCapability, patch: Partial<HookCapability>) => {
+    onChange(hooks.map((hook) => (hook === target ? { ...hook, ...patch } : hook)))
   }
+  const removeManual = (target: HookCapability) => {
+    onChange(hooks.filter((hook) => hook !== target))
+  }
+
+  const workspaceHooksAll = available?.filter((hook) => hook.scope === 'workspace') ?? []
+  const globalHooksAll = available?.filter((hook) => hook.scope === 'global') ?? []
+  // Reference-preserving filter (`unmatchedHookEntries` only drops entries,
+  // never clones survivors), so `updateManual`/`removeManual` can match rows
+  // by identity below without needing an id field on `HookCapability`.
+  const manualAll = available ? unmatchedHookEntries(hooks, available) : hooks
+
+  const hasQuery = searchQuery.trim().length > 0
+  const workspaceHooks = filterDiscoveredHooks(workspaceHooksAll, searchQuery)
+  const globalHooks = filterDiscoveredHooks(globalHooksAll, searchQuery)
+  const manualHooks = filterHookEntries(manualAll, searchQuery)
+
+  const noSearchMatchLabel =
+    locale === 'zh-CN' ? '没有符合搜尋條件的 Hook。' : 'No hooks match your search.'
+
   return (
     <div className="station-form-field station-form-span-2 station-capabilities-list">
       <p>
         {locale === 'zh-CN'
-          ? 'Hook 指令会在保存前进入完整预览画面，逐条确认后才会真正生效。'
-          : 'Hooks go through a full preview screen before saving — nothing takes effect until you confirm each one.'}
+          ? 'Hook 指令会在保存前进入完整预览画面，逐条确认后才会真正生效——不论是从下方清单勾选，还是手动新增。'
+          : 'Hooks go through a full preview screen before saving — nothing takes effect until you confirm each one, whether checked from the list below or added manually.'}
       </p>
-      {hooks.map((hook, index) => (
-        <div key={index} className="station-form-surface station-capabilities-row">
-          <div className="station-capabilities-row-header">
-            <select
-              disabled={disabled}
-              value={hook.event}
-              onChange={(event) => updateAt(index, { event: event.target.value })}
-            >
-              {HOOK_EVENT_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="station-form-tag-chip-delete"
-              disabled={disabled}
-              onClick={() => removeAt(index)}
-              aria-label={locale === 'zh-CN' ? '移除' : 'Remove'}
-            >
-              <AppIcon name="close" className="vb-icon" aria-hidden="true" />
-            </button>
-          </div>
-          <label className="station-form-field">
-            <span>{locale === 'zh-CN' ? 'Matcher（留空 = 全部工具）' : 'Matcher (empty = all tools)'}</span>
+
+      {loadError && (
+        <p className="station-form-error-text">
+          {locale === 'zh-CN' ? `扫描失败：${loadError}` : `Failed to scan: ${loadError}`}
+        </p>
+      )}
+      {available === null && !loadError && (
+        <p>{locale === 'zh-CN' ? '正在扫描已设定的 Hook…' : 'Scanning configured hooks…'}</p>
+      )}
+      {available !== null && (
+        <>
+          <label className="station-capabilities-skill-search">
+            <AppIcon name="search" className="vb-icon" aria-hidden="true" />
             <input
               type="text"
-              placeholder="Bash"
-              disabled={disabled}
-              value={hook.matcher ?? ''}
-              onChange={(event) => updateAt(index, { matcher: event.target.value })}
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder={
+                locale === 'zh-CN'
+                  ? '搜尋事件、matcher 或指令…'
+                  : 'Search by event, matcher, or command…'
+              }
+              aria-label={locale === 'zh-CN' ? '搜尋 Hook' : 'Search hooks'}
             />
           </label>
-          <label className="station-form-field">
-            <span>{locale === 'zh-CN' ? '实际执行的指令' : 'Command to run'}</span>
-            <textarea
-              rows={2}
-              disabled={disabled}
-              value={hook.command}
-              onChange={(event) => updateAt(index, { command: event.target.value })}
-            />
-          </label>
-          {!isHookDraftValid(hook) && (
-            <p className="station-form-error-text">
-              {locale === 'zh-CN'
-                ? '未完成的项目不会被保存。'
-                : 'Incomplete rows are not saved.'}
-            </p>
-          )}
-        </div>
-      ))}
-      <button
-        type="button"
-        className="station-form-inline-action"
-        disabled={disabled}
-        onClick={() => onChange([...hooks, createEmptyHook()])}
-      >
-        <AppIcon name="plus" className="vb-icon" aria-hidden="true" />
-        {locale === 'zh-CN' ? '新增 Hook' : 'Add Hook'}
-      </button>
+          <HookChecklistGroup
+            locale={locale}
+            title={locale === 'zh-CN' ? '专案工作区已设定的 Hook' : 'Hooks Configured in This Workspace'}
+            emptyLabel={
+              hasQuery && workspaceHooksAll.length > 0
+                ? noSearchMatchLabel
+                : locale === 'zh-CN'
+                  ? '这个工作区的 .claude/settings.json 底下没有找到 Hook。'
+                  : 'No hooks found in this workspace’s .claude/settings.json.'
+            }
+            items={workspaceHooks}
+            hooks={hooks}
+            disabled={disabled}
+            expanded={expanded}
+            onToggleExpanded={toggleExpanded}
+            onChange={onChange}
+          />
+          <HookChecklistGroup
+            locale={locale}
+            title={locale === 'zh-CN' ? '全域已设定的 Hook' : 'Globally Configured Hooks'}
+            emptyLabel={
+              hasQuery && globalHooksAll.length > 0
+                ? noSearchMatchLabel
+                : locale === 'zh-CN'
+                  ? '没有找到全域设定的 Hook。'
+                  : 'No globally configured hooks found.'
+            }
+            items={globalHooks}
+            hooks={hooks}
+            disabled={disabled}
+            expanded={expanded}
+            onToggleExpanded={toggleExpanded}
+            onChange={onChange}
+          />
+        </>
+      )}
+
+      <div className="station-capabilities-skill-group">
+        <h4>{locale === 'zh-CN' ? '手动新增的 Hook' : 'Manually Added Hooks'}</h4>
+        {manualHooks.length === 0 && !hasQuery && (
+          <p className="station-capabilities-skill-empty">
+            {locale === 'zh-CN'
+              ? '还没有手动新增的 Hook。'
+              : 'No manually added hooks yet.'}
+          </p>
+        )}
+        {manualHooks.length === 0 && hasQuery && (
+          <p className="station-capabilities-skill-empty">{noSearchMatchLabel}</p>
+        )}
+        {manualHooks.map((hook, index) => (
+          <div key={index} className="station-form-surface station-capabilities-row">
+            <div className="station-capabilities-row-header">
+              <select
+                disabled={disabled}
+                value={hook.event}
+                onChange={(event) => updateManual(hook, { event: event.target.value })}
+              >
+                {HOOK_EVENT_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="station-form-tag-chip-delete"
+                disabled={disabled}
+                onClick={() => removeManual(hook)}
+                aria-label={locale === 'zh-CN' ? '移除' : 'Remove'}
+              >
+                <AppIcon name="close" className="vb-icon" aria-hidden="true" />
+              </button>
+            </div>
+            <label className="station-form-field">
+              <span>{locale === 'zh-CN' ? 'Matcher（留空 = 全部工具）' : 'Matcher (empty = all tools)'}</span>
+              <input
+                type="text"
+                placeholder="Bash"
+                disabled={disabled}
+                value={hook.matcher ?? ''}
+                onChange={(event) => updateManual(hook, { matcher: event.target.value })}
+              />
+            </label>
+            <label className="station-form-field">
+              <span>{locale === 'zh-CN' ? '实际执行的指令' : 'Command to run'}</span>
+              <textarea
+                rows={2}
+                disabled={disabled}
+                value={hook.command}
+                onChange={(event) => updateManual(hook, { command: event.target.value })}
+              />
+            </label>
+            <label className="station-form-field">
+              <span>{locale === 'zh-CN' ? '备注（触发时机与用途说明）' : 'Note (when it fires and what it does)'}</span>
+              <textarea
+                rows={2}
+                disabled={disabled}
+                value={hook.note ?? ''}
+                onChange={(event) => updateManual(hook, { note: event.target.value })}
+              />
+            </label>
+            {!isHookDraftValid(hook) && (
+              <p className="station-form-error-text">
+                {locale === 'zh-CN'
+                  ? '未完成的项目不会被保存。'
+                  : 'Incomplete rows are not saved.'}
+              </p>
+            )}
+          </div>
+        ))}
+        <button
+          type="button"
+          className="station-form-inline-action"
+          disabled={disabled}
+          onClick={() => onChange([...hooks, createEmptyHook()])}
+        >
+          <AppIcon name="plus" className="vb-icon" aria-hidden="true" />
+          {locale === 'zh-CN' ? '新增 Hook' : 'Add Hook'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function HookChecklistGroup({
+  locale,
+  title,
+  emptyLabel,
+  items,
+  hooks,
+  disabled,
+  expanded,
+  onToggleExpanded,
+  onChange,
+}: {
+  locale: Locale
+  title: string
+  emptyLabel: string
+  items: DiscoveredHook[]
+  hooks: HookCapability[]
+  disabled: boolean
+  expanded: Set<string>
+  onToggleExpanded: (key: string) => void
+  onChange: (hooks: HookCapability[]) => void
+}) {
+  return (
+    <div className="station-capabilities-skill-group">
+      <h4>{title}</h4>
+      {items.length === 0 ? (
+        <p className="station-capabilities-skill-empty">{emptyLabel}</p>
+      ) : (
+        items.map((item) => {
+          const key = `${item.scope}:${item.sourcePath}:${item.event}:${item.matcher ?? ''}:${item.command}`
+          const mounted = findMountedHookEntry(hooks, item)
+          const checked = Boolean(mounted)
+          const isExpanded = expanded.has(key)
+          const label = item.matcher ? `${item.event} · ${item.matcher}` : item.event
+          return (
+            <div key={key} className="station-form-surface station-capabilities-skill-row">
+              <div className="station-capabilities-row-header">
+                <label className="station-form-checkbox station-capabilities-skill-checkbox">
+                  <input
+                    type="checkbox"
+                    disabled={disabled}
+                    checked={checked}
+                    onChange={(event) => onChange(toggleDiscoveredHook(hooks, item, event.target.checked))}
+                  />
+                  <span>{label}</span>
+                </label>
+                <button
+                  type="button"
+                  className="station-capabilities-skill-info-toggle"
+                  onClick={() => onToggleExpanded(key)}
+                  aria-expanded={isExpanded}
+                  aria-label={locale === 'zh-CN' ? '查看 Hook 指令' : 'View hook command'}
+                >
+                  <AppIcon name="info" className="vb-icon" aria-hidden="true" />
+                </button>
+              </div>
+              {isExpanded && (
+                <div className="station-capabilities-skill-detail">
+                  {item.inferredDescription && (
+                    <p>
+                      {locale === 'zh-CN'
+                        ? '推测的功能说明（读取脚本开头注释，仅供参考）：'
+                        : 'Inferred description (from the script’s leading comment, for reference only): '}
+                      {item.inferredDescription}
+                    </p>
+                  )}
+                  <p>
+                    {locale === 'zh-CN' ? '实际执行的指令：' : 'Command: '}
+                    <code>{item.command}</code>
+                  </p>
+                  <p className="station-capabilities-skill-path">{item.sourcePath}</p>
+                  {mounted && (
+                    <label className="station-form-field">
+                      <span>{locale === 'zh-CN' ? '备注（触发时机与用途说明）' : 'Note (when it fires and what it does)'}</span>
+                      <textarea
+                        rows={2}
+                        disabled={disabled}
+                        value={mounted.note ?? ''}
+                        onChange={(event) => onChange(updateMountedHookNote(hooks, item, event.target.value))}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })
+      )}
     </div>
   )
 }

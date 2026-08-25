@@ -1396,6 +1396,7 @@ mod p3_5_agent_capability_tests {
             event: "PreToolUse".to_string(),
             matcher: None,
             command: "echo hi".to_string(),
+            note: None,
         });
         let hook_result = repo.save_agent_capability("ws-1", "agent-1", &with_hook);
         assert!(hook_result.is_err(), "codex agents must reject hooks in v1");
@@ -1474,6 +1475,7 @@ mod p3_5_3_agent_capability_audit_tests {
             event: "PreToolUse".to_string(),
             matcher: Some("Bash".to_string()),
             command: "echo about-to-run-bash".to_string(),
+            note: None,
         }
     }
 

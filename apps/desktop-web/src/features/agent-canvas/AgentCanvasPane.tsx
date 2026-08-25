@@ -21,8 +21,10 @@ import {
 } from '@/components/graph-canvas'
 import { AgentCanvasColorSwatches } from './components/AgentCanvasColorSwatches'
 import {
+  AgentCanvasHookNodeCard,
   AgentCanvasMcpNodeCard,
   AgentCanvasNodeCard,
+  AgentCanvasSkillNodeCard,
   type AgentPortHandlers,
   type AgentPortKind,
 } from './components/AgentCanvasNodeCard'
@@ -31,6 +33,7 @@ import { parseAgentCanvasDragPayload } from './model/agent-canvas-drag'
 import {
   AGENT_NODE_HEIGHT,
   AGENT_NODE_WIDTH,
+  computeAgentInputPortLayout,
   computePortEdgeGeometry,
   computeVerticalPortEdgeGeometry,
   type AgentCanvasAgentNodeData,
@@ -221,6 +224,8 @@ export function AgentCanvasPane({
     isEmpty,
     commitInstancePosition,
     commitMcpNodePosition,
+    commitSkillNodePosition,
+    commitHookNodePosition,
     setMcpServerEnabled,
     createAuthoredLink,
     deleteAuthoredLink,
@@ -534,9 +539,17 @@ export function AgentCanvasPane({
         commitMcpNodePosition(nodeId, position)
         return
       }
+      if (node.data.kind === 'skill') {
+        commitSkillNodePosition(nodeId, position)
+        return
+      }
+      if (node.data.kind === 'hook') {
+        commitHookNodePosition(nodeId, position)
+        return
+      }
       commitInstancePosition(nodeId, node.data.agent.id, position)
     },
-    [graph.nodes, commitInstancePosition, commitMcpNodePosition],
+    [graph.nodes, commitInstancePosition, commitMcpNodePosition, commitSkillNodePosition, commitHookNodePosition],
   )
 
   const handleNodeContextMenu = useCallback(
@@ -880,23 +893,28 @@ export function AgentCanvasPane({
       nodesLayerClassName="agent-canvas-nodes"
       nodeShellClassName="agent-canvas-node-shell"
       marqueeClassName="agent-canvas-marquee"
-      getNodeClassName={(node) =>
-        node.data.kind === 'mcp'
-          ? `agent-canvas-node-shell--mcp${node.data.server.enabled ? '' : ' agent-canvas-node-shell--mcp-disabled'}`
-          : `agent-canvas-node-shell--${node.data.runtimeState}${
-              selection.nodeIds.has(node.id) ? ' agent-canvas-node-shell--selected' : ''
-            }`
-      }
+      getNodeClassName={(node) => {
+        if (node.data.kind === 'mcp') {
+          return `agent-canvas-node-shell--mcp${node.data.server.enabled ? '' : ' agent-canvas-node-shell--mcp-disabled'}`
+        }
+        if (node.data.kind === 'skill' || node.data.kind === 'hook') {
+          return `agent-canvas-node-shell--capability agent-canvas-node-shell--${node.data.kind}`
+        }
+        return `agent-canvas-node-shell--${node.data.runtimeState}${
+          selection.nodeIds.has(node.id) ? ' agent-canvas-node-shell--selected' : ''
+        }`
+      }}
       getNodeAriaPressed={(node) => selection.nodeIds.has(node.id)}
       pinnedNodeIds={selection.nodeIds}
-      getNodeAriaLabel={(node) =>
-        node.data.kind === 'mcp'
-          ? node.data.server.name?.trim() || node.data.server.id
-          : t(locale, 'agentCanvas.nodeLabel', {
-              name: node.data.agent.name || node.data.agent.id,
-              status: statusLabel(locale, node.data.runtimeState),
-            })
-      }
+      getNodeAriaLabel={(node) => {
+        if (node.data.kind === 'mcp') return node.data.server.name?.trim() || node.data.server.id
+        if (node.data.kind === 'skill') return 'Skills'
+        if (node.data.kind === 'hook') return 'Hooks'
+        return t(locale, 'agentCanvas.nodeLabel', {
+          name: node.data.agent.name || node.data.agent.id,
+          status: statusLabel(locale, node.data.runtimeState),
+        })
+      }}
       renderNode={(node) => {
         // Narrowed into a local first — narrowing `node.data.kind` inline
         // doesn't survive into the nested `getPortHandlers` closure below
@@ -905,6 +923,12 @@ export function AgentCanvasPane({
         const data = node.data
         if (data.kind === 'mcp') {
           return <AgentCanvasMcpNodeCard node={data} locale={locale} onToggleEnabled={setMcpServerEnabled} />
+        }
+        if (data.kind === 'skill') {
+          return <AgentCanvasSkillNodeCard node={data} locale={locale} />
+        }
+        if (data.kind === 'hook') {
+          return <AgentCanvasHookNodeCard node={data} locale={locale} />
         }
         return (
           <AgentCanvasNodeCard
@@ -942,16 +966,40 @@ export function AgentCanvasPane({
           // COMBINED left-side stack — link items occupy the first
           // `inputLinkIds.length` slots (see `InputPortSlots`), so a mount
           // id's position in that same stack is offset by that count.
-          const combinedTotal = to.data.inputLinkIds.length + to.data.mcpMountIds.length + 1
+          const { total } = computeAgentInputPortLayout(to.data)
           const mountIndex = to.data.mcpMountIds.indexOf(edge.data.mountId)
           const geometry = computePortEdgeGeometry(from, to, undefined, {
             index: to.data.inputLinkIds.length + (mountIndex === -1 ? 0 : mountIndex),
-            total: combinedTotal,
+            total,
           })
           return (
             <g pointerEvents="none">
               <title>{t(locale, '掛載的 MCP', 'Mounted MCP')}</title>
               <path d={geometry.path} className="agent-canvas-edge agent-canvas-edge--mcp-mount" />
+            </g>
+          )
+        }
+        if (edge.data.kind === 'skill-mount' || edge.data.kind === 'hook-mount') {
+          if (!isAgentNode(to)) return null
+          // Same anchoring shape as `mcp-mount` above, but there's at most
+          // one Skill mount and one Hook mount per agent — no array to
+          // `.indexOf` into, so the slot comes straight from
+          // `computeAgentInputPortLayout`'s `skillIndex`/`hookIndex`.
+          const { total, skillIndex, hookIndex } = computeAgentInputPortLayout(to.data)
+          const slotIndex = edge.data.kind === 'skill-mount' ? skillIndex : hookIndex
+          const geometry = computePortEdgeGeometry(from, to, undefined, {
+            index: slotIndex ?? 0,
+            total,
+          })
+          const title =
+            edge.data.kind === 'skill-mount' ? t(locale, '掛載的 Skill', 'Mounted Skills') : t(locale, '掛載的 Hook', 'Mounted Hooks')
+          return (
+            <g pointerEvents="none">
+              <title>{title}</title>
+              <path
+                d={geometry.path}
+                className={`agent-canvas-edge agent-canvas-edge--${edge.data.kind}`}
+              />
             </g>
           )
         }
@@ -995,13 +1043,14 @@ export function AgentCanvasPane({
         // exact same slot the dot renders at, via `outputLinkIds`/
         // `inputLinkIds`' index of this specific link, so the line visually
         // starts/ends right at its own dot instead of the node's center.
-        // The input side's total/index account for `mcpMountIds` too (see
-        // `InputPortSlots`) — link items keep their original index within
-        // `inputLinkIds` since mount dots are fanned in AFTER them, not
-        // interleaved, so only `toTotal` needs the extra count.
+        // The input side's total/index account for the MCP/Skill/Hook mount
+        // dots too (see `computeAgentInputPortLayout`) — link items keep
+        // their original index within `inputLinkIds` since mount dots are
+        // fanned in AFTER them, not interleaved, so only `toTotal` needs the
+        // extra count.
         const fromTotal = from.data.outputLinkIds.length + 1
         const fromIndex = from.data.outputLinkIds.indexOf(link.id)
-        const toTotal = to.data.inputLinkIds.length + to.data.mcpMountIds.length + 1
+        const { total: toTotal } = computeAgentInputPortLayout(to.data)
         const toIndex = to.data.inputLinkIds.indexOf(link.id)
         // Should be unreachable — `outputLinkIds`/`inputLinkIds` are built
         // from the same pass over `links` that produces this very edge (see

@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::normalize_tool_provider_key;
 
+mod discovery;
 mod materialize;
 
+pub use discovery::*;
 pub use materialize::*;
 
 /// Provider-agnostic "what's mounted" profile for one agent (docs/cw/08_MCP_Hook_Skill掛載設計.md
@@ -46,6 +48,7 @@ impl AgentCapabilitySnapshot {
         for server in &self.mcp_servers {
             server.validate_transport_fields()?;
         }
+        self.validate_no_duplicate_enabled_skill_ids()?;
 
         if normalize_tool_provider_key(tool) != "codex" {
             return Ok(());
@@ -55,6 +58,32 @@ impl AgentCapabilitySnapshot {
                 "Codex agents do not support skills/hooks capabilities yet (v1 scope: MCP only)"
                     .to_string(),
             );
+        }
+        Ok(())
+    }
+
+    /// `SkillCapability.id` doubles as the destination directory name both
+    /// for the skills-dir-flag overlay and the copy-fallback path
+    /// (`materialize.rs`'s `write_skills_flag_overlay` /
+    /// `sync_skills_copy_fallback` both do `skills_dir.join(&skill.id)`).
+    /// The UI's checklist (workspace scope + global scope) lets a user
+    /// enable two discovered skills that happen to share a directory name —
+    /// distinguishable to the UI by `source_path`, but not by `id` — which
+    /// would otherwise silently overwrite one skill's content with the
+    /// other's at materialize time (last one processed wins) or silently
+    /// skip the second one, with no error surfaced anywhere. Disabled
+    /// skills never materialize, so only *enabled* ids need to be unique.
+    fn validate_no_duplicate_enabled_skill_ids(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for skill in self.skills.iter().filter(|skill| skill.enabled) {
+            if !seen.insert(skill.id.as_str()) {
+                return Err(format!(
+                    "duplicate enabled skill id '{}': two enabled skills cannot share the same \
+                     id (e.g. one from the workspace scope, one from the global scope) — they \
+                     would overwrite or silently shadow each other when mounted",
+                    skill.id
+                ));
+            }
         }
         Ok(())
     }
@@ -154,6 +183,14 @@ pub struct HookCapability {
     #[serde(default)]
     pub matcher: Option<String>,
     pub command: String,
+    /// Free-text annotation of when this rule fires and what it's for —
+    /// purely a UI convenience for the person maintaining the hook list.
+    /// Deliberately excluded from `content_hash` (editing a note must not
+    /// force re-confirming a hook whose actual behavior didn't change) and
+    /// never written by `materialize.rs`'s `build_settings_json` (the real
+    /// `.claude/settings.json` hook schema has no such field).
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 impl HookCapability {
@@ -218,6 +255,7 @@ mod tests {
             event: "PreToolUse".to_string(),
             matcher: Some("Bash".to_string()),
             command: "echo about-to-run-bash".to_string(),
+            note: Some("Warns before any Bash command runs".to_string()),
         });
 
         let json = snapshot.to_json().expect("serialize");
@@ -287,6 +325,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_two_enabled_skills_sharing_the_same_id() {
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        snapshot.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/workspace/.claude/skills/reviewer/SKILL.md".to_string(),
+            enabled: true,
+        });
+        snapshot.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/home/user/.claude/skills/reviewer/SKILL.md".to_string(),
+            enabled: true,
+        });
+        let error = snapshot
+            .validate_for_tool("claude")
+            .expect_err("duplicate enabled skill ids must be rejected");
+        assert!(error.contains("reviewer"));
+    }
+
+    #[test]
+    fn allows_duplicate_id_when_only_one_copy_is_enabled() {
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        snapshot.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/workspace/.claude/skills/reviewer/SKILL.md".to_string(),
+            enabled: true,
+        });
+        snapshot.skills.push(SkillCapability {
+            id: "reviewer".to_string(),
+            source_path: "/home/user/.claude/skills/reviewer/SKILL.md".to_string(),
+            enabled: false,
+        });
+        assert!(snapshot.validate_for_tool("claude").is_ok());
+    }
+
+    #[test]
     fn skills_or_hooks_are_rejected_for_codex() {
         let mut with_skill = AgentCapabilitySnapshot::default();
         with_skill.skills.push(SkillCapability {
@@ -301,6 +374,7 @@ mod tests {
             event: "PreToolUse".to_string(),
             matcher: None,
             command: "echo hi".to_string(),
+            note: None,
         });
         assert!(with_hook.validate_for_tool("codex").is_err());
     }
@@ -317,6 +391,7 @@ mod tests {
             event: "PreToolUse".to_string(),
             matcher: None,
             command: "echo hi".to_string(),
+            note: None,
         });
         assert!(snapshot.validate_for_tool("claude").is_ok());
     }
@@ -327,6 +402,7 @@ mod tests {
             event: "PreToolUse".to_string(),
             matcher: Some("Bash".to_string()),
             command: "echo hi".to_string(),
+            note: None,
         };
         assert_eq!(base.content_hash(), base.content_hash());
 
@@ -355,11 +431,13 @@ mod tests {
             event: "a".to_string(),
             matcher: None,
             command: "bc".to_string(),
+            note: None,
         };
         let b = HookCapability {
             event: "ab".to_string(),
             matcher: None,
             command: "c".to_string(),
+            note: None,
         };
         assert_ne!(a.content_hash(), b.content_hash());
     }
@@ -370,11 +448,31 @@ mod tests {
             event: "PreToolUse".to_string(),
             matcher: None,
             command: "echo hi".to_string(),
+            note: None,
         };
         let empty_matcher = HookCapability {
             matcher: Some(String::new()),
             ..none_matcher.clone()
         };
         assert_eq!(none_matcher.content_hash(), empty_matcher.content_hash());
+    }
+
+    #[test]
+    fn hook_content_hash_ignores_note() {
+        let undocumented = HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: Some("Bash".to_string()),
+            command: "echo hi".to_string(),
+            note: None,
+        };
+        let documented = HookCapability {
+            note: Some("Warns before any Bash command runs".to_string()),
+            ..undocumented.clone()
+        };
+        assert_eq!(
+            undocumented.content_hash(),
+            documented.content_hash(),
+            "editing a hook's note must not invalidate its version-lock confirmation"
+        );
     }
 }

@@ -5,7 +5,9 @@ import type {
   AgentLink,
   AgentProfile,
   AgentRuntimeStatus,
+  HookCapability,
   McpServerCapability,
+  SkillCapability,
 } from '@shell/integration/desktop-api'
 import { buildAgentCanvasGraph, type AgentCanvasGraphView, type CanvasNodeInstance } from '../model/agent-canvas-graph'
 
@@ -85,18 +87,20 @@ function persistedAgentLayout(agent: AgentProfile | undefined): { x: number; y: 
     : null
 }
 
-/** Client-only, same reasoning as `INSTANCES_STORAGE_PREFIX` above — an MCP
- * mount node has no backend column to persist a position in. Keyed by
- * `buildMcpNodeId(agentId, server.id)`, so it survives a server's own `id`
- * changing identity server-side is a non-issue (a rename would just seed a
- * fresh default position, same as any other never-seen mount). */
+/** Client-only, same reasoning as `INSTANCES_STORAGE_PREFIX` above — a
+ * mount node (MCP/Skill/Hook) has no backend column to persist a position
+ * in. Keyed by the mount's own node id (`buildMcpNodeId`/`buildSkillNodeId`/
+ * `buildHookNodeId`), so an id going stale (e.g. an MCP server's own `id`
+ * changing identity server-side) is a non-issue — it just seeds a fresh
+ * default position, same as any other never-seen mount. One storage
+ * bucket (and prefix) per mount KIND, not a shared one, so an MCP server,
+ * a Skill, and a Hook could theoretically collide on the same synthetic id
+ * shape without their positions overwriting each other. */
 const MCP_POSITIONS_STORAGE_PREFIX = 'agent-canvas.mcpPositions'
+const SKILL_POSITIONS_STORAGE_PREFIX = 'agent-canvas.skillPositions'
+const HOOK_POSITIONS_STORAGE_PREFIX = 'agent-canvas.hookPositions'
 
-function buildMcpPositionsStorageKey(workspaceId: string): string {
-  return `${MCP_POSITIONS_STORAGE_PREFIX}:${workspaceId}`
-}
-
-function isValidMcpPositionsRecord(value: unknown): value is Record<string, { x: number; y: number }> {
+function isValidPositionsRecord(value: unknown): value is Record<string, { x: number; y: number }> {
   if (typeof value !== 'object' || value === null) return false
   return Object.values(value as Record<string, unknown>).every((position) => {
     if (typeof position !== 'object' || position === null) return false
@@ -105,20 +109,24 @@ function isValidMcpPositionsRecord(value: unknown): value is Record<string, { x:
   })
 }
 
-function loadMcpPositions(workspaceId: string): Record<string, { x: number; y: number }> {
+function loadPositions(storagePrefix: string, workspaceId: string): Record<string, { x: number; y: number }> {
   try {
-    const raw = window.localStorage.getItem(buildMcpPositionsStorageKey(workspaceId))
+    const raw = window.localStorage.getItem(`${storagePrefix}:${workspaceId}`)
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
-    return isValidMcpPositionsRecord(parsed) ? parsed : {}
+    return isValidPositionsRecord(parsed) ? parsed : {}
   } catch {
     return {}
   }
 }
 
-function saveMcpPositions(workspaceId: string, positions: Record<string, { x: number; y: number }>): void {
+function savePositions(
+  storagePrefix: string,
+  workspaceId: string,
+  positions: Record<string, { x: number; y: number }>,
+): void {
   try {
-    window.localStorage.setItem(buildMcpPositionsStorageKey(workspaceId), JSON.stringify(positions))
+    window.localStorage.setItem(`${storagePrefix}:${workspaceId}`, JSON.stringify(positions))
   } catch {
     // Ignore local storage quota/runtime errors — same tradeoff as `saveInstances`.
   }
@@ -149,6 +157,12 @@ interface UseAgentCanvasDataResult {
    * default-position path), keyed by the node's own id
    * (`buildMcpNodeId(agentId, server.id)`). */
   commitMcpNodePosition: (mcpNodeId: string, position: { x: number; y: number }) => void
+  /** Sibling of `commitMcpNodePosition` for the Skill-mount node — see
+   * `AgentCanvasSkillNodeData`. */
+  commitSkillNodePosition: (skillNodeId: string, position: { x: number; y: number }) => void
+  /** Sibling of `commitMcpNodePosition` for the Hook-mount node — see
+   * `AgentCanvasHookNodeData`. */
+  commitHookNodePosition: (hookNodeId: string, position: { x: number; y: number }) => void
   /** Flips one MCP server's `enabled` flag within its agent's capability
    * snapshot and re-saves the whole snapshot (skills/hooks carried through
    * unchanged) — the canvas node's on/off switch, mirrored from the same
@@ -246,14 +260,30 @@ export function useAgentCanvasData(
     () => Object.fromEntries(Object.entries(capabilityByAgentId).map(([agentId, capability]) => [agentId, capability.mcpServers])),
     [capabilityByAgentId],
   )
+  const skillsByAgentId = useMemo<Record<string, SkillCapability[]>>(
+    () => Object.fromEntries(Object.entries(capabilityByAgentId).map(([agentId, capability]) => [agentId, capability.skills])),
+    [capabilityByAgentId],
+  )
+  const hooksByAgentId = useMemo<Record<string, HookCapability[]>>(
+    () => Object.fromEntries(Object.entries(capabilityByAgentId).map(([agentId, capability]) => [agentId, capability.hooks])),
+    [capabilityByAgentId],
+  )
 
   const [mcpNodePositions, setMcpNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
-    workspaceId ? loadMcpPositions(workspaceId) : {},
+    workspaceId ? loadPositions(MCP_POSITIONS_STORAGE_PREFIX, workspaceId) : {},
+  )
+  const [skillNodePositions, setSkillNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
+    workspaceId ? loadPositions(SKILL_POSITIONS_STORAGE_PREFIX, workspaceId) : {},
+  )
+  const [hookNodePositions, setHookNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
+    workspaceId ? loadPositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId) : {},
   )
   // Same re-read-on-workspace-change shape as `instances` above.
   useEffect(() => {
     const id = window.setTimeout(() => {
-      setMcpNodePositions(workspaceId ? loadMcpPositions(workspaceId) : {})
+      setMcpNodePositions(workspaceId ? loadPositions(MCP_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
+      setSkillNodePositions(workspaceId ? loadPositions(SKILL_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
+      setHookNodePositions(workspaceId ? loadPositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
     }, 0)
     return () => window.clearTimeout(id)
   }, [workspaceId])
@@ -394,8 +424,31 @@ export function useAgentCanvasData(
   }, [active, workspaceId, reload])
 
   const graph = useMemo(
-    () => buildAgentCanvasGraph(agents, links, statuses, instances, mcpServersByAgentId, mcpNodePositions),
-    [agents, links, statuses, instances, mcpServersByAgentId, mcpNodePositions],
+    () =>
+      buildAgentCanvasGraph(
+        agents,
+        links,
+        statuses,
+        instances,
+        mcpServersByAgentId,
+        mcpNodePositions,
+        skillsByAgentId,
+        hooksByAgentId,
+        skillNodePositions,
+        hookNodePositions,
+      ),
+    [
+      agents,
+      links,
+      statuses,
+      instances,
+      mcpServersByAgentId,
+      mcpNodePositions,
+      skillsByAgentId,
+      hooksByAgentId,
+      skillNodePositions,
+      hookNodePositions,
+    ],
   )
 
   const commitAgentLayout = useCallback(
@@ -462,7 +515,7 @@ export function useAgentCanvasData(
       const previousPosition = mcpNodePositions[mcpNodeId]
       setMcpNodePositions((previous) => {
         const next = { ...previous, [mcpNodeId]: position }
-        saveMcpPositions(workspaceId, next)
+        savePositions(MCP_POSITIONS_STORAGE_PREFIX, workspaceId, next)
         return next
       })
       pushHistory(() => {
@@ -473,12 +526,65 @@ export function useAgentCanvasData(
           } else {
             delete next[mcpNodeId]
           }
-          saveMcpPositions(workspaceId, next)
+          savePositions(MCP_POSITIONS_STORAGE_PREFIX, workspaceId, next)
           return next
         })
       })
     },
     [workspaceId, mcpNodePositions, pushHistory],
+  )
+
+  // Skill/Hook mount nodes are draggable the same way an MCP mount node is
+  // (client-only position, undoable) — see `commitMcpNodePosition` above,
+  // which this mirrors exactly, just against the Skill/Hook position stores.
+  const commitSkillNodePosition = useCallback(
+    (skillNodeId: string, position: { x: number; y: number }) => {
+      if (!workspaceId) return
+      const previousPosition = skillNodePositions[skillNodeId]
+      setSkillNodePositions((previous) => {
+        const next = { ...previous, [skillNodeId]: position }
+        savePositions(SKILL_POSITIONS_STORAGE_PREFIX, workspaceId, next)
+        return next
+      })
+      pushHistory(() => {
+        setSkillNodePositions((previous) => {
+          const next = { ...previous }
+          if (previousPosition) {
+            next[skillNodeId] = previousPosition
+          } else {
+            delete next[skillNodeId]
+          }
+          savePositions(SKILL_POSITIONS_STORAGE_PREFIX, workspaceId, next)
+          return next
+        })
+      })
+    },
+    [workspaceId, skillNodePositions, pushHistory],
+  )
+
+  const commitHookNodePosition = useCallback(
+    (hookNodeId: string, position: { x: number; y: number }) => {
+      if (!workspaceId) return
+      const previousPosition = hookNodePositions[hookNodeId]
+      setHookNodePositions((previous) => {
+        const next = { ...previous, [hookNodeId]: position }
+        savePositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId, next)
+        return next
+      })
+      pushHistory(() => {
+        setHookNodePositions((previous) => {
+          const next = { ...previous }
+          if (previousPosition) {
+            next[hookNodeId] = previousPosition
+          } else {
+            delete next[hookNodeId]
+          }
+          savePositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId, next)
+          return next
+        })
+      })
+    },
+    [workspaceId, hookNodePositions, pushHistory],
   )
 
   const setMcpServerEnabled = useCallback(
@@ -763,6 +869,8 @@ export function useAgentCanvasData(
     isEmpty: loaded && agents.length === 0,
     commitInstancePosition,
     commitMcpNodePosition,
+    commitSkillNodePosition,
+    commitHookNodePosition,
     setMcpServerEnabled,
     createAuthoredLink,
     deleteAuthoredLink,

@@ -13,7 +13,9 @@ use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
 
-use super::{ensure_workspace_exists, resolve_agent_repository, to_command_error};
+use super::{
+    ensure_workspace_exists, get_workspace_root, resolve_agent_repository, to_command_error,
+};
 
 /// Runs whichever of `gt_agent::materialize_claude_capability` /
 /// `materialize_codex_capability` matches `tool_kind` for this agent's
@@ -113,6 +115,50 @@ fn now_ms() -> i64 {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentCapabilityListAvailableSkillsRequest {
+    pub workspace_id: String,
+}
+
+/// Backs the Skills sub-tab's checklist (split into "workspace" vs. "global"
+/// sections in the UI) — fills the gap docs/cw/09_P3.5-capability開發進度.md
+/// §1.3 explicitly left open ("Skills 子分頁不做勾選 workspace 內已存在的技能").
+/// Read-only: never touches `agent_capability_snapshots`.
+#[tauri::command]
+pub fn agent_capability_list_available_skills(
+    request: AgentCapabilityListAvailableSkillsRequest,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    ensure_workspace_exists(&state, &request.workspace_id)?;
+    let workspace_root = get_workspace_root(&state, &request.workspace_id)?;
+    let skills = gt_agent::list_available_skills(&workspace_root);
+    Ok(json!({ "skills": skills }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilityListAvailableHooksRequest {
+    pub workspace_id: String,
+}
+
+/// Backs the Hooks sub-tab's checklist, same shape as
+/// `agent_capability_list_available_skills` but scanning `.claude/settings.json`
+/// hooks instead of `SKILL.md` files (docs/cw/11_Skill掛載清單化.md's pattern
+/// extended to hooks). Read-only: never touches `agent_capability_snapshots`
+/// and does not grant any exemption from the preview/confirm flow that still
+/// gates `agent_capability_save` for every hook, discovered or hand-typed.
+#[tauri::command]
+pub fn agent_capability_list_available_hooks(
+    request: AgentCapabilityListAvailableHooksRequest,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    ensure_workspace_exists(&state, &request.workspace_id)?;
+    let workspace_root = get_workspace_root(&state, &request.workspace_id)?;
+    let hooks = gt_agent::list_available_hooks(&workspace_root);
+    Ok(json!({ "hooks": hooks }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentCapabilityReadRequest {
     pub workspace_id: String,
     pub agent_id: String,
@@ -178,6 +224,7 @@ pub fn agent_capability_preview_hooks(
                 "event": hook.event,
                 "matcher": hook.matcher,
                 "command": hook.command,
+                "note": hook.note,
                 "hash": hash.clone(),
                 "alreadyConfirmed": confirmed.contains(&hash),
             })

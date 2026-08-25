@@ -1,11 +1,14 @@
-import type { PointerEvent as ReactPointerEvent, MouseEvent as ReactMouseEvent, CSSProperties } from 'react'
+import { useState, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent, type CSSProperties } from 'react'
 import { t, type Locale } from '@shell/i18n/ui-locale'
-import { AppIcon } from '@shell/ui/icons'
+import { AppIcon, type AppIconName } from '@shell/ui/icons'
 import { resolveAgentModelDisplayLabel } from '@features/workspace-hub/agent-management-model'
 import {
+  computeAgentInputPortLayout,
   computePortSlotCenterOffset,
   type AgentCanvasAgentNodeData,
+  type AgentCanvasHookNodeData,
   type AgentCanvasMcpNodeData,
+  type AgentCanvasSkillNodeData,
 } from '../model/agent-canvas-graph'
 import { statusLabel } from '../model/agent-canvas-status-label'
 
@@ -106,6 +109,8 @@ function PortSlots({
 function InputPortSlots({
   linkIds,
   mcpMountIds,
+  skillMountId,
+  hookMountId,
   agentId,
   locale,
   getPortHandlers,
@@ -113,12 +118,19 @@ function InputPortSlots({
 }: {
   linkIds: string[]
   mcpMountIds: string[]
+  skillMountId: string | null
+  hookMountId: string | null
   agentId: string
   locale: Locale
   getPortHandlers: (portKind: AgentPortKind, rewireLinkId?: string) => AgentPortHandlers
   onPortSlotContextMenu: (portKind: AgentPortKind, linkId: string, event: ReactMouseEvent<HTMLDivElement>) => void
 }) {
-  const total = linkIds.length + mcpMountIds.length + 1
+  const { total, skillIndex, hookIndex } = computeAgentInputPortLayout({
+    inputLinkIds: linkIds,
+    mcpMountIds,
+    skillMountId,
+    hookMountId,
+  })
   const addHandlers = getPortHandlers('input')
   return (
     <>
@@ -146,10 +158,26 @@ function InputPortSlots({
           aria-hidden="true"
         />
       ))}
+      {skillMountId !== null && skillIndex !== null && (
+        <div
+          className="agent-canvas-port agent-canvas-port--input agent-canvas-port--skill"
+          style={{ transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(skillIndex, total)}px))` }}
+          title={t(locale, '掛載的 Skill', 'Mounted Skills')}
+          aria-hidden="true"
+        />
+      )}
+      {hookMountId !== null && hookIndex !== null && (
+        <div
+          className="agent-canvas-port agent-canvas-port--input agent-canvas-port--hook"
+          style={{ transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(hookIndex, total)}px))` }}
+          title={t(locale, '掛載的 Hook', 'Mounted Hooks')}
+          aria-hidden="true"
+        />
+      )}
       <div
         className="agent-canvas-port agent-canvas-port--input agent-canvas-port--add"
         style={{
-          transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(linkIds.length + mcpMountIds.length, total)}px))`,
+          transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(total - 1, total)}px))`,
         }}
         data-no-drag
         data-port="input"
@@ -174,7 +202,8 @@ export function AgentCanvasNodeCard({
   onPortSlotContextMenu,
   onRequestEdit,
 }: AgentCanvasNodeCardProps) {
-  const { agent, runtimeState, outputLinkIds, inputLinkIds, childAgentIds, mcpMountIds } = node
+  const { agent, runtimeState, outputLinkIds, inputLinkIds, childAgentIds, mcpMountIds, skillMountId, hookMountId } =
+    node
   const title = agent.name || agent.id
   const isSubagent = Boolean(agent.parentAgentId)
   const modelLabel = resolveAgentModelDisplayLabel(agent.tool, agent.launchCommand)
@@ -220,6 +249,8 @@ export function AgentCanvasNodeCard({
       <InputPortSlots
         linkIds={inputLinkIds}
         mcpMountIds={mcpMountIds}
+        skillMountId={skillMountId}
+        hookMountId={hookMountId}
         agentId={agent.id}
         locale={locale}
         getPortHandlers={getPortHandlers}
@@ -293,6 +324,181 @@ export function AgentCanvasMcpNodeCard({ node, locale, onToggleEnabled }: AgentC
         >
           <span className="agent-canvas-mcp-node-toggle-thumb" />
         </button>
+      </div>
+      <div className="agent-canvas-port agent-canvas-port--mcp-anchor" aria-hidden="true" />
+    </>
+  )
+}
+
+/** Shared collapsed header + expand toggle for `AgentCanvasSkillNodeCard`/
+ * `AgentCanvasHookNodeCard` below — both are read-only dropdown summaries
+ * (one node per agent, not per item, unlike the MCP node above), so the only
+ * interactive control either has is "expand/collapse," not a mutation. */
+function CapabilityDropdownHeader({
+  iconName,
+  title,
+  count,
+  expanded,
+  onToggle,
+  locale,
+  expandLabelZh,
+  expandLabelEn,
+  collapseLabelZh,
+  collapseLabelEn,
+}: {
+  iconName: AppIconName
+  title: string
+  count: number
+  expanded: boolean
+  onToggle: () => void
+  locale: Locale
+  expandLabelZh: string
+  expandLabelEn: string
+  collapseLabelZh: string
+  collapseLabelEn: string
+}) {
+  const toggleLabel = expanded ? t(locale, collapseLabelZh, collapseLabelEn) : t(locale, expandLabelZh, expandLabelEn)
+  return (
+    <>
+      <AppIcon name={iconName} className="agent-canvas-capability-node-icon" aria-hidden="true" />
+      <span className="agent-canvas-capability-node-title">{title}</span>
+      <span className="agent-canvas-capability-node-count">{count}</span>
+      <button
+        type="button"
+        className="agent-canvas-capability-node-toggle"
+        data-no-drag
+        aria-expanded={expanded}
+        title={toggleLabel}
+        aria-label={toggleLabel}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation()
+          onToggle()
+        }}
+      >
+        <AppIcon name={expanded ? 'chevron-up' : 'chevron-down'} aria-hidden="true" />
+      </button>
+    </>
+  )
+}
+
+interface AgentCanvasSkillNodeCardProps {
+  node: AgentCanvasSkillNodeData
+  locale: Locale
+}
+
+/** Skill-mount node — one per agent, summarizing every mounted Skill as a
+ * collapsed header that expands in place into a read-only list (id +
+ * disabled tag, `sourcePath` as the tooltip). Enabling/disabling an
+ * individual skill stays a Capabilities-tab action; this node only shows
+ * what's mounted. Connects into the owning agent's left-side port stack,
+ * same as an MCP node — see `InputPortSlots` above. */
+export function AgentCanvasSkillNodeCard({ node, locale }: AgentCanvasSkillNodeCardProps) {
+  const [expanded, setExpanded] = useState(false)
+  const { skills } = node
+  return (
+    <>
+      <div className="agent-canvas-capability-node agent-canvas-capability-node--skill">
+        <CapabilityDropdownHeader
+          iconName="sparkles"
+          title="Skills"
+          count={skills.length}
+          expanded={expanded}
+          onToggle={() => setExpanded((previous) => !previous)}
+          locale={locale}
+          expandLabelZh="展開已掛載的 Skill 清單"
+          expandLabelEn="Expand mounted skills"
+          collapseLabelZh="收合 Skill 清單"
+          collapseLabelEn="Collapse skills"
+        />
+        {expanded && (
+          <div
+            className="agent-canvas-capability-node-dropdown"
+            data-no-drag
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {skills.map((skill) => (
+              <div
+                key={skill.id}
+                className={`agent-canvas-capability-node-dropdown-item${
+                  skill.enabled ? '' : ' agent-canvas-capability-node-dropdown-item--disabled'
+                }`}
+                title={skill.sourcePath}
+              >
+                <span className="agent-canvas-capability-node-dropdown-item-name">{skill.id}</span>
+                {!skill.enabled && (
+                  <span className="agent-canvas-capability-node-dropdown-item-tag">
+                    {t(locale, '已停用', 'Disabled')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="agent-canvas-port agent-canvas-port--mcp-anchor" aria-hidden="true" />
+    </>
+  )
+}
+
+interface AgentCanvasHookNodeCardProps {
+  node: AgentCanvasHookNodeData
+  locale: Locale
+}
+
+/** Hook sibling of `AgentCanvasSkillNodeCard` above — each row shows the
+ * event (+ matcher, when set) as its label. The visible secondary line
+ * prefers the hook's `note` (what it's for, in plain language) when one was
+ * filled in, falling back to the raw `command` when it wasn't — a shell
+ * command alone doesn't tell a reader what the hook does at a glance, which
+ * is exactly the note field's purpose. The tooltip always includes the
+ * command (plus the note above it when present) since the command is still
+ * the part worth double-checking before trusting a mounted hook. */
+export function AgentCanvasHookNodeCard({ node, locale }: AgentCanvasHookNodeCardProps) {
+  const [expanded, setExpanded] = useState(false)
+  const { hooks } = node
+  return (
+    <>
+      <div className="agent-canvas-capability-node agent-canvas-capability-node--hook">
+        <CapabilityDropdownHeader
+          iconName="hooks"
+          title="Hooks"
+          count={hooks.length}
+          expanded={expanded}
+          onToggle={() => setExpanded((previous) => !previous)}
+          locale={locale}
+          expandLabelZh="展開已掛載的 Hook 清單"
+          expandLabelEn="Expand mounted hooks"
+          collapseLabelZh="收合 Hook 清單"
+          collapseLabelEn="Collapse hooks"
+        />
+        {expanded && (
+          <div
+            className="agent-canvas-capability-node-dropdown"
+            data-no-drag
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {hooks.map((hook, index) => {
+              const note = hook.note?.trim()
+              const tooltip = note ? `${note}\n\n${locale === 'zh-CN' ? '指令：' : 'Command: '}${hook.command}` : hook.command
+              return (
+                <div
+                  key={`${hook.event}:${hook.matcher ?? ''}:${index}`}
+                  className="agent-canvas-capability-node-dropdown-item"
+                  title={tooltip}
+                >
+                  <span className="agent-canvas-capability-node-dropdown-item-name">
+                    {hook.event}
+                    {hook.matcher ? ` · ${hook.matcher}` : ''}
+                  </span>
+                  <span className="agent-canvas-capability-node-dropdown-item-command">
+                    {note || hook.command}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
       <div className="agent-canvas-port agent-canvas-port--mcp-anchor" aria-hidden="true" />
     </>
