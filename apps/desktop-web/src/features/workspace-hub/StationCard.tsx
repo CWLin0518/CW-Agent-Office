@@ -505,111 +505,33 @@ function StationCardView({
       ) : null}
 
       <header className="station-window-header">
-        <div
-          className={['station-window-title-wrap', draggable ? 'station-window-drag-source' : ''].join(' ')}
-          onPointerDown={
-            draggable && onStationDragPointerStart
-              ? (event) => {
-                  const target = event.target as HTMLElement
-                  if (target.closest('button') || target.closest('input') || target.closest('label')) {
-                    return
+        <div className="station-window-header-row station-window-header-row-primary">
+          <div
+            className={['station-window-title-wrap', draggable ? 'station-window-drag-source' : ''].join(' ')}
+            onPointerDown={
+              draggable && onStationDragPointerStart
+                ? (event) => {
+                    const target = event.target as HTMLElement
+                    if (target.closest('button') || target.closest('input') || target.closest('label')) {
+                      return
+                    }
+                    onStationDragPointerStart(event, station.id)
                   }
-                  onStationDragPointerStart(event, station.id)
-                }
-              : undefined
-          }
-        >
-          <div className="station-window-title-row">
-            <div className="station-window-identity-pill" title={identityTitle}>
-              {identityMeta.map((item) => (
-                <span
-                  key={`${station.id}:${item.kind}`}
-                  className={['station-window-identity-segment', `is-${item.kind}`].join(' ')}
-                >
-                  {item.label}
-                </span>
-              ))}
+                : undefined
+            }
+          >
+            <div className="station-window-title-row">
+              <div className="station-window-identity-pill" title={identityTitle}>
+                {identityMeta.map((item) => (
+                  <span
+                    key={`${station.id}:${item.kind}`}
+                    className={['station-window-identity-segment', `is-${item.kind}`].join(' ')}
+                  >
+                    {item.label}
+                  </span>
+                ))}
+              </div>
             </div>
-            <StationExecutionStatus meta={statusMeta} label={statusLabel} title={statusTitle} />
-          </div>
-        </div>
-        <div className="station-window-header-actions">
-          <div className="station-window-action-group">
-            <StationIconButton
-              className={['station-primary-launch-btn', launchState].join(' ')}
-              tooltip={primaryLaunchButtonLabel}
-              ariaLabel={primaryLaunchButtonLabel}
-              onPointerDown={(event) => {
-                event.preventDefault()
-              }}
-              onClick={(event) => {
-                event.stopPropagation()
-                handlePrimaryLaunch()
-              }}
-            >
-              {launchIcon === 'focus' ? (
-                <Crosshair
-                  className="vb-icon vb-icon-station-button station-focus-icon"
-                  aria-hidden="true"
-                  strokeWidth={1.9}
-                />
-              ) : (
-                <Play
-                  className="vb-icon vb-icon-station-button station-play-icon"
-                  aria-hidden="true"
-                  strokeWidth={1.9}
-                />
-              )}
-            </StationIconButton>
-            <StationIconButton
-              className="station-terminal-launch-btn"
-              tooltip={t(locale, 'workbench.stationLaunchTerminal')}
-              ariaLabel={t(locale, 'workbench.stationLaunchTerminal')}
-              onPointerDown={(event) => {
-                activateStationAndFocusTerminal()
-                event.preventDefault()
-              }}
-              onClick={(event) => {
-                event.stopPropagation()
-                activateStationAndOpenTerminal()
-              }}
-            >
-              <AppIcon name="terminal" className="vb-icon vb-icon-station-button" aria-hidden="true" />
-            </StationIconButton>
-            {onEditStation ? (
-              <StationIconButton
-                className="station-edit-btn"
-                tooltip={t(locale, 'station.overview.editRole')}
-                ariaLabel={t(locale, 'station.overview.editRole')}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onEditStation(station)
-                }}
-              >
-                <AppIcon name="user-pen" className="vb-icon vb-icon-station-button" aria-hidden="true" />
-              </StationIconButton>
-            ) : null}
-            {draggable ? (
-              <StationIconButton
-                className="station-drag-handle"
-                tooltip={t(locale, 'workbench.dragStation')}
-                ariaLabel={t(locale, 'workbench.dragStation')}
-                onPointerDown={
-                  onStationDragPointerStart
-                    ? (event) => {
-                        event.stopPropagation()
-                        onStationDragPointerStart(event, station.id)
-                      }
-                    : undefined
-                }
-                onClick={(event) => {
-                  event.preventDefault()
-                  event.stopPropagation()
-                }}
-              >
-                <GripHorizontal className="vb-icon vb-icon-station-button" aria-hidden="true" strokeWidth={1.75} />
-              </StationIconButton>
-            ) : null}
           </div>
           <div className="station-window-action-group station-window-controls">
             <StationIconButton
@@ -661,22 +583,106 @@ function StationCardView({
                 aria-hidden="true"
               />
             </StationIconButton>
-            {runtime?.sessionId && onForceCloseTerminal ? (
+          </div>
+        </div>
+        <div className="station-window-header-row station-window-header-row-secondary">
+          <StationExecutionStatus meta={statusMeta} label={statusLabel} title={statusTitle} />
+          <div className="station-window-header-actions">
+            <div className="station-window-action-group">
               <StationIconButton
-                className="station-force-close-btn"
-                tooltip={t(locale, 'terminal.forceClose.button')}
-                ariaLabel={t(locale, 'terminal.forceClose.button')}
-                onPointerDown={() => {
-                  recordStationUiDiagnostic('ui-control-event', 'station-card:force-close:pointerdown')
+                className={['station-primary-launch-btn', launchState].join(' ')}
+                tooltip={primaryLaunchButtonLabel}
+                ariaLabel={primaryLaunchButtonLabel}
+                onPointerDown={(event) => {
+                  event.preventDefault()
                 }}
                 onClick={(event) => {
                   event.stopPropagation()
-                  recordStationUiDiagnostic('ui-control-event', 'station-card:force-close:click')
-                  onForceCloseTerminal(station.id)
+                  handlePrimaryLaunch()
                 }}
               >
-                <AppIcon name="close" className="vb-icon vb-icon-station-button" aria-hidden="true" />
+                {launchIcon === 'focus' ? (
+                  <Crosshair
+                    className="vb-icon vb-icon-station-button station-focus-icon"
+                    aria-hidden="true"
+                    strokeWidth={1.9}
+                  />
+                ) : (
+                  <Play
+                    className="vb-icon vb-icon-station-button station-play-icon"
+                    aria-hidden="true"
+                    strokeWidth={1.9}
+                  />
+                )}
               </StationIconButton>
+              <StationIconButton
+                className="station-terminal-launch-btn"
+                tooltip={t(locale, 'workbench.stationLaunchTerminal')}
+                ariaLabel={t(locale, 'workbench.stationLaunchTerminal')}
+                onPointerDown={(event) => {
+                  activateStationAndFocusTerminal()
+                  event.preventDefault()
+                }}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  activateStationAndOpenTerminal()
+                }}
+              >
+                <AppIcon name="terminal" className="vb-icon vb-icon-station-button" aria-hidden="true" />
+              </StationIconButton>
+              {onEditStation ? (
+                <StationIconButton
+                  className="station-edit-btn"
+                  tooltip={t(locale, 'station.overview.editRole')}
+                  ariaLabel={t(locale, 'station.overview.editRole')}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onEditStation(station)
+                  }}
+                >
+                  <AppIcon name="user-pen" className="vb-icon vb-icon-station-button" aria-hidden="true" />
+                </StationIconButton>
+              ) : null}
+              {draggable ? (
+                <StationIconButton
+                  className="station-drag-handle"
+                  tooltip={t(locale, 'workbench.dragStation')}
+                  ariaLabel={t(locale, 'workbench.dragStation')}
+                  onPointerDown={
+                    onStationDragPointerStart
+                      ? (event) => {
+                          event.stopPropagation()
+                          onStationDragPointerStart(event, station.id)
+                        }
+                      : undefined
+                  }
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                  }}
+                >
+                  <GripHorizontal className="vb-icon vb-icon-station-button" aria-hidden="true" strokeWidth={1.75} />
+                </StationIconButton>
+              ) : null}
+            </div>
+            {runtime?.sessionId && onForceCloseTerminal ? (
+              <div className="station-window-action-group">
+                <StationIconButton
+                  className="station-force-close-btn"
+                  tooltip={t(locale, 'terminal.forceClose.button')}
+                  ariaLabel={t(locale, 'terminal.forceClose.button')}
+                  onPointerDown={() => {
+                    recordStationUiDiagnostic('ui-control-event', 'station-card:force-close:pointerdown')
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    recordStationUiDiagnostic('ui-control-event', 'station-card:force-close:click')
+                    onForceCloseTerminal(station.id)
+                  }}
+                >
+                  <AppIcon name="close" className="vb-icon vb-icon-station-button" aria-hidden="true" />
+                </StationIconButton>
+              </div>
             ) : null}
           </div>
         </div>
