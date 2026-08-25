@@ -2,6 +2,7 @@ import { useEffect, useState, type DragEvent as ReactDragEvent } from 'react'
 import { desktopApi } from '@shell/integration/desktop-api'
 import type { AgentProfile } from '@shell/integration/desktop-api'
 import { t, type Locale } from '@shell/i18n/ui-locale'
+import { AppIcon } from '@shell/ui/icons'
 import { setAgentCanvasDragPayload } from '../model/agent-canvas-drag'
 import './AgentCanvasStandbyRail.scss'
 
@@ -13,6 +14,13 @@ interface AgentCanvasStandbyRailProps {
    * when it (re)becomes visible, not continuously poll like the canvas
    * itself does for links/runtime status. */
   active: boolean
+  /** Fired by the "Add Agent" button pinned to the bottom of this rail —
+   * the caller owns opening the actual create-agent UI (this rail only
+   * requests it), same split as `AgentCanvasPane`'s
+   * `onRequestCreateSubagent`/`onRequestEditAgent`. Reuses the same
+   * new-station flow `WorkbenchUtilityActions`' "Add Agent" button already
+   * opens elsewhere in the shell. */
+  onAddAgent?: () => void
 }
 
 /** Left-pane "standby" list for agent-canvas (docs/cw/04_客製化設計.md §8,
@@ -26,7 +34,7 @@ interface AgentCanvasStandbyRailProps {
  * `AgentCanvasPane`'s own `useAgentCanvasData`, since the two are separate
  * shell panes (left rail vs. main canvas) with no existing shared
  * controller between them. */
-export function AgentCanvasStandbyRail({ locale, workspaceId, active }: AgentCanvasStandbyRailProps) {
+export function AgentCanvasStandbyRail({ locale, workspaceId, active, onAddAgent }: AgentCanvasStandbyRailProps) {
   const [agents, setAgents] = useState<AgentProfile[]>([])
 
   useEffect(() => {
@@ -47,26 +55,34 @@ export function AgentCanvasStandbyRail({ locale, workspaceId, active }: AgentCan
 
   return (
     <aside className="agent-canvas-standby-rail">
-      <h2 className="agent-canvas-standby-rail-title">{t(locale, 'agentCanvas.standbyRail.title')}</h2>
-      <p className="agent-canvas-standby-rail-subtitle">{t(locale, 'agentCanvas.standbyRail.subtitle')}</p>
-      {agents.length === 0 ? (
-        <p className="agent-canvas-standby-rail-empty">{t(locale, 'agentCanvas.standbyRail.empty')}</p>
-      ) : (
-        <ul className="agent-canvas-standby-rail-list">
-          {agents.map((agent) => (
-            <li key={agent.id}>
-              <div
-                className="agent-canvas-standby-rail-card"
-                draggable
-                onDragStart={(event) => handleDragStart(agent.id, event)}
-                title={t(locale, 'agentCanvas.standbyRail.dragHint')}
-              >
-                <span className="agent-canvas-standby-rail-card-name">{agent.name || agent.id}</span>
-                <span className="agent-canvas-standby-rail-card-tool">{agent.tool}</span>
-              </div>
-            </li>
-          ))}
-        </ul>
+      <div className="agent-canvas-standby-rail-scroll">
+        <h2 className="agent-canvas-standby-rail-title">{t(locale, 'agentCanvas.standbyRail.title')}</h2>
+        <p className="agent-canvas-standby-rail-subtitle">{t(locale, 'agentCanvas.standbyRail.subtitle')}</p>
+        {agents.length === 0 ? (
+          <p className="agent-canvas-standby-rail-empty">{t(locale, 'agentCanvas.standbyRail.empty')}</p>
+        ) : (
+          <ul className="agent-canvas-standby-rail-list">
+            {agents.map((agent) => (
+              <li key={agent.id}>
+                <div
+                  className="agent-canvas-standby-rail-card"
+                  draggable
+                  onDragStart={(event) => handleDragStart(agent.id, event)}
+                  title={t(locale, 'agentCanvas.standbyRail.dragHint')}
+                >
+                  <span className="agent-canvas-standby-rail-card-name">{agent.name || agent.id}</span>
+                  <span className="agent-canvas-standby-rail-card-tool">{agent.tool}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {onAddAgent && (
+        <button type="button" className="agent-canvas-standby-rail-add-btn" onClick={onAddAgent}>
+          <AppIcon name="plus" aria-hidden="true" />
+          <span>{t(locale, 'workbench.addStation')}</span>
+        </button>
       )}
     </aside>
   )

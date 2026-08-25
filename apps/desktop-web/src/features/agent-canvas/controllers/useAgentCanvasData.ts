@@ -99,38 +99,64 @@ function persistedAgentLayout(agent: AgentProfile | undefined): { x: number; y: 
 const MCP_POSITIONS_STORAGE_PREFIX = 'agent-canvas.mcpPositions'
 const SKILL_POSITIONS_STORAGE_PREFIX = 'agent-canvas.skillPositions'
 const HOOK_POSITIONS_STORAGE_PREFIX = 'agent-canvas.hookPositions'
+/** Client-only display color for a mount node's dashed outline (docs P4.x
+ * follow-up: right-click a mount node to change its default-gray border,
+ * same as an agent/link's own color) — one shared bucket keyed by the
+ * mount's own node id, since that id shape is already unique per kind (see
+ * `buildMcpNodeId`/`buildSkillNodeId`/`buildHookNodeId`). */
+const MOUNT_COLORS_STORAGE_PREFIX = 'agent-canvas.mountColors'
 
-function isValidPositionsRecord(value: unknown): value is Record<string, { x: number; y: number }> {
+function isPositionValue(value: unknown): value is { x: number; y: number } {
   if (typeof value !== 'object' || value === null) return false
-  return Object.values(value as Record<string, unknown>).every((position) => {
-    if (typeof position !== 'object' || position === null) return false
-    const candidate = position as Partial<{ x: unknown; y: unknown }>
-    return Number.isFinite(candidate.x) && Number.isFinite(candidate.y)
-  })
+  const candidate = value as Partial<{ x: unknown; y: unknown }>
+  return Number.isFinite(candidate.x) && Number.isFinite(candidate.y)
 }
 
-function loadPositions(storagePrefix: string, workspaceId: string): Record<string, { x: number; y: number }> {
+function isColorValue(value: unknown): value is string {
+  return typeof value === 'string'
+}
+
+/** Shared by every "one JSON record per workspace" localStorage bucket in
+ * this file (mount positions AND mount colors — same shape, only the
+ * per-value validator differs) — parameterized by `isValidValue` rather than
+ * duplicating the load/parse/validate/fallback plumbing per value type. */
+function loadRecord<T>(
+  storagePrefix: string,
+  workspaceId: string,
+  isValidValue: (value: unknown) => value is T,
+): Record<string, T> {
   try {
     const raw = window.localStorage.getItem(`${storagePrefix}:${workspaceId}`)
     if (!raw) return {}
     const parsed: unknown = JSON.parse(raw)
-    return isValidPositionsRecord(parsed) ? parsed : {}
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    return Object.values(parsed as Record<string, unknown>).every(isValidValue)
+      ? (parsed as Record<string, T>)
+      : {}
   } catch {
     return {}
   }
 }
 
-function savePositions(
-  storagePrefix: string,
-  workspaceId: string,
-  positions: Record<string, { x: number; y: number }>,
-): void {
+function saveRecord<T>(storagePrefix: string, workspaceId: string, record: Record<string, T>): void {
   try {
-    window.localStorage.setItem(`${storagePrefix}:${workspaceId}`, JSON.stringify(positions))
+    window.localStorage.setItem(`${storagePrefix}:${workspaceId}`, JSON.stringify(record))
   } catch {
     // Ignore local storage quota/runtime errors — same tradeoff as `saveInstances`.
   }
 }
+
+function loadPositions(storagePrefix: string, workspaceId: string): Record<string, { x: number; y: number }> {
+  return loadRecord(storagePrefix, workspaceId, isPositionValue)
+}
+
+const savePositions = saveRecord<{ x: number; y: number }>
+
+function loadColors(storagePrefix: string, workspaceId: string): Record<string, string> {
+  return loadRecord(storagePrefix, workspaceId, isColorValue)
+}
+
+const saveColors = saveRecord<string>
 
 function loadLegacyRemovedAgentIds(workspaceId: string): Set<string> {
   try {
@@ -169,6 +195,9 @@ interface UseAgentCanvasDataResult {
    * field editable in the Capabilities tab. Never removes the mount, only
    * whether the next materialize actually includes it. */
   setMcpServerEnabled: (agentId: string, serverId: string, enabled: boolean) => void
+  /** Sets (or `null` resets) one mount node's (MCP/Skill/Hook) display
+   * color — see the mutator's own doc comment. */
+  setMountNodeColor: (mountNodeId: string, color: string | null) => void
   createAuthoredLink: (fromAgentId: string, toAgentId: string) => Promise<void>
   deleteAuthoredLink: (fromAgentId: string, toAgentId: string) => Promise<void>
   deleteDerivedLink: (fromAgentId: string, toAgentId: string) => Promise<void>
@@ -201,6 +230,13 @@ interface UseAgentCanvasDataResult {
    * not undoable (there's no "create a derived link" operation to reverse
    * it with). */
   undo: () => void
+  /** Bracket several `commit*`/`set*` calls (typically one per node in a
+   * group drag) into ONE combined undo entry — see `pushHistory`'s own
+   * doc comment. Call `beginHistoryBatch()` before the first call and
+   * `endHistoryBatch()` after the last, both synchronously within the same
+   * event handler. */
+  beginHistoryBatch: () => void
+  endHistoryBatch: () => void
 }
 
 /** Data loading + polling for agent-canvas, kept out of the presentational
@@ -209,6 +245,15 @@ interface UseAgentCanvasDataResult {
 export function useAgentCanvasData(
   workspaceId: string | null,
   active: boolean,
+  /** Bumped by a caller whenever something outside this pane (e.g. the
+   * Capabilities tab's Save button, docs P4.x follow-up: "canvas doesn't
+   * update in real time after editing an agent's mounted capabilities")
+   * changes data this hook only otherwise re-fetches on its own
+   * `POLL_INTERVAL_MS` cadence — every value CHANGE (not the initial one)
+   * triggers an immediate out-of-band `reload()`, independent of `active` so
+   * the fresh data is already in place if the pane becomes active again
+   * right after. `undefined` (the default) never triggers this. */
+  refreshSignal?: number,
 ): UseAgentCanvasDataResult {
   const [agents, setAgents] = useState<AgentProfile[]>([])
   // Mirrors `agents` for callbacks (`commitAgentLayout`/`addInstance`) that
@@ -278,12 +323,16 @@ export function useAgentCanvasData(
   const [hookNodePositions, setHookNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
     workspaceId ? loadPositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId) : {},
   )
+  const [mountNodeColors, setMountNodeColors] = useState<Record<string, string>>(() =>
+    workspaceId ? loadColors(MOUNT_COLORS_STORAGE_PREFIX, workspaceId) : {},
+  )
   // Same re-read-on-workspace-change shape as `instances` above.
   useEffect(() => {
     const id = window.setTimeout(() => {
       setMcpNodePositions(workspaceId ? loadPositions(MCP_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
       setSkillNodePositions(workspaceId ? loadPositions(SKILL_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
       setHookNodePositions(workspaceId ? loadPositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
+      setMountNodeColors(workspaceId ? loadColors(MOUNT_COLORS_STORAGE_PREFIX, workspaceId) : {})
     }, 0)
     return () => window.clearTimeout(id)
   }, [workspaceId])
@@ -297,11 +346,48 @@ export function useAgentCanvasData(
   const isUndoingRef = useRef(false)
   const HISTORY_LIMIT = 50
 
+  // Set between `beginHistoryBatch()`/`endHistoryBatch()` (see below) — while
+  // set, `pushHistory` collects into this array instead of the real stack,
+  // so a caller driving several independent mutators from one user gesture
+  // (a multi-node group drag, see `GraphCanvas`'s `batch` param on
+  // `onCommitNodePosition`) can undo the whole gesture in one Ctrl+Z instead
+  // of once per mutator call.
+  const historyBatchRef = useRef<Array<() => void | Promise<void>> | null>(null)
+
   const pushHistory = useCallback((entry: () => void | Promise<void>) => {
     if (isUndoingRef.current) return
+    if (historyBatchRef.current) {
+      historyBatchRef.current.push(entry)
+      return
+    }
     historyRef.current.push(entry)
     if (historyRef.current.length > HISTORY_LIMIT) historyRef.current.shift()
   }, [])
+
+  /** Starts collecting every `pushHistory` call made until the matching
+   * `endHistoryBatch()` into ONE combined undo entry. Batches don't nest —
+   * callers must pair the two 1:1; today only `AgentCanvasPane`'s node-drag
+   * commit path uses this, bracketed around one `GraphCanvas` group-drag
+   * drop's synchronous `onCommitNodePosition` calls (first index -> last
+   * index), so nesting never actually arises. */
+  const beginHistoryBatch = useCallback(() => {
+    historyBatchRef.current = []
+  }, [])
+
+  /** Ends the batch started by `beginHistoryBatch()` and, if anything was
+   * collected, pushes ONE combined undo entry that reverts every collected
+   * entry in reverse-apply order (last-applied-first) — matches unwinding a
+   * stack, same as undoing each collected entry one at a time would have. */
+  const endHistoryBatch = useCallback(() => {
+    const entries = historyBatchRef.current
+    historyBatchRef.current = null
+    if (!entries || entries.length === 0) return
+    pushHistory(async () => {
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        await entries[i]()
+      }
+    })
+  }, [pushHistory])
 
   // Chains every backend write onto the previous one's completion — both
   // undo entries AND the forward mutators' own writes route through this,
@@ -423,6 +509,20 @@ export function useAgentCanvasData(
     }
   }, [active, workspaceId, reload])
 
+  // Out-of-band refresh (see `refreshSignal`'s doc comment above) — skips its
+  // own first run (the mount-time value, already covered by the poll
+  // effect's own immediate `initial` tick above) so this only ever fires for
+  // an actual CHANGE signalled by the caller.
+  const sawFirstRefreshSignalRef = useRef(false)
+  useEffect(() => {
+    if (refreshSignal === undefined || !workspaceId) return
+    if (!sawFirstRefreshSignalRef.current) {
+      sawFirstRefreshSignalRef.current = true
+      return
+    }
+    void reload()
+  }, [refreshSignal, workspaceId, reload])
+
   const graph = useMemo(
     () =>
       buildAgentCanvasGraph(
@@ -436,6 +536,7 @@ export function useAgentCanvasData(
         hooksByAgentId,
         skillNodePositions,
         hookNodePositions,
+        mountNodeColors,
       ),
     [
       agents,
@@ -448,6 +549,7 @@ export function useAgentCanvasData(
       hooksByAgentId,
       skillNodePositions,
       hookNodePositions,
+      mountNodeColors,
     ],
   )
 
@@ -585,6 +687,43 @@ export function useAgentCanvasData(
       })
     },
     [workspaceId, hookNodePositions, pushHistory],
+  )
+
+  /** Sets (or, `color: null`, resets to default gray) one mount node's
+   * dashed-outline color — client-only, same "no backend column" reasoning
+   * as `commitMcpNodePosition`/`commitSkillNodePosition`/
+   * `commitHookNodePosition` above, just for color instead of position.
+   * Works identically for any mount kind since `mountNodeColors` is one
+   * shared bucket keyed by the mount's own (already kind-unique) node id. */
+  const setMountNodeColor = useCallback(
+    (mountNodeId: string, color: string | null) => {
+      if (!workspaceId) return
+      const previousColor = mountNodeColors[mountNodeId] ?? null
+      if (previousColor === color) return
+      setMountNodeColors((previous) => {
+        const next = { ...previous }
+        if (color) {
+          next[mountNodeId] = color
+        } else {
+          delete next[mountNodeId]
+        }
+        saveColors(MOUNT_COLORS_STORAGE_PREFIX, workspaceId, next)
+        return next
+      })
+      pushHistory(() => {
+        setMountNodeColors((previous) => {
+          const next = { ...previous }
+          if (previousColor) {
+            next[mountNodeId] = previousColor
+          } else {
+            delete next[mountNodeId]
+          }
+          saveColors(MOUNT_COLORS_STORAGE_PREFIX, workspaceId, next)
+          return next
+        })
+      })
+    },
+    [workspaceId, mountNodeColors, pushHistory],
   )
 
   const setMcpServerEnabled = useCallback(
@@ -872,6 +1011,7 @@ export function useAgentCanvasData(
     commitSkillNodePosition,
     commitHookNodePosition,
     setMcpServerEnabled,
+    setMountNodeColor,
     createAuthoredLink,
     deleteAuthoredLink,
     deleteDerivedLink,
@@ -881,5 +1021,7 @@ export function useAgentCanvasData(
     setLinkColor,
     setLinkBidirectional,
     undo,
+    beginHistoryBatch,
+    endHistoryBatch,
   }
 }

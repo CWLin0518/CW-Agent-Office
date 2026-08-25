@@ -9,7 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { t, type Locale } from '@shell/i18n/ui-locale'
+import { localeOptions, t, type Locale, type TranslationKey } from '@shell/i18n/ui-locale'
 import { AppIcon } from '@shell/ui/icons'
 import type { AgentLink } from '@shell/integration/desktop-api'
 import {
@@ -42,11 +42,14 @@ import {
 import { statusLabel } from './model/agent-canvas-status-label'
 import './AgentCanvasPane.scss'
 
-/** Narrows a canvas node to its agent-kind variant — MCP-mount nodes never
- * anchor a `link`/`ownership` edge or enter node selection (see
- * `handleNodeClick`/`handleMarqueeSelect` below), so every call site that
- * reaches this already knows at runtime it's an agent node; this only
- * teaches TypeScript the same thing. */
+/** Narrows a canvas node to its agent-kind variant — a mount node (MCP/
+ * Skill/Hook) never anchors a `link`/`ownership` edge, never opens the
+ * agent context menu, and never participates in align/distribute/color
+ * actions (all agent-specific), so every call site that reaches this
+ * already knows at runtime it's an agent node; this only teaches
+ * TypeScript the same thing. Mount nodes DO participate in plain
+ * selection/drag now (see `handleNodeClick`/`handleMarqueeSelect` below)
+ * — this guard is no longer what gates that. */
 function isAgentNode(
   node: GraphCanvasNode<AgentCanvasNodeData>,
 ): node is GraphCanvasNode<AgentCanvasAgentNodeData> {
@@ -67,6 +70,9 @@ interface AgentCanvasPaneProps {
    * actual edit-agent UI (agent-canvas only requests it), mirroring
    * `onRequestCreateSubagent`'s split. */
   onRequestEditAgent?: (agentId: string) => void
+  /** Forwarded straight through to `useAgentCanvasData`'s `refreshSignal` —
+   * see that hook's doc comment. */
+  refreshSignal?: number
 }
 
 interface WireDragState {
@@ -106,7 +112,31 @@ interface WireContextMenuState {
   clientY: number
 }
 
+/** Right-clicking an MCP/Skill/Hook mount node — opens the same
+ * gray-by-default color-swatch menu `nodeContextMenu`/`wireContextMenu` show,
+ * but scoped to a single mount node's `color` (see `useAgentCanvasData`'s
+ * `setMountNodeColor`) rather than a multi-node/-wire selection, since mount
+ * nodes never enter `AgentCanvasSelection` at all. */
+interface MountColorMenuState {
+  mountId: string
+  clientX: number
+  clientY: number
+}
+
 const EMPTY_SELECTION: AgentCanvasSelection = { nodeIds: new Set(), edgeIds: new Set() }
+
+/** Bullet order for the help dialog (requirement: a top-right "how to use
+ * this canvas" reference) — roughly the order a first-time user would
+ * discover these, not alphabetical/feature-addition order. */
+const HELP_TIP_KEYS: TranslationKey[] = [
+  'agentCanvas.help.tip.addAgent',
+  'agentCanvas.help.tip.connect',
+  'agentCanvas.help.tip.select',
+  'agentCanvas.help.tip.multiDrag',
+  'agentCanvas.help.tip.color',
+  'agentCanvas.help.tip.keyboard',
+  'agentCanvas.help.tip.derived',
+]
 
 function isEditableEventTarget(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null
@@ -218,6 +248,7 @@ export function AgentCanvasPane({
   active,
   onRequestCreateSubagent,
   onRequestEditAgent,
+  refreshSignal,
 }: AgentCanvasPaneProps) {
   const {
     graph,
@@ -227,6 +258,7 @@ export function AgentCanvasPane({
     commitSkillNodePosition,
     commitHookNodePosition,
     setMcpServerEnabled,
+    setMountNodeColor,
     createAuthoredLink,
     deleteAuthoredLink,
     deleteDerivedLink,
@@ -236,10 +268,18 @@ export function AgentCanvasPane({
     setLinkColor,
     setLinkBidirectional,
     undo,
-  } = useAgentCanvasData(workspaceId, active)
+    beginHistoryBatch,
+    endHistoryBatch,
+  } = useAgentCanvasData(workspaceId, active, refreshSignal)
   const [wireDrag, setWireDrag] = useState<WireDragState | null>(null)
   const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null)
   const [wireContextMenu, setWireContextMenu] = useState<WireContextMenuState | null>(null)
+  const [mountColorMenu, setMountColorMenu] = useState<MountColorMenuState | null>(null)
+  const [helpOpen, setHelpOpen] = useState(false)
+  // Independent of the app-wide `locale` prop — this dialog remembers its
+  // own zh/en choice (seeded from the app locale on first render) so
+  // switching it never touches the rest of the UI's language.
+  const [helpLocale, setHelpLocale] = useState<Locale>(locale)
   const [selection, setSelection] = useState<AgentCanvasSelection>(EMPTY_SELECTION)
   // Purely a display filter — hiding derived edges never touches the
   // underlying `agent_links` rows, only what this pane renders.
@@ -261,6 +301,7 @@ export function AgentCanvasPane({
   const closeMenus = useCallback(() => {
     setNodeContextMenu(null)
     setWireContextMenu(null)
+    setMountColorMenu(null)
   }, [])
 
   // Selection/menus are pane-local UI state, not scoped to a workspace — the
@@ -285,9 +326,9 @@ export function AgentCanvasPane({
   // the `wireDrag` object itself, so this doesn't tear down/resubscribe on
   // every pointermove while a wire is being dragged.
   const isDragging = wireDrag !== null
-  const hasOpenMenu = nodeContextMenu !== null || wireContextMenu !== null
+  const hasOpenMenu = nodeContextMenu !== null || wireContextMenu !== null || mountColorMenu !== null
   useEffect(() => {
-    if (!isDragging && !hasOpenMenu) return
+    if (!isDragging && !hasOpenMenu && !helpOpen) return
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== 'Escape') return
       const captured = capturedPortRef.current
@@ -297,10 +338,11 @@ export function AgentCanvasPane({
       capturedPortRef.current = null
       setWireDrag(null)
       closeMenus()
+      setHelpOpen(false)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [isDragging, hasOpenMenu, closeMenus])
+  }, [isDragging, hasOpenMenu, helpOpen, closeMenus])
 
   // Ctrl/Cmd+Z reverts the most recent canvas action (node move/add/remove,
   // link create/delete, color, bidirectional — see `useAgentCanvasData`'s
@@ -469,14 +511,16 @@ export function AgentCanvasPane({
     [handlePortPointerDown, handlePortPointerMove, handlePortPointerUp, handlePortPointerCancel],
   )
 
-  // MCP-mount nodes are draggable but not part of the click/marquee
-  // selection system (no align/distribute/color/context-menu — that
-  // machinery is agent-specific) — a click on one is a no-op here rather
-  // than adding its id to `selection.nodeIds`.
+  // Any node kind (agent or mount) enters plain click selection — a mount
+  // node still has no align/distribute/color/context-menu machinery (that
+  // stays agent-specific, gated by `isAgentNode` at each of those call
+  // sites), but it does get the selected-ring highlight and, via
+  // `dragGroupNodeIds` below, moves together with the rest of a
+  // multi-selection drag.
   const handleNodeClick = useCallback(
     (nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => {
       const node = graph.nodes.find((candidate) => candidate.id === nodeId)
-      if (!node || !isAgentNode(node)) return
+      if (!node) return
       setSelection((previous) => {
         if (!event.shiftKey) return { nodeIds: new Set([nodeId]), edgeIds: new Set() }
         const nodeIds = new Set(previous.nodeIds)
@@ -501,7 +545,6 @@ export function AgentCanvasPane({
       const edgeIds = new Set<string>()
       if (wantsNodes) {
         for (const node of graph.nodes) {
-          if (!isAgentNode(node)) continue
           const hit = mode === 'contain' ? isNodeFullyContained(node, rect) : isNodeIntersecting(node, rect)
           if (hit) nodeIds.add(node.id)
         }
@@ -530,26 +573,36 @@ export function AgentCanvasPane({
   // P4.6) — resolve it back to the owning agent id via `graph.nodes` before
   // handing off to `commitInstancePosition`, which needs both to decide
   // whether this is a default instance (backend-persisted) or a duplicate
-  // (client-only).
+  // (client-only). `batch` is only present for a multi-node group drag (see
+  // `GraphCanvas`'s `onCommitNodePosition` doc comment) — bracketing
+  // `beginHistoryBatch`/`endHistoryBatch` around the whole group's calls
+  // makes the group undo as ONE Ctrl+Z instead of one per node.
   const handleCommitNodePosition = useCallback(
-    (nodeId: string, position: { x: number; y: number }) => {
+    (nodeId: string, position: { x: number; y: number }, batch?: { index: number; total: number }) => {
+      if (batch && batch.index === 0) beginHistoryBatch()
       const node = graph.nodes.find((candidate) => candidate.id === nodeId)
-      if (!node) return
-      if (node.data.kind === 'mcp') {
-        commitMcpNodePosition(nodeId, position)
-        return
+      if (node) {
+        if (node.data.kind === 'mcp') {
+          commitMcpNodePosition(nodeId, position)
+        } else if (node.data.kind === 'skill') {
+          commitSkillNodePosition(nodeId, position)
+        } else if (node.data.kind === 'hook') {
+          commitHookNodePosition(nodeId, position)
+        } else {
+          commitInstancePosition(nodeId, node.data.agent.id, position)
+        }
       }
-      if (node.data.kind === 'skill') {
-        commitSkillNodePosition(nodeId, position)
-        return
-      }
-      if (node.data.kind === 'hook') {
-        commitHookNodePosition(nodeId, position)
-        return
-      }
-      commitInstancePosition(nodeId, node.data.agent.id, position)
+      if (batch && batch.index === batch.total - 1) endHistoryBatch()
     },
-    [graph.nodes, commitInstancePosition, commitMcpNodePosition, commitSkillNodePosition, commitHookNodePosition],
+    [
+      graph.nodes,
+      commitInstancePosition,
+      commitMcpNodePosition,
+      commitSkillNodePosition,
+      commitHookNodePosition,
+      beginHistoryBatch,
+      endHistoryBatch,
+    ],
   )
 
   const handleNodeContextMenu = useCallback(
@@ -705,6 +758,25 @@ export function AgentCanvasPane({
       if (link) handleWireContextMenu(link, event)
     },
     [resolveSelectedAuthoredLinks, handleWireContextMenu],
+  )
+
+  // Right-clicking a mount node (MCP/Skill/Hook) opens its own color-swatch
+  // menu — mount nodes never enter `selection` at all (see `isAgentNode`'s
+  // doc comment), so this is a standalone piece of state, not routed through
+  // `nodeContextMenu`/`selection` the way an agent node's color menu is.
+  const handleMountNodeContextMenu = useCallback((mountId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setNodeContextMenu(null)
+    setWireContextMenu(null)
+    setMountColorMenu({ mountId, clientX: event.clientX, clientY: event.clientY })
+  }, [])
+
+  const handlePickMountNodeColor = useCallback(
+    (color: string | null) => {
+      if (mountColorMenu) setMountNodeColor(mountColorMenu.mountId, color)
+    },
+    [mountColorMenu, setMountNodeColor],
   )
 
   const selectedAuthoredLinks = resolveSelectedAuthoredLinks(selection.edgeIds)
@@ -870,6 +942,21 @@ export function AgentCanvasPane({
   const selectedWireColors = new Set(selectedAuthoredLinks.map((link) => link.color ?? null))
   const activeWireColor = selectedWireColors.size === 1 ? [...selectedWireColors][0] : null
 
+  // The mount node the color menu is currently open for (if any) — looked up
+  // fresh on every render rather than cached in `mountColorMenu` itself, so
+  // the swatch row's active state stays correct if `graph.nodes` changes
+  // (e.g. a poll tick) while the menu is still open.
+  const mountColorMenuNode = mountColorMenu
+    ? graph.nodes.find((node) => node.id === mountColorMenu.mountId)
+    : undefined
+  const activeMountColor =
+    mountColorMenuNode &&
+    (mountColorMenuNode.data.kind === 'mcp' ||
+      mountColorMenuNode.data.kind === 'skill' ||
+      mountColorMenuNode.data.kind === 'hook')
+      ? mountColorMenuNode.data.color ?? null
+      : null
+
   return (
     <GraphCanvas
       ref={graphCanvasRef}
@@ -879,6 +966,7 @@ export function AgentCanvasPane({
       nodeHeight={AGENT_NODE_HEIGHT}
       nodes={graph.nodes}
       edges={visibleEdges}
+      dragGroupNodeIds={selection.nodeIds}
       isInteractiveChrome={isChromeElement}
       onCommitNodePosition={handleCommitNodePosition}
       onNodeClick={handleNodeClick}
@@ -894,15 +982,14 @@ export function AgentCanvasPane({
       nodeShellClassName="agent-canvas-node-shell"
       marqueeClassName="agent-canvas-marquee"
       getNodeClassName={(node) => {
+        const selectedClass = selection.nodeIds.has(node.id) ? ' agent-canvas-node-shell--selected' : ''
         if (node.data.kind === 'mcp') {
-          return `agent-canvas-node-shell--mcp${node.data.server.enabled ? '' : ' agent-canvas-node-shell--mcp-disabled'}`
+          return `agent-canvas-node-shell--mcp${node.data.server.enabled ? '' : ' agent-canvas-node-shell--mcp-disabled'}${selectedClass}`
         }
         if (node.data.kind === 'skill' || node.data.kind === 'hook') {
-          return `agent-canvas-node-shell--capability agent-canvas-node-shell--${node.data.kind}`
+          return `agent-canvas-node-shell--capability agent-canvas-node-shell--${node.data.kind}${selectedClass}`
         }
-        return `agent-canvas-node-shell--${node.data.runtimeState}${
-          selection.nodeIds.has(node.id) ? ' agent-canvas-node-shell--selected' : ''
-        }`
+        return `agent-canvas-node-shell--${node.data.runtimeState}${selectedClass}`
       }}
       getNodeAriaPressed={(node) => selection.nodeIds.has(node.id)}
       pinnedNodeIds={selection.nodeIds}
@@ -922,13 +1009,32 @@ export function AgentCanvasPane({
         // it can for a never-reassigned local).
         const data = node.data
         if (data.kind === 'mcp') {
-          return <AgentCanvasMcpNodeCard node={data} locale={locale} onToggleEnabled={setMcpServerEnabled} />
+          return (
+            <AgentCanvasMcpNodeCard
+              node={data}
+              locale={locale}
+              onToggleEnabled={setMcpServerEnabled}
+              onContextMenu={(event) => handleMountNodeContextMenu(data.id, event)}
+            />
+          )
         }
         if (data.kind === 'skill') {
-          return <AgentCanvasSkillNodeCard node={data} locale={locale} />
+          return (
+            <AgentCanvasSkillNodeCard
+              node={data}
+              locale={locale}
+              onContextMenu={(event) => handleMountNodeContextMenu(data.id, event)}
+            />
+          )
         }
         if (data.kind === 'hook') {
-          return <AgentCanvasHookNodeCard node={data} locale={locale} />
+          return (
+            <AgentCanvasHookNodeCard
+              node={data}
+              locale={locale}
+              onContextMenu={(event) => handleMountNodeContextMenu(data.id, event)}
+            />
+          )
         }
         return (
           <AgentCanvasNodeCard
@@ -1095,6 +1201,15 @@ export function AgentCanvasPane({
       {(zoomApi) => (
         <>
           <div className="agent-canvas-notice">{t(locale, 'agentCanvas.notice.edgeRequired')}</div>
+          <button
+            type="button"
+            className="agent-canvas-help-button"
+            onClick={() => setHelpOpen(true)}
+            title={t(locale, 'agentCanvas.help.title')}
+            aria-label={t(locale, 'agentCanvas.help.title')}
+          >
+            <AppIcon name="help-circle" aria-hidden="true" />
+          </button>
           <div className="agent-canvas-controls">
             <button
               type="button"
@@ -1252,6 +1367,19 @@ export function AgentCanvasPane({
               </div>,
               document.body,
             )}
+          {mountColorMenu &&
+            createPortal(
+              <div
+                className="agent-canvas-context-menu"
+                style={{ left: mountColorMenu.clientX, top: mountColorMenu.clientY }}
+              >
+                <div className="agent-canvas-context-menu-section-label">
+                  {t(locale, 'agentCanvas.contextMenu.changeColor')}
+                </div>
+                <AgentCanvasColorSwatches locale={locale} activeColor={activeMountColor} onPick={handlePickMountNodeColor} />
+              </div>,
+              document.body,
+            )}
           {wireDrag &&
             createPortal(
               // `<svg>` is a replaced element — under `position: fixed` +
@@ -1274,6 +1402,60 @@ export function AgentCanvasPane({
                   className="agent-canvas-wire-preview-path"
                 />
               </svg>,
+              document.body,
+            )}
+          {helpOpen &&
+            createPortal(
+              <div className="agent-canvas-help-backdrop" onClick={() => setHelpOpen(false)}>
+                <div
+                  className="agent-canvas-help-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={t(helpLocale, 'agentCanvas.help.title')}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="agent-canvas-help-dialog-header">
+                    <h2>{t(helpLocale, 'agentCanvas.help.title')}</h2>
+                    <div className="agent-canvas-help-dialog-header-actions">
+                      <div
+                        className="agent-canvas-help-locale-toggle"
+                        role="group"
+                        aria-label={t(helpLocale, '說明語言', 'Help language')}
+                      >
+                        {localeOptions.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={
+                              option.value === helpLocale
+                                ? 'agent-canvas-help-locale-option is-active'
+                                : 'agent-canvas-help-locale-option'
+                            }
+                            aria-pressed={option.value === helpLocale}
+                            onClick={() => setHelpLocale(option.value)}
+                          >
+                            {option.value === 'zh-CN' ? '中' : 'EN'}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        className="agent-canvas-icon-button"
+                        onClick={() => setHelpOpen(false)}
+                        title={t(helpLocale, 'agentCanvas.help.close')}
+                        aria-label={t(helpLocale, 'agentCanvas.help.close')}
+                      >
+                        <AppIcon name="close" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                  <ul className="agent-canvas-help-dialog-list">
+                    {HELP_TIP_KEYS.map((key) => (
+                      <li key={key}>{t(helpLocale, key)}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>,
               document.body,
             )}
         </>

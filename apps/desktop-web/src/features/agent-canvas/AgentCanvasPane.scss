@@ -88,6 +88,146 @@
   pointer-events: none;
 }
 
+// Top-right "how to use this canvas" button — deliberately its own
+// absolutely-positioned element, not folded into `.agent-canvas-controls`
+// (bottom-right zoom/align toolbar), so it stays reachable regardless of
+// how that toolbar grows.
+.agent-canvas-help-button {
+  position: absolute;
+  top: #{rem(12)};
+  right: #{rem(12)};
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: #{rem(28)};
+  height: #{rem(28)};
+  border-radius: #{rem(8)};
+  border: var(--vb-border-width) solid var(--vb-border);
+  background: var(--vb-surface);
+  color: var(--vb-text-muted);
+  box-shadow: 0 #{rem(6)} #{rem(18)} rgba(0, 0, 0, 0.14);
+  cursor: default;
+
+  svg {
+    width: #{rem(15)};
+    height: #{rem(15)};
+  }
+
+  &:hover {
+    color: var(--vb-accent);
+    border-color: var(--vb-accent);
+  }
+}
+
+.agent-canvas-help-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: #{rem(24)};
+  background: color-mix(in srgb, black 45%, transparent);
+}
+
+.agent-canvas-help-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: #{rem(12)};
+  width: 100%;
+  max-width: #{rem(480)};
+  max-height: 80vh;
+  padding: #{rem(18)} #{rem(20)};
+  border-radius: #{rem(14)};
+  // Deliberately an opaque literal, not `var(--vb-surface)` (which carries
+  // alpha, and even collapses to fully transparent under
+  // `[data-vb-native-vibrancy='true']`, see `_legacy-foundations.scss`) —
+  // this dialog must stay readable over the canvas regardless of vibrancy
+  // mode, so it opts out of the app's glass surfaces on purpose.
+  background: #f5f5f7;
+  border: var(--vb-border-width) solid var(--vb-border);
+  box-shadow: 0 #{rem(20)} #{rem(48)} rgba(0, 0, 0, 0.28);
+
+  :root[data-theme='graphite-dark'] & {
+    background: #1c1c1e;
+  }
+
+  :root[data-theme='sakura-night'] & {
+    background: #1c0e1a;
+  }
+}
+
+.agent-canvas-help-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+
+  h2 {
+    margin: 0;
+    font-size: #{rem(16)};
+    font-weight: 700;
+    color: var(--vb-text);
+  }
+}
+
+.agent-canvas-help-dialog-header-actions {
+  display: flex;
+  align-items: center;
+  gap: #{rem(8)};
+}
+
+.agent-canvas-help-locale-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: #{rem(2)};
+  border-radius: #{rem(7)};
+  background: var(--vb-border);
+}
+
+.agent-canvas-help-locale-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: #{rem(28)};
+  height: #{rem(24)};
+  padding: 0 #{rem(8)};
+  border: none;
+  border-radius: #{rem(5)};
+  background: transparent;
+  color: var(--vb-text-muted);
+  font-size: #{rem(12)};
+  font-weight: 600;
+  cursor: default;
+
+  &:hover {
+    color: var(--vb-text);
+  }
+
+  &.is-active {
+    background: var(--vb-surface);
+    color: var(--vb-text);
+    box-shadow: 0 #{rem(1)} #{rem(3)} rgba(0, 0, 0, 0.16);
+  }
+}
+
+.agent-canvas-help-dialog-list {
+  margin: 0;
+  padding-left: #{rem(18)};
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: #{rem(10)};
+  font-size: #{rem(13)};
+  line-height: 1.6;
+  color: var(--vb-text);
+
+  li::marker {
+    color: var(--vb-text-muted);
+  }
+}
+
 .agent-canvas-controls {
   position: absolute;
   bottom: #{rem(12)};
@@ -165,7 +305,13 @@
     }
   }
 
-  &--selected .agent-canvas-node {
+  // Shared selected-state ring — applies to whichever inner card class is
+  // actually present (agent card, MCP mount, or Skill/Hook mount) since a
+  // mount node is now a selectable canvas citizen too, not just an agent
+  // node (see `AgentCanvasPane.tsx`'s `handleNodeClick`/`handleMarqueeSelect`).
+  &--selected .agent-canvas-node,
+  &--selected .agent-canvas-mcp-node,
+  &--selected .agent-canvas-capability-node {
     border-color: var(--vb-accent);
     box-shadow: 0 0 0 #{rem(2)} var(--vb-accent);
   }
@@ -357,7 +503,11 @@
   min-height: 48px;
   padding: 0 #{rem(8)} 0 #{rem(12)};
   border-radius: #{rem(10)};
-  border: var(--vb-border-width) dashed var(--vb-accent);
+  // `--agent-canvas-mount-color` is an inline custom property (set by
+  // `AgentCanvasMcpNodeCard` only when the mount has a non-default color,
+  // right-click to change) — defaults to gray, same convention as
+  // `.agent-canvas-node`'s `--agent-canvas-node-color`.
+  border: var(--vb-border-width) dashed var(--agent-canvas-mount-color, var(--vb-text-muted));
   background: var(--vb-surface);
   box-shadow: 0 #{rem(2)} #{rem(6)} rgba(0, 0, 0, 0.08);
 
@@ -430,7 +580,10 @@
   min-height: 48px;
   padding: 0 #{rem(8)} 0 #{rem(10)};
   border-radius: #{rem(10)};
-  border: var(--vb-border-width) dashed var(--vb-accent);
+  // Same `--agent-canvas-mount-color` convention as `.agent-canvas-mcp-node`
+  // above — this node kind is set by `AgentCanvasSkillNodeCard`/
+  // `AgentCanvasHookNodeCard` instead.
+  border: var(--vb-border-width) dashed var(--agent-canvas-mount-color, var(--vb-text-muted));
   background: var(--vb-surface);
   box-shadow: 0 #{rem(2)} #{rem(6)} rgba(0, 0, 0, 0.08);
 }

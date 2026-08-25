@@ -42,6 +42,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
+  HelpCircle,
   Info,
   LayoutGrid,
   Link2,
@@ -151,6 +152,7 @@ export type AppIconName =
   | 'align-bottom'
   | 'distribute-horizontal'
   | 'distribute-vertical'
+  | 'help-circle'
 
 const iconMap: Record<AppIconName, LucideIcon> = {
   stations: LayoutGrid,
@@ -228,6 +230,7 @@ const iconMap: Record<AppIconName, LucideIcon> = {
   'align-bottom': AlignEndHorizontal,
   'distribute-horizontal': AlignHorizontalDistributeCenter,
   'distribute-vertical': AlignVerticalDistributeCenter,
+  'help-circle': HelpCircle,
 }
 
 interface AppIconProps extends SVGProps<SVGSVGElement> {

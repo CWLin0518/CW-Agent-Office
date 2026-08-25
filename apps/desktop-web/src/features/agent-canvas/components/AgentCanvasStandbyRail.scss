@@ -6,9 +6,17 @@
 .agent-canvas-standby-rail {
   display: flex;
   flex-direction: column;
-  gap: var(--vb-space-lg);
+  gap: var(--vb-space-md);
   height: 100%;
   padding: #{rem(10)};
+  min-height: 0;
+}
+
+// Everything above the pinned "Add Agent" button scrolls as its own region
+// — the button itself stays put at the bottom of the rail regardless of how
+// many agents are in the list above it.
+.agent-canvas-standby-rail-scroll {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
 }
@@ -69,4 +77,36 @@
 .agent-canvas-standby-rail-card-tool {
   font-size: #{rem(11)};
   color: var(--vb-text-muted);
+}
+
+.agent-canvas-standby-rail-add-btn {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: #{rem(6)};
+  min-height: #{rem(36)};
+  padding: 0 #{rem(12)};
+  border-radius: #{rem(10)};
+  border: var(--vb-border-width) dashed var(--vb-border-strong);
+  background: transparent;
+  color: var(--vb-text);
+  font-size: #{rem(12.5)};
+  font-weight: 600;
+  cursor: default;
+  transition:
+    background-color 140ms var(--vb-ease-smooth),
+    border-color 140ms var(--vb-ease-smooth);
+
+  svg {
+    width: #{rem(14)};
+    height: #{rem(14)};
+  }
+
+  &:hover {
+    background: var(--vb-glass-lighter-hover);
+    border-color: var(--vb-accent);
+    border-style: solid;
+    color: var(--vb-accent);
+  }
 }

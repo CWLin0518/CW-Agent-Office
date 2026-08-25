@@ -66,6 +66,9 @@ interface StationManageModalProps {
   onDeleteCleanupReplacementChange?: (agentId: string) => void
   onDeleteCleanupConfirm?: () => void
   onRolesChanged?: () => Promise<void> | void
+  /** Fired after the Capabilities tab's own Save button persists a change —
+   * see `StationCapabilitiesTab`'s `onSaved` doc comment. */
+  onCapabilitiesSaved?: () => void
 }
 
 export function StationManageModal({
@@ -86,6 +89,7 @@ export function StationManageModal({
   onDeleteCleanupStrategyChange,
   onDeleteCleanupReplacementChange,
   onDeleteCleanupConfirm,
+  onCapabilitiesSaved,
 }: StationManageModalProps) {
   const formDialogRef = useRef<HTMLElement | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
@@ -987,6 +991,7 @@ export function StationManageModal({
               toolKind={normalizeStationToolKind(editingStation.tool)}
               active={activeTab === 'capabilities'}
               onSavingChange={setCapabilitiesSaving}
+              onSaved={onCapabilitiesSaved}
             />
           )}
 

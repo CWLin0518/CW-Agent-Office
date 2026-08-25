@@ -3052,6 +3052,38 @@ export const messages = {
     'zh-CN': '连线操作失败',
     'en-US': 'Connection action failed',
   },
+  // Help dialog (docs P4.x follow-up: a discoverable "how to use this
+  // canvas" reference, top-right of the pane).
+  'agentCanvas.help.title': { 'zh-CN': '使用說明', 'en-US': 'How to use this canvas' },
+  'agentCanvas.help.close': { 'zh-CN': '關閉', 'en-US': 'Close' },
+  'agentCanvas.help.tip.addAgent': {
+    'zh-CN': '從左側待命清單拖拉 Agent 卡片到畫布上建立節點；同一個 Agent 可以拖出多個節點。底部「新增 Agent」按鈕可直接創建一個新的 Agent。',
+    'en-US': 'Drag an agent card from the left rail onto the canvas to add a node; the same agent can have more than one. The "Add Agent" button at the bottom creates a brand new agent.',
+  },
+  'agentCanvas.help.tip.connect': {
+    'zh-CN': '拖曳節點兩側的端點圓點到另一個節點上即可建立連線；按住 Shift 拖曳到已連接的端點可斷開該連線，按住 Ctrl+Shift 拖曳可將連線重新接到別的節點。',
+    'en-US': 'Drag a node’s port dot onto another node to connect them; hold Shift while dropping on an existing connection to disconnect it, or Ctrl+Shift-drag an existing dot to rewire it elsewhere.',
+  },
+  'agentCanvas.help.tip.select': {
+    'zh-CN': '點選節點可選取單一節點；按住 Shift 點選可加選/取消。在空白處拖曳框選：由左至右為「完全框住才選中」，由右至左為「碰到就選中」；框選時按住 Shift 只選連線，按住 Shift+Ctrl 同時選節點與連線。',
+    'en-US': 'Click a node to select it; Shift-click to add/remove one from the selection. Dragging a marquee left-to-right on empty background selects only fully-enclosed items, right-to-left selects anything it touches; hold Shift during a marquee to select wires only, Shift+Ctrl to select both.',
+  },
+  'agentCanvas.help.tip.multiDrag': {
+    'zh-CN': '選取多個節點後，拖曳其中任一個可以讓整組節點一起移動；工具欄也提供左右/上下對齊與水平/垂直均分。',
+    'en-US': 'With more than one node selected, dragging any one of them moves the whole group together; the toolbar also offers align (left/right/top/bottom) and distribute (horizontal/vertical) for the selection.',
+  },
+  'agentCanvas.help.tip.color': {
+    'zh-CN': '右鍵節點、連線或掛載物件（MCP / Skill / Hook）皆可變更顯示顏色；掛載物件的外框虛線預設為灰色。右鍵節點也能新增 Subagent 或從畫布移除。',
+    'en-US': 'Right-click a node, a wire, or a mounted MCP/Skill/Hook to change its display color — a mount node’s dashed outline defaults to gray. Right-clicking a node also offers "New Subagent" and "Remove from canvas".',
+  },
+  'agentCanvas.help.tip.keyboard': {
+    'zh-CN': 'Delete / Backspace 可移除選取的節點；Ctrl/Cmd+Z 復原上一步操作；空格鍵按住拖曳可平移畫布；Ctrl/Cmd + 滾輪（或 +/-/0）可縮放畫布。',
+    'en-US': 'Delete/Backspace removes the selected node(s); Ctrl/Cmd+Z undoes the last action; hold Space and drag to pan; Ctrl/Cmd + scroll (or +/-/0) zooms the canvas.',
+  },
+  'agentCanvas.help.tip.derived': {
+    'zh-CN': '虛線箭頭是系統自動偵測到的 gto send 往來記錄（唯讀）；工具欄左側的眼睛圖示可切換顯示/隱藏這些自動連線。要讓兩個 Agent 之間能互相 gto send，仍需手動拉一條連線。',
+    'en-US': 'Dashed arrows are auto-detected, read-only gto-send activity; the eye icon in the toolbar toggles them on/off. Agents still need a hand-drawn connection before gto send between them is allowed.',
+  },
 }
 
 export type TranslationKey = keyof typeof messages

@@ -14,6 +14,14 @@ import { statusLabel } from '../model/agent-canvas-status-label'
 
 export type AgentPortKind = 'input' | 'output'
 
+/** Shared by every mount node card (MCP/Skill/Hook) below — a mount's
+ * dashed-outline color only ever needs one CSS custom property set, and
+ * only when it's non-default (see `AgentCanvasPane.scss`'s
+ * `--agent-canvas-mount-color` fallback-to-gray convention). */
+function mountColorStyle(color: string | null | undefined): CSSProperties | undefined {
+  return color ? ({ '--agent-canvas-mount-color': color } as CSSProperties) : undefined
+}
+
 export interface AgentPortHandlers {
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
   onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void
@@ -287,18 +295,26 @@ interface AgentCanvasMcpNodeCardProps {
    * `setMcpServerEnabled`) — never removes the mount, just toggles whether
    * the next materialize actually includes it. */
   onToggleEnabled: (agentId: string, serverId: string, enabled: boolean) => void
+  /** Right-click — the caller (`AgentCanvasPane`) owns opening the color
+   * context menu, mirroring `AgentCanvasNodeCard`'s own
+   * `onPortSlotContextMenu` split. */
+  onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void
 }
 
 /** MCP-mount node — connects from its own right side into the owning
  * agent's left-side port stack (see `InputPortSlots` above); the anchor
  * dot here is a single, non-interactive point since a mount node only ever
  * has the one outgoing edge. */
-export function AgentCanvasMcpNodeCard({ node, locale, onToggleEnabled }: AgentCanvasMcpNodeCardProps) {
+export function AgentCanvasMcpNodeCard({ node, locale, onToggleEnabled, onContextMenu }: AgentCanvasMcpNodeCardProps) {
   const { agentId, server } = node
   const title = server.name?.trim() || server.id
   return (
     <>
-      <div className={`agent-canvas-mcp-node${server.enabled ? '' : ' agent-canvas-mcp-node--disabled'}`}>
+      <div
+        className={`agent-canvas-mcp-node${server.enabled ? '' : ' agent-canvas-mcp-node--disabled'}`}
+        style={mountColorStyle(node.color)}
+        onContextMenu={onContextMenu}
+      >
         <span className="agent-canvas-mcp-node-title">{title}</span>
         <button
           type="button"
@@ -333,11 +349,19 @@ export function AgentCanvasMcpNodeCard({ node, locale, onToggleEnabled }: AgentC
 /** Shared collapsed header + expand toggle for `AgentCanvasSkillNodeCard`/
  * `AgentCanvasHookNodeCard` below — both are read-only dropdown summaries
  * (one node per agent, not per item, unlike the MCP node above), so the only
- * interactive control either has is "expand/collapse," not a mutation. */
+ * interactive control either has is "expand/collapse," not a mutation.
+ * `enabledCount`/`totalCount` (rather than one plain `count`) so the badge
+ * itself communicates how many of the mounted items are actually enabled —
+ * the collapsed header is otherwise the only place that fact is visible
+ * without expanding the dropdown. Renders as just the number when every
+ * mounted item is enabled (the common case, and always true for Hook, which
+ * has no per-item enabled flag — see `AgentCanvasHookNodeCard`), or
+ * `enabled/total` the moment at least one is disabled. */
 function CapabilityDropdownHeader({
   iconName,
   title,
-  count,
+  enabledCount,
+  totalCount,
   expanded,
   onToggle,
   locale,
@@ -348,7 +372,8 @@ function CapabilityDropdownHeader({
 }: {
   iconName: AppIconName
   title: string
-  count: number
+  enabledCount: number
+  totalCount: number
   expanded: boolean
   onToggle: () => void
   locale: Locale
@@ -358,11 +383,19 @@ function CapabilityDropdownHeader({
   collapseLabelEn: string
 }) {
   const toggleLabel = expanded ? t(locale, collapseLabelZh, collapseLabelEn) : t(locale, expandLabelZh, expandLabelEn)
+  const countLabel = enabledCount === totalCount ? `${totalCount}` : `${enabledCount}/${totalCount}`
+  const countTitle = t(
+    locale,
+    `已啟用 ${enabledCount} 個（共掛載 ${totalCount} 個）`,
+    `${enabledCount} enabled (of ${totalCount} mounted)`,
+  )
   return (
     <>
       <AppIcon name={iconName} className="agent-canvas-capability-node-icon" aria-hidden="true" />
       <span className="agent-canvas-capability-node-title">{title}</span>
-      <span className="agent-canvas-capability-node-count">{count}</span>
+      <span className="agent-canvas-capability-node-count" title={countTitle}>
+        {countLabel}
+      </span>
       <button
         type="button"
         className="agent-canvas-capability-node-toggle"
@@ -385,6 +418,8 @@ function CapabilityDropdownHeader({
 interface AgentCanvasSkillNodeCardProps {
   node: AgentCanvasSkillNodeData
   locale: Locale
+  /** Same split as `AgentCanvasMcpNodeCardProps.onContextMenu`. */
+  onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void
 }
 
 /** Skill-mount node — one per agent, summarizing every mounted Skill as a
@@ -393,16 +428,22 @@ interface AgentCanvasSkillNodeCardProps {
  * individual skill stays a Capabilities-tab action; this node only shows
  * what's mounted. Connects into the owning agent's left-side port stack,
  * same as an MCP node — see `InputPortSlots` above. */
-export function AgentCanvasSkillNodeCard({ node, locale }: AgentCanvasSkillNodeCardProps) {
+export function AgentCanvasSkillNodeCard({ node, locale, onContextMenu }: AgentCanvasSkillNodeCardProps) {
   const [expanded, setExpanded] = useState(false)
   const { skills } = node
+  const enabledCount = skills.filter((skill) => skill.enabled).length
   return (
     <>
-      <div className="agent-canvas-capability-node agent-canvas-capability-node--skill">
+      <div
+        className="agent-canvas-capability-node agent-canvas-capability-node--skill"
+        style={mountColorStyle(node.color)}
+        onContextMenu={onContextMenu}
+      >
         <CapabilityDropdownHeader
           iconName="sparkles"
           title="Skills"
-          count={skills.length}
+          enabledCount={enabledCount}
+          totalCount={skills.length}
           expanded={expanded}
           onToggle={() => setExpanded((previous) => !previous)}
           locale={locale}
@@ -444,6 +485,8 @@ export function AgentCanvasSkillNodeCard({ node, locale }: AgentCanvasSkillNodeC
 interface AgentCanvasHookNodeCardProps {
   node: AgentCanvasHookNodeData
   locale: Locale
+  /** Same split as `AgentCanvasMcpNodeCardProps.onContextMenu`. */
+  onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void
 }
 
 /** Hook sibling of `AgentCanvasSkillNodeCard` above — each row shows the
@@ -454,16 +497,25 @@ interface AgentCanvasHookNodeCardProps {
  * is exactly the note field's purpose. The tooltip always includes the
  * command (plus the note above it when present) since the command is still
  * the part worth double-checking before trusting a mounted hook. */
-export function AgentCanvasHookNodeCard({ node, locale }: AgentCanvasHookNodeCardProps) {
+export function AgentCanvasHookNodeCard({ node, locale, onContextMenu }: AgentCanvasHookNodeCardProps) {
   const [expanded, setExpanded] = useState(false)
   const { hooks } = node
   return (
     <>
-      <div className="agent-canvas-capability-node agent-canvas-capability-node--hook">
+      <div
+        className="agent-canvas-capability-node agent-canvas-capability-node--hook"
+        style={mountColorStyle(node.color)}
+        onContextMenu={onContextMenu}
+      >
         <CapabilityDropdownHeader
           iconName="hooks"
           title="Hooks"
-          count={hooks.length}
+          // `HookCapability` has no per-item `enabled` flag (unlike
+          // `SkillCapability`) — every mounted hook runs, so enabled ==
+          // total here, same "just the number" collapsed form the header
+          // renders whenever nothing is disabled.
+          enabledCount={hooks.length}
+          totalCount={hooks.length}
           expanded={expanded}
           onToggle={() => setExpanded((previous) => !previous)}
           locale={locale}

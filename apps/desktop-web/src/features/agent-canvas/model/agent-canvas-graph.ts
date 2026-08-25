@@ -141,6 +141,11 @@ export interface AgentCanvasMcpNodeData {
   id: string
   agentId: string
   server: McpServerCapability
+  /** Client-only display color for this node's dashed outline (right-click
+   * to change, docs P4.x follow-up), same "`null`/absent == default gray"
+   * convention as `AgentProfile.color`/`AgentLink.color` — see
+   * `useAgentCanvasData`'s `setMountNodeColor`. */
+  color?: string | null
 }
 
 /** One Skill-mount node per agent (not per item) — a collapsed dropdown
@@ -157,6 +162,9 @@ export interface AgentCanvasSkillNodeData {
   id: string
   agentId: string
   skills: SkillCapability[]
+  /** Same "right-click to change, default gray" convention as
+   * `AgentCanvasMcpNodeData.color`. */
+  color?: string | null
 }
 
 /** Hook sibling of `AgentCanvasSkillNodeData` — same one-node-per-agent,
@@ -166,6 +174,9 @@ export interface AgentCanvasHookNodeData {
   id: string
   agentId: string
   hooks: HookCapability[]
+  /** Same "right-click to change, default gray" convention as
+   * `AgentCanvasMcpNodeData.color`. */
+  color?: string | null
 }
 
 export type AgentCanvasNodeData =
@@ -333,6 +344,11 @@ export function buildAgentCanvasGraph(
   hooksByAgentId: Record<string, HookCapability[]>,
   skillNodePositions: Record<string, { x: number; y: number }>,
   hookNodePositions: Record<string, { x: number; y: number }>,
+  /** Keyed by the mount node's own id (`buildMcpNodeId`/`buildSkillNodeId`/
+   * `buildHookNodeId`) — shared across all three kinds since each id shape
+   * is already unique to its kind (see `useAgentCanvasData`'s
+   * `MOUNT_COLORS_STORAGE_PREFIX`). */
+  mountNodeColors: Record<string, string> = {},
 ): AgentCanvasGraphView {
   const agentById = new Map(agents.map((agent) => [agent.id, agent]))
   const statusByAgentId = new Map(statuses.map((status) => [status.agentId, status.state]))
@@ -464,7 +480,7 @@ export function buildAgentCanvasGraph(
         y: position.y,
         width: MCP_NODE_WIDTH,
         height: MCP_NODE_HEIGHT,
-        data: { kind: 'mcp' as const, id: mountId, agentId, server },
+        data: { kind: 'mcp' as const, id: mountId, agentId, server, color: mountNodeColors[mountId] ?? null },
       })
       mcpMountEdges.push({
         fromId: mountId,
@@ -491,7 +507,7 @@ export function buildAgentCanvasGraph(
         y: position.y,
         width: SKILL_NODE_WIDTH,
         height: SKILL_NODE_HEIGHT,
-        data: { kind: 'skill' as const, id: mountId, agentId, skills },
+        data: { kind: 'skill' as const, id: mountId, agentId, skills, color: mountNodeColors[mountId] ?? null },
       })
       skillMountEdges.push({
         fromId: mountId,
@@ -521,7 +537,7 @@ export function buildAgentCanvasGraph(
         y: position.y,
         width: HOOK_NODE_WIDTH,
         height: HOOK_NODE_HEIGHT,
-        data: { kind: 'hook' as const, id: mountId, agentId, hooks },
+        data: { kind: 'hook' as const, id: mountId, agentId, hooks, color: mountNodeColors[mountId] ?? null },
       })
       hookMountEdges.push({
         fromId: mountId,

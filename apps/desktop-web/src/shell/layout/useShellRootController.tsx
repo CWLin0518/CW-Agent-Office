@@ -142,6 +142,12 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
   /** Set when the station-manage modal was opened from agent-canvas's "New
    * Subagent" context menu action (docs/cw/04_客製化設計.md §1, P4.5). */
   const [pendingSubagentParentId, setPendingSubagentParentId] = useState<string | null>(null)
+  /** Bumped on every Capabilities-tab save — forwarded to `AgentCanvasPane`
+   * as `refreshSignal` so its mount nodes (MCP/Skill/Hook) update
+   * immediately instead of waiting for the next poll tick. The value itself
+   * carries no meaning, only its CHANGE matters (see
+   * `useAgentCanvasData`'s `refreshSignal` doc comment). */
+  const [agentCanvasRefreshTick, setAgentCanvasRefreshTick] = useState(0)
   const [isStationSearchOpen, setIsStationSearchOpen] = useState(false)
   const initialCanvasLayout = useMemo(loadCanvasLayoutPreference, [])
   const [canvasLayoutMode] = useState<WorkbenchLayoutMode>(initialCanvasLayout.mode)
@@ -1485,11 +1491,13 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
       active: activeNavId === 'agent-canvas',
       onRequestCreateSubagent: handleAgentCanvasRequestNewSubagent,
       onRequestEditAgent: handleAgentCanvasRequestEditAgent,
+      refreshSignal: agentCanvasRefreshTick,
     },
     agentCanvasStandbyRailProps: {
       locale,
       workspaceId: presentedWorkspaceId,
       active: activeNavId === 'agent-canvas',
+      onAddAgent: handleCanvasOpenStationManage,
     },
     activePaneModel,
     showWorkbenchCanvas,
@@ -1653,6 +1661,7 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
             await loadStationsFromDatabase(activeWorkspaceId)
           }
         },
+        onCapabilitiesSaved: () => setAgentCanvasRefreshTick((tick) => tick + 1),
       },
     channelStudioProps: {
         open: isChannelStudioOpen,

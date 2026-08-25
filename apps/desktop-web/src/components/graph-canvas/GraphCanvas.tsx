@@ -36,6 +36,18 @@ export interface GraphCanvasProps<TNodeData, TEdgeData> {
   edges: GraphCanvasEdge<TEdgeData>[]
   /** Node ids that must never be culled even when off-screen (e.g. selection). */
   pinnedNodeIds?: Set<string>
+  /**
+   * When a drag starts on a node whose id is in this set AND the set has
+   * more than one member, every other member currently present in `nodes`
+   * moves together with it (same pointer delta, one `onCommitNodePosition`
+   * call per moved node on drop) — a multi-selection drag. A drag starting
+   * on a node NOT in this set (or when the set has 0-1 members) always moves
+   * just that one node, unchanged from the engine's original single-node
+   * behavior. Distinct from `pinnedNodeIds` (culling only) since a caller
+   * with no multi-select concept (business-designer) shouldn't have to
+   * reason about this at all.
+   */
+  dragGroupNodeIds?: Set<string>
   /** Node count above which off-screen nodes/edges are culled. */
   cullingThreshold?: number
   /**
@@ -45,8 +57,21 @@ export interface GraphCanvasProps<TNodeData, TEdgeData> {
    * panning doesn't fight with interacting with a node or a control.
    */
   isInteractiveChrome?: (target: HTMLElement) => boolean
-  /** Fired once per drag on pointerup, with the final canvas-space position. */
-  onCommitNodePosition: (nodeId: string, position: { x: number; y: number }) => void
+  /**
+   * Fired once per drag on pointerup, with the final canvas-space position.
+   * For a group drag (see `dragGroupNodeIds`), this fires once per moved
+   * node, all synchronously within the same pointerup — `batch` is present
+   * on every one of those calls (`{ index, total }`, `total` == the group
+   * size) so a caller wanting ONE combined undo step for the whole group
+   * (instead of one per node) can bracket its own history push between
+   * `batch.index === 0` and `batch.index === batch.total - 1`. Absent for
+   * an ordinary single-node drag, unchanged from before this field existed.
+   */
+  onCommitNodePosition: (
+    nodeId: string,
+    position: { x: number; y: number },
+    batch?: { index: number; total: number },
+  ) => void
   /** Fired on a pointerdown→pointerup with no meaningful movement (a click).
    * The raw event is passed through (unexamined by the engine itself, same
    * as `onNodeContextMenu`) so callers can read modifier keys, e.g. for
@@ -125,10 +150,17 @@ export interface GraphCanvasProps<TNodeData, TEdgeData> {
 }
 
 interface DragState {
-  nodeId: string
+  /** The node actually pointed down on — used for the `onNodeClick` callback
+   * when the drag turns out not to have moved (a click), regardless of how
+   * many nodes are in `nodeIds`. */
+  primaryNodeId: string
+  /** Every node moving together in this drag — `[primaryNodeId]` alone for a
+   * plain single-node drag, or the whole multi-selection when the drag
+   * started on a member of `dragGroupNodeIds` (size > 1). */
+  nodeIds: string[]
   startPointerX: number
   startPointerY: number
-  startPosition: { x: number; y: number }
+  startPositions: Map<string, { x: number; y: number }>
 }
 
 interface PanState {
@@ -176,6 +208,7 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
     nodes,
     edges,
     pinnedNodeIds,
+    dragGroupNodeIds,
     cullingThreshold = DEFAULT_CULLING_THRESHOLD,
     isInteractiveChrome,
     onCommitNodePosition,
@@ -343,32 +376,55 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
   const dragStateRef = useRef<DragState | null>(null)
   const nodeRefs = useRef(new Map<string, HTMLDivElement | null>())
 
+  // Declared here (rather than alongside `visibleNodes`/`visibleEdges`
+  // further below) so `handleNodePointerDown` can resolve every OTHER
+  // group-drag member's start position, not just the one actually pointed
+  // down on (whose x/y already arrive via its own `node` argument).
+  const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
+
   const handleNodePointerDown = useCallback(
     (node: GraphCanvasNode<TNodeData>, event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return
       const target = event.target as HTMLElement
       if (target.closest('[data-no-drag]')) return
+      const groupIds =
+        dragGroupNodeIds && dragGroupNodeIds.size > 1 && dragGroupNodeIds.has(node.id)
+          ? [...dragGroupNodeIds]
+          : [node.id]
+      const startPositions = new Map<string, { x: number; y: number }>()
+      for (const id of groupIds) {
+        const source = id === node.id ? node : nodeById.get(id)
+        if (source) startPositions.set(id, { x: source.x, y: source.y })
+      }
       dragStateRef.current = {
-        nodeId: node.id,
+        primaryNodeId: node.id,
+        // Only the ids actually resolved above (a stale selection id no
+        // longer present in `nodes` contributes no start position and so
+        // must not be dragged/committed either).
+        nodeIds: [...startPositions.keys()],
         startPointerX: event.clientX,
         startPointerY: event.clientY,
-        startPosition: { x: node.x, y: node.y },
+        startPositions,
       }
-      nodeRefs.current.get(node.id)?.classList.add('is-dragging')
+      for (const id of startPositions.keys()) {
+        nodeRefs.current.get(id)?.classList.add('is-dragging')
+      }
       event.currentTarget.setPointerCapture?.(event.pointerId)
     },
-    [],
+    [dragGroupNodeIds, nodeById],
   )
 
   const handleNodePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const state = dragStateRef.current
       if (!state) return
-      const el = nodeRefs.current.get(state.nodeId)
-      if (!el) return
       const dx = (event.clientX - state.startPointerX) / zoom
       const dy = (event.clientY - state.startPointerY) / zoom
-      el.style.transform = `translate3d(${dx}px, ${dy}px, 0)`
+      const transform = `translate3d(${dx}px, ${dy}px, 0)`
+      for (const id of state.nodeIds) {
+        const el = nodeRefs.current.get(id)
+        if (el) el.style.transform = transform
+      }
     },
     [zoom],
   )
@@ -377,21 +433,34 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const state = dragStateRef.current
       if (!state) return
-      const el = nodeRefs.current.get(state.nodeId)
       const dx = (event.clientX - state.startPointerX) / zoom
       const dy = (event.clientY - state.startPointerY) / zoom
       const moved = Math.abs(dx) > 1 || Math.abs(dy) > 1
-      const finalPosition = { x: state.startPosition.x + dx, y: state.startPosition.y + dy }
-      el?.classList.remove('is-dragging')
-      if (el) el.style.transform = ''
+      for (const id of state.nodeIds) {
+        const el = nodeRefs.current.get(id)
+        el?.classList.remove('is-dragging')
+        if (el) el.style.transform = ''
+      }
       dragStateRef.current = null
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
         event.currentTarget.releasePointerCapture?.(event.pointerId)
       }
       if (moved) {
-        onCommitNodePosition(state.nodeId, finalPosition)
+        // `batch` only when more than one node is actually moving — an
+        // ordinary single-node drag keeps calling `onCommitNodePosition`
+        // exactly as before this field existed (see its own doc comment).
+        const total = state.nodeIds.length
+        state.nodeIds.forEach((id, index) => {
+          const start = state.startPositions.get(id)
+          if (!start) return
+          onCommitNodePosition(
+            id,
+            { x: start.x + dx, y: start.y + dy },
+            total > 1 ? { index, total } : undefined,
+          )
+        })
       } else {
-        onNodeClick?.(state.nodeId, event)
+        onNodeClick?.(state.primaryNodeId, event)
       }
     },
     [zoom, onCommitNodePosition, onNodeClick],
@@ -400,9 +469,11 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
   const handleNodePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const state = dragStateRef.current
     if (!state) return
-    const el = nodeRefs.current.get(state.nodeId)
-    el?.classList.remove('is-dragging')
-    if (el) el.style.transform = ''
+    for (const id of state.nodeIds) {
+      const el = nodeRefs.current.get(id)
+      el?.classList.remove('is-dragging')
+      if (el) el.style.transform = ''
+    }
     dragStateRef.current = null
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture?.(event.pointerId)
@@ -701,8 +772,6 @@ function GraphCanvasInner<TNodeData, TEdgeData>(
       window.removeEventListener('resize', scheduleUpdate)
     }
   }, [zoom, width, height])
-
-  const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes])
 
   const { visibleNodes, visibleEdges } = useMemo(() => {
     if (nodes.length <= cullingThreshold || !viewportWindow) {

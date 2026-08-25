@@ -79,10 +79,16 @@ interface StationCapabilitiesTabProps {
   toolKind: string
   active: boolean
   onSavingChange?: (saving: boolean) => void
+  /** Fired after a successful save (either path: direct, or via the hook
+   * preview/confirm flow) — lets a caller invalidate data derived from this
+   * agent's capability snapshot elsewhere (e.g. agent-canvas's MCP/Skill/Hook
+   * mount nodes, which otherwise only pick up the change on their own next
+   * poll tick). */
+  onSaved?: () => void
 }
 
 export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, StationCapabilitiesTabProps>(
-  function StationCapabilitiesTab({ locale, workspaceId, agentId, toolKind, active, onSavingChange }, ref) {
+  function StationCapabilitiesTab({ locale, workspaceId, agentId, toolKind, active, onSavingChange, onSaved }, ref) {
     const [subTab, setSubTab] = useState<CapabilitySubTab>('mcp')
     const [loading, setLoading] = useState(false)
     const [loadError, setLoadError] = useState<string | null>(null)
@@ -144,6 +150,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
             capability,
             confirmedBy: CAPABILITY_CONFIRMED_BY,
           })
+          onSaved?.()
           return true
         } catch (error) {
           setSaveError(error instanceof Error ? error.message : String(error))
@@ -152,7 +159,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
           setSaving(false)
         }
       },
-      [workspaceId, agentId],
+      [workspaceId, agentId, onSaved],
     )
 
     const requestSave = useCallback(async (): Promise<boolean> => {
