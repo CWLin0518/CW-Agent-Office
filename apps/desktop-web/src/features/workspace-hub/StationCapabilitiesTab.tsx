@@ -39,6 +39,9 @@ import {
   parseArgsTextarea,
   parseEnvTextarea,
   requiresHookPreviewBeforeSave,
+  setAllHooksEnabled,
+  setAllMcpServersEnabled,
+  setAllSkillsEnabled,
   toggleDiscoveredHook,
   toggleDiscoveredSkill,
   unconfirmedHookHashes,
@@ -411,6 +414,26 @@ function McpServersEditor({
   }
   return (
     <div className="station-form-field station-form-span-2 station-capabilities-list">
+      {servers.length > 0 && (
+        <div className="station-form-inline-row station-form-inline-row--end">
+          <button
+            type="button"
+            className="station-form-inline-action"
+            disabled={disabled}
+            onClick={() => onChange(setAllMcpServersEnabled(servers, true))}
+          >
+            {locale === 'zh-CN' ? '全選開啟' : 'Enable All'}
+          </button>
+          <button
+            type="button"
+            className="station-form-inline-action"
+            disabled={disabled}
+            onClick={() => onChange(setAllMcpServersEnabled(servers, false))}
+          >
+            {locale === 'zh-CN' ? '全選關閉' : 'Disable All'}
+          </button>
+        </div>
+      )}
       {servers.map((server, index) => (
         <div key={index} className="station-form-surface station-capabilities-row">
           <div className="station-capabilities-row-header">
@@ -620,6 +643,24 @@ function SkillsEditor({
       )}
       {available !== null && (
         <>
+          <div className="station-form-inline-row station-form-inline-row--end">
+            <button
+              type="button"
+              className="station-form-inline-action"
+              disabled={disabled}
+              onClick={() => onChange(setAllSkillsEnabled(skills, available, true))}
+            >
+              {locale === 'zh-CN' ? '全選開啟' : 'Enable All'}
+            </button>
+            <button
+              type="button"
+              className="station-form-inline-action"
+              disabled={disabled}
+              onClick={() => onChange(setAllSkillsEnabled(skills, available, false))}
+            >
+              {locale === 'zh-CN' ? '全選關閉' : 'Disable All'}
+            </button>
+          </div>
           <label className="station-capabilities-skill-search">
             <AppIcon name="search" className="vb-icon" aria-hidden="true" />
             <input
@@ -884,6 +925,24 @@ function HooksEditor({
       )}
       {available !== null && (
         <>
+          <div className="station-form-inline-row station-form-inline-row--end">
+            <button
+              type="button"
+              className="station-form-inline-action"
+              disabled={disabled}
+              onClick={() => onChange(setAllHooksEnabled(hooks, available, true))}
+            >
+              {locale === 'zh-CN' ? '全選開啟' : 'Enable All'}
+            </button>
+            <button
+              type="button"
+              className="station-form-inline-action"
+              disabled={disabled}
+              onClick={() => onChange(setAllHooksEnabled(hooks, available, false))}
+            >
+              {locale === 'zh-CN' ? '全選關閉' : 'Disable All'}
+            </button>
+          </div>
           <label className="station-capabilities-skill-search">
             <AppIcon name="search" className="vb-icon" aria-hidden="true" />
             <input

@@ -21,6 +21,15 @@ export function createEmptyMcpServer(): McpServerCapability {
   return { id: '', name: '', transport: 'stdio', command: '', args: [], env: {}, url: '', enabled: true }
 }
 
+/** Bulk on/off for every configured MCP server row — the "select all"
+ * counterpart to the per-row enabled toggle in `McpServersEditor`. */
+export function setAllMcpServersEnabled(
+  servers: McpServerCapability[],
+  enabled: boolean,
+): McpServerCapability[] {
+  return servers.map((server) => ({ ...server, enabled }))
+}
+
 export function createEmptyHook(): HookCapability {
   return { event: 'PreToolUse', matcher: '', command: '', note: '' }
 }
@@ -69,6 +78,27 @@ export function toggleDiscoveredSkill(
   return skills.map((skill, index) =>
     index === existingIndex ? { ...skill, enabled: checked } : skill,
   )
+}
+
+/** Bulk on/off across every scanned skill (workspace + global) plus any
+ * already-mounted "unmatched" entries (source file not found) — the "select
+ * all" counterpart to `toggleDiscoveredSkill`'s per-row checkbox. Mounts a
+ * fresh entry for each discovered skill when turning everything on; leaves
+ * an unmounted discovered skill alone when turning everything off (nothing
+ * to disable). Unmatched entries only ever get their `enabled` flag flipped,
+ * never removed — same "off means unmounted, not forgotten" semantics as the
+ * single-row toggle. */
+export function setAllSkillsEnabled(
+  skills: SkillCapability[],
+  discovered: DiscoveredSkill[],
+  enabled: boolean,
+): SkillCapability[] {
+  let next = skills
+  for (const item of discovered) {
+    next = toggleDiscoveredSkill(next, item, enabled)
+  }
+  const discoveredPaths = new Set(discovered.map((item) => item.sourcePath))
+  return next.map((skill) => (discoveredPaths.has(skill.sourcePath) ? skill : { ...skill, enabled }))
 }
 
 /** Mounted skills that don't match any scanned `SKILL.md` — e.g. one added
@@ -169,6 +199,23 @@ export function toggleDiscoveredHook(
     return hooks
   }
   return hooks.filter((_, index) => index !== existingIndex)
+}
+
+/** Bulk on/off across every scanned hook (workspace + global) — the "select
+ * all" counterpart to `toggleDiscoveredHook`'s per-row checkbox. Only ever
+ * touches checklist-sourced rows; manually-typed hooks (no discovered match)
+ * are left as-is since they have no on/off state of their own — they're
+ * removed via their own delete button, not this bulk action. */
+export function setAllHooksEnabled(
+  hooks: HookCapability[],
+  discovered: DiscoveredHook[],
+  enabled: boolean,
+): HookCapability[] {
+  let next = hooks
+  for (const item of discovered) {
+    next = toggleDiscoveredHook(next, item, enabled)
+  }
+  return next
 }
 
 /** Updates the `note` of whichever mounted hook matches a discovered rule's
