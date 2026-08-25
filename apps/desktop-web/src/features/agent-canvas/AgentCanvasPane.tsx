@@ -44,12 +44,13 @@ import './AgentCanvasPane.scss'
 
 /** Narrows a canvas node to its agent-kind variant — a mount node (MCP/
  * Skill/Hook) never anchors a `link`/`ownership` edge, never opens the
- * agent context menu, and never participates in align/distribute/color
- * actions (all agent-specific), so every call site that reaches this
- * already knows at runtime it's an agent node; this only teaches
- * TypeScript the same thing. Mount nodes DO participate in plain
- * selection/drag now (see `handleNodeClick`/`handleMarqueeSelect` below)
- * — this guard is no longer what gates that. */
+ * agent context menu, and never participates in the per-agent color
+ * actions (agent-specific), so every call site that reaches this already
+ * knows at runtime it's an agent node; this only teaches TypeScript the
+ * same thing. Mount nodes DO participate in plain selection/drag AND
+ * align/distribute now (see `handleNodeClick`/`handleMarqueeSelect`/
+ * `getSelectedNodeBoxes` below) — this guard is no longer what gates
+ * those. */
 function isAgentNode(
   node: GraphCanvasNode<AgentCanvasNodeData>,
 ): node is GraphCanvasNode<AgentCanvasAgentNodeData> {
@@ -512,11 +513,11 @@ export function AgentCanvasPane({
   )
 
   // Any node kind (agent or mount) enters plain click selection — a mount
-  // node still has no align/distribute/color/context-menu machinery (that
-  // stays agent-specific, gated by `isAgentNode` at each of those call
-  // sites), but it does get the selected-ring highlight and, via
-  // `dragGroupNodeIds` below, moves together with the rest of a
-  // multi-selection drag.
+  // node still has no per-agent color/context-menu machinery (that stays
+  // agent-specific, gated by `isAgentNode` at each of those call sites),
+  // but it does get the selected-ring highlight, participates in
+  // align/distribute (`getSelectedNodeBoxes`), and, via `dragGroupNodeIds`
+  // below, moves together with the rest of a multi-selection drag.
   const handleNodeClick = useCallback(
     (nodeId: string, event: ReactPointerEvent<HTMLDivElement>) => {
       const node = graph.nodes.find((candidate) => candidate.id === nodeId)
@@ -577,32 +578,35 @@ export function AgentCanvasPane({
   // `GraphCanvas`'s `onCommitNodePosition` doc comment) — bracketing
   // `beginHistoryBatch`/`endHistoryBatch` around the whole group's calls
   // makes the group undo as ONE Ctrl+Z instead of one per node.
+  // Shared by manual drag (`handleCommitNodePosition` below) AND
+  // align/distribute (`handleAlignSelectedNodes`/`handleDistributeSelectedNodes`
+  // further down) — a mount node's position is client-only storage
+  // (`commitMcpNodePosition`/`commitSkillNodePosition`/`commitHookNodePosition`),
+  // while an agent node's is backend-persisted (`commitInstancePosition`), so
+  // every caller that moves a node (whatever kind) needs this same branch.
+  const commitNodePositionByKind = useCallback(
+    (node: GraphCanvasNode<AgentCanvasNodeData>, position: { x: number; y: number }) => {
+      if (node.data.kind === 'mcp') {
+        commitMcpNodePosition(node.id, position)
+      } else if (node.data.kind === 'skill') {
+        commitSkillNodePosition(node.id, position)
+      } else if (node.data.kind === 'hook') {
+        commitHookNodePosition(node.id, position)
+      } else {
+        commitInstancePosition(node.id, node.data.agent.id, position)
+      }
+    },
+    [commitInstancePosition, commitMcpNodePosition, commitSkillNodePosition, commitHookNodePosition],
+  )
+
   const handleCommitNodePosition = useCallback(
     (nodeId: string, position: { x: number; y: number }, batch?: { index: number; total: number }) => {
       if (batch && batch.index === 0) beginHistoryBatch()
       const node = graph.nodes.find((candidate) => candidate.id === nodeId)
-      if (node) {
-        if (node.data.kind === 'mcp') {
-          commitMcpNodePosition(nodeId, position)
-        } else if (node.data.kind === 'skill') {
-          commitSkillNodePosition(nodeId, position)
-        } else if (node.data.kind === 'hook') {
-          commitHookNodePosition(nodeId, position)
-        } else {
-          commitInstancePosition(nodeId, node.data.agent.id, position)
-        }
-      }
+      if (node) commitNodePositionByKind(node, position)
       if (batch && batch.index === batch.total - 1) endHistoryBatch()
     },
-    [
-      graph.nodes,
-      commitInstancePosition,
-      commitMcpNodePosition,
-      commitSkillNodePosition,
-      commitHookNodePosition,
-      beginHistoryBatch,
-      endHistoryBatch,
-    ],
+    [graph.nodes, commitNodePositionByKind, beginHistoryBatch, endHistoryBatch],
   )
 
   const handleNodeContextMenu = useCallback(
@@ -839,54 +843,62 @@ export function AgentCanvasPane({
     [deleteDerivedLink, reportLinkActionError, locale],
   )
 
+  // Includes every selected node kind (agent AND mount) — align/distribute
+  // used to filter through `isAgentNode` here, which silently dropped any
+  // selected mount node from the box list even though it's still highlighted
+  // as selected (see `handleNodeClick`'s doc comment) and still has a real
+  // x/y/width/height on `graph.nodes`, so it moves via `commitNodePositionByKind`
+  // exactly like an agent node does.
   const getSelectedNodeBoxes = useCallback(
-    () => graph.nodes.filter(isAgentNode).filter((node) => selection.nodeIds.has(node.id)),
+    () => graph.nodes.filter((node) => selection.nodeIds.has(node.id)),
     [graph.nodes, selection.nodeIds],
   )
 
   // Align/distribute (feature 7 in docs/cw/06_P4.5開發進度.md's P4.6
   // follow-up) — pure position math over `selection.nodeIds`, then commits
-  // each moved node exactly like a manual drag would (`commitInstancePosition`
-  // already persists default instances via `agentCanvasSetLayout`, and keeps
-  // duplicate instances purely client-side); no new backend/schema.
+  // each moved node exactly like a manual drag would (`commitNodePositionByKind`
+  // already persists default instances via `agentCanvasSetLayout`, keeps
+  // duplicate instances purely client-side, and routes mount nodes to their
+  // own client-only position storage); no new backend/schema.
   const handleAlignSelectedNodes = useCallback(
     (direction: 'left' | 'right' | 'top' | 'bottom') => {
       const boxes = getSelectedNodeBoxes()
       if (boxes.length < 2) return
       if (direction === 'left') {
         const targetX = boxes.reduce((min, box) => Math.min(min, box.x), Infinity)
-        for (const box of boxes) commitInstancePosition(box.id, box.data.agent.id, { x: targetX, y: box.y })
+        for (const box of boxes) commitNodePositionByKind(box, { x: targetX, y: box.y })
       } else if (direction === 'right') {
         const targetRight = boxes.reduce((max, box) => Math.max(max, box.x + (box.width ?? AGENT_NODE_WIDTH)), -Infinity)
         for (const box of boxes) {
-          commitInstancePosition(box.id, box.data.agent.id, {
+          commitNodePositionByKind(box, {
             x: targetRight - (box.width ?? AGENT_NODE_WIDTH),
             y: box.y,
           })
         }
       } else if (direction === 'top') {
         const targetY = boxes.reduce((min, box) => Math.min(min, box.y), Infinity)
-        for (const box of boxes) commitInstancePosition(box.id, box.data.agent.id, { x: box.x, y: targetY })
+        for (const box of boxes) commitNodePositionByKind(box, { x: box.x, y: targetY })
       } else {
         const targetBottom = boxes.reduce((max, box) => Math.max(max, box.y + (box.height ?? AGENT_NODE_HEIGHT)), -Infinity)
         for (const box of boxes) {
-          commitInstancePosition(box.id, box.data.agent.id, {
+          commitNodePositionByKind(box, {
             x: box.x,
             y: targetBottom - (box.height ?? AGENT_NODE_HEIGHT),
           })
         }
       }
     },
-    [getSelectedNodeBoxes, commitInstancePosition],
+    [getSelectedNodeBoxes, commitNodePositionByKind],
   )
 
   // Distributes by each box's CENTER point (not its raw x/y origin) — matches
   // the `AlignHorizontalDistributeCenter`/`AlignVerticalDistributeCenter`
   // icons wired to these buttons, and gives sane results for a mixed
-  // regular-agent/subagent selection (different box sizes per
-  // `model/agent-canvas-graph.ts`'s `AGENT_NODE_*`/`SUBAGENT_NODE_*`
-  // constants) — distributing by origin would visibly diverge from what
-  // those icons promise once box sizes differ.
+  // agent/subagent/mount selection (different box sizes per
+  // `model/agent-canvas-graph.ts`'s `AGENT_NODE_*`/`SUBAGENT_NODE_*`/
+  // `MCP_NODE_*`/`SKILL_NODE_*`/`HOOK_NODE_*` constants) — distributing by
+  // origin would visibly diverge from what those icons promise once box
+  // sizes differ.
   const handleDistributeSelectedNodes = useCallback(
     (axis: 'horizontal' | 'vertical') => {
       const boxes = getSelectedNodeBoxes()
@@ -902,14 +914,13 @@ export function AgentCanvasPane({
       sorted.forEach((box, index) => {
         if (index === 0 || index === sorted.length - 1) return
         const targetOrigin = centerOf(first) + step * index - sizeOf(box) / 2
-        commitInstancePosition(
-          box.id,
-          box.data.agent.id,
+        commitNodePositionByKind(
+          box,
           axis === 'horizontal' ? { x: targetOrigin, y: box.y } : { x: box.x, y: targetOrigin },
         )
       })
     },
-    [getSelectedNodeBoxes, commitInstancePosition],
+    [getSelectedNodeBoxes, commitNodePositionByKind],
   )
 
   if (isEmpty) {
