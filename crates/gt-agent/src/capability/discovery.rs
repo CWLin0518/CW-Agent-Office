@@ -482,6 +482,151 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// What an `AgentOutputFile` should be treated as by the UI (docs/cw/14_Agent輸出清單化.md
+/// §3.1) — drives both the icon shown in the Agent Canvas output list and,
+/// eventually, what clicking a row does (render inline vs. hand off to the
+/// system): `Markdown` opens in-app via the existing `MarkdownRenderer`,
+/// `Webpage`/`Other` both go to the OS default program (§3.2 — an `Other`
+/// file gets no special handling, it's just not a markdown file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentOutputKind {
+    Markdown,
+    Webpage,
+    Other,
+}
+
+fn classify_output_extension(extension: &str) -> AgentOutputKind {
+    match extension.to_lowercase().as_str() {
+        "md" | "markdown" => AgentOutputKind::Markdown,
+        "html" | "htm" => AgentOutputKind::Webpage,
+        _ => AgentOutputKind::Other,
+    }
+}
+
+/// One file found directly under an agent's fixed output directory
+/// (`<workspace_root>/.gtoffice/agents/<agent_id>/outputs/`, docs/cw/14_Agent輸出清單化.md
+/// §3.1 — the sibling of `materialize.rs`'s `.../runtime/`). `id` is just
+/// `file_name` (unique within a flat, non-recursive directory listing, see
+/// `list_agent_output_files`) — good enough as a stable React key / lookup
+/// key without inventing a hash for content that's already addressable by
+/// name.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentOutputFile {
+    pub id: String,
+    pub file_name: String,
+    pub absolute_path: String,
+    pub kind: AgentOutputKind,
+    pub modified_at_ms: i64,
+    pub size_bytes: u64,
+}
+
+/// Scans `<workspace_root>/.gtoffice/agents/<agent_id>/outputs/` for files an
+/// agent has placed there (docs/cw/14_Agent輸出清單化.md §3.1/§4.1) —
+/// read-only, same "missing directory yields an empty list, not an error"
+/// convention as `list_available_skills`/`list_available_hooks` above (most
+/// agents will have no `outputs/` directory at all — that's not an error,
+/// nothing has been produced yet).
+///
+/// v1 is deliberately non-recursive (only files directly inside `outputs/`,
+/// subdirectories are skipped): matches every other scan in this module
+/// (flat `skills/<id>/`, flat hook entries) and keeps the "which file is
+/// this" identity simple (`id == file_name`, no path-collision risk against
+/// a nested file of the same name). Sorted by most-recently-modified first —
+/// unlike skills/hooks (sorted alphabetically, since those are configuration
+/// a user scans to recognize), an output list is more useful chronologically
+/// (an agent's latest report is usually the one worth checking, regardless
+/// of what its filename happens to sort as).
+pub fn list_agent_output_files(workspace_root: &Path, agent_id: &str) -> Vec<AgentOutputFile> {
+    let outputs_dir = workspace_root
+        .join(".gtoffice")
+        .join("agents")
+        .join(agent_id)
+        .join("outputs");
+    let entries = match std::fs::read_dir(&outputs_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::debug!(?outputs_dir, %error, "agent outputs directory not readable; skipping");
+            return Vec::new();
+        }
+    };
+
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue; // v1 is non-recursive — subdirectories are skipped, see doc comment above
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::debug!(?path, %error, "could not read metadata for output file; skipping");
+                continue;
+            }
+        };
+        let modified_at_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or_default();
+        let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+        files.push(AgentOutputFile {
+            id: file_name.to_string(),
+            file_name: file_name.to_string(),
+            absolute_path: path.to_string_lossy().into_owned(),
+            kind: classify_output_extension(extension),
+            modified_at_ms,
+            size_bytes: metadata.len(),
+        });
+    }
+    files.sort_by(|a, b| {
+        b.modified_at_ms
+            .cmp(&a.modified_at_ms)
+            .then_with(|| a.file_name.cmp(&b.file_name))
+    });
+    files
+}
+
+/// Resolves `file_name` to its absolute path inside an agent's fixed output
+/// directory — shared by the Tauri "open in system default program" command
+/// (docs/cw/14_Agent輸出清單化.md §3.2/§4.1) so path construction can't drift
+/// from `list_agent_output_files` above. `file_name` must be exactly one
+/// plain path component (no separators, no `..`, not absolute) — this
+/// guards a real risk, not just a UX nicety: the resolved path is handed
+/// straight to `open::that`, so accepting anything else here would let a
+/// crafted `file_name` escape the outputs directory. Also requires the
+/// resolved path to already exist as a file (defense in depth beyond the
+/// component check, and there is nothing sensible to "open" otherwise).
+pub fn resolve_agent_output_file_path(
+    workspace_root: &Path,
+    agent_id: &str,
+    file_name: &str,
+) -> Result<PathBuf, String> {
+    let candidate = Path::new(file_name);
+    let mut components = candidate.components();
+    let Some(std::path::Component::Normal(_)) = components.next() else {
+        return Err(format!("invalid output file name: {file_name}"));
+    };
+    if components.next().is_some() {
+        return Err(format!("invalid output file name: {file_name}"));
+    }
+    let path = workspace_root
+        .join(".gtoffice")
+        .join("agents")
+        .join(agent_id)
+        .join("outputs")
+        .join(candidate);
+    if !path.is_file() {
+        return Err(format!("output file not found: {file_name}"));
+    }
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,5 +1003,109 @@ mod tests {
             Some(r"C:\hooks\check.js".to_string())
         );
         assert_eq!(extract_script_path("echo hi"), None);
+    }
+
+    fn outputs_dir(root: &Path, agent_id: &str) -> PathBuf {
+        root.join(".gtoffice").join("agents").join(agent_id).join("outputs")
+    }
+
+    #[test]
+    fn missing_outputs_directory_yields_empty_not_error() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(list_agent_output_files(temp.path(), "agent-a").is_empty());
+    }
+
+    #[test]
+    fn classifies_files_by_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = outputs_dir(temp.path(), "agent-a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.md"), "# report").unwrap();
+        std::fs::write(dir.join("page.html"), "<html></html>").unwrap();
+        std::fs::write(dir.join("data.csv"), "a,b\n1,2").unwrap();
+
+        let found = list_agent_output_files(temp.path(), "agent-a");
+        assert_eq!(found.len(), 3);
+        let kind_of = |name: &str| found.iter().find(|f| f.file_name == name).unwrap().kind;
+        assert_eq!(kind_of("report.md"), AgentOutputKind::Markdown);
+        assert_eq!(kind_of("page.html"), AgentOutputKind::Webpage);
+        assert_eq!(kind_of("data.csv"), AgentOutputKind::Other);
+    }
+
+    #[test]
+    fn subdirectories_are_skipped_not_recursed_into() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = outputs_dir(temp.path(), "agent-a");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested").join("inner.md"), "nested").unwrap();
+        std::fs::write(dir.join("top.md"), "top level").unwrap();
+
+        let found = list_agent_output_files(temp.path(), "agent-a");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].file_name, "top.md");
+    }
+
+    #[test]
+    fn different_agents_have_isolated_output_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outputs_dir(temp.path(), "agent-a")).unwrap();
+        std::fs::write(
+            outputs_dir(temp.path(), "agent-a").join("a.md"),
+            "agent a's file",
+        )
+        .unwrap();
+        std::fs::create_dir_all(outputs_dir(temp.path(), "agent-b")).unwrap();
+
+        assert_eq!(list_agent_output_files(temp.path(), "agent-a").len(), 1);
+        assert!(list_agent_output_files(temp.path(), "agent-b").is_empty());
+    }
+
+    #[test]
+    fn sorted_most_recently_modified_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = outputs_dir(temp.path(), "agent-a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("older.md"), "older").unwrap();
+        // Force a distinguishable mtime ordering — same-millisecond writes on
+        // a fast filesystem could otherwise land in either order.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join("newer.md"), "newer").unwrap();
+
+        let found = list_agent_output_files(temp.path(), "agent-a");
+        assert_eq!(
+            found.iter().map(|f| f.file_name.as_str()).collect::<Vec<_>>(),
+            vec!["newer.md", "older.md"]
+        );
+    }
+
+    #[test]
+    fn resolves_existing_output_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = outputs_dir(temp.path(), "agent-a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.md"), "content").unwrap();
+
+        let resolved = resolve_agent_output_file_path(temp.path(), "agent-a", "report.md").unwrap();
+        assert_eq!(resolved, dir.join("report.md"));
+    }
+
+    #[test]
+    fn rejects_missing_output_file() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(resolve_agent_output_file_path(temp.path(), "agent-a", "missing.md").is_err());
+    }
+
+    #[test]
+    fn rejects_parent_traversal_in_file_name() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(resolve_agent_output_file_path(temp.path(), "agent-a", "../secrets.md").is_err());
+        assert!(resolve_agent_output_file_path(temp.path(), "agent-a", "nested/report.md").is_err());
+    }
+
+    #[test]
+    fn rejects_absolute_path_as_file_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let absolute = if cfg!(windows) { "C:\\secrets.md" } else { "/secrets.md" };
+        assert!(resolve_agent_output_file_path(temp.path(), "agent-a", absolute).is_err());
     }
 }

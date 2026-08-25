@@ -3,6 +3,7 @@ import { desktopApi } from '@shell/integration/desktop-api'
 import type {
   AgentCapabilitySnapshot,
   AgentLink,
+  AgentOutputFile,
   AgentProfile,
   AgentRuntimeStatus,
   HookCapability,
@@ -99,6 +100,7 @@ function persistedAgentLayout(agent: AgentProfile | undefined): { x: number; y: 
 const MCP_POSITIONS_STORAGE_PREFIX = 'agent-canvas.mcpPositions'
 const SKILL_POSITIONS_STORAGE_PREFIX = 'agent-canvas.skillPositions'
 const HOOK_POSITIONS_STORAGE_PREFIX = 'agent-canvas.hookPositions'
+const OUTPUT_POSITIONS_STORAGE_PREFIX = 'agent-canvas.outputPositions'
 /** Client-only display color for a mount node's dashed outline (docs P4.x
  * follow-up: right-click a mount node to change its default-gray border,
  * same as an agent/link's own color) — one shared bucket keyed by the
@@ -189,6 +191,9 @@ interface UseAgentCanvasDataResult {
   /** Sibling of `commitMcpNodePosition` for the Hook-mount node — see
    * `AgentCanvasHookNodeData`. */
   commitHookNodePosition: (hookNodeId: string, position: { x: number; y: number }) => void
+  /** Sibling of `commitMcpNodePosition` for the Output-list node — see
+   * `AgentCanvasOutputNodeData`. */
+  commitOutputNodePosition: (outputNodeId: string, position: { x: number; y: number }) => void
   /** Flips one MCP server's `enabled` flag within its agent's capability
    * snapshot and re-saves the whole snapshot (skills/hooks carried through
    * unchanged) — the canvas node's on/off switch, mirrored from the same
@@ -314,6 +319,17 @@ export function useAgentCanvasData(
     [capabilityByAgentId],
   )
 
+  // Unlike `capabilityByAgentId` (one `AgentCapabilitySnapshot` per agent,
+  // read via `agentCapabilityRead`), this is populated by a SEPARATE
+  // best-effort read (`agentCapabilityListOutputFiles`, docs/cw/14_Agent輸出清單化.md
+  // §4.3) inside the same `reload()` fan-out below — it's a read-only
+  // filesystem scan, not part of the persisted capability snapshot.
+  const [outputFilesByAgentId, setOutputFilesByAgentId] = useState<Record<string, AgentOutputFile[]>>({})
+  const outputFilesByAgentIdRef = useRef(outputFilesByAgentId)
+  useEffect(() => {
+    outputFilesByAgentIdRef.current = outputFilesByAgentId
+  })
+
   const [mcpNodePositions, setMcpNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
     workspaceId ? loadPositions(MCP_POSITIONS_STORAGE_PREFIX, workspaceId) : {},
   )
@@ -322,6 +338,9 @@ export function useAgentCanvasData(
   )
   const [hookNodePositions, setHookNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
     workspaceId ? loadPositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId) : {},
+  )
+  const [outputNodePositions, setOutputNodePositions] = useState<Record<string, { x: number; y: number }>>(() =>
+    workspaceId ? loadPositions(OUTPUT_POSITIONS_STORAGE_PREFIX, workspaceId) : {},
   )
   const [mountNodeColors, setMountNodeColors] = useState<Record<string, string>>(() =>
     workspaceId ? loadColors(MOUNT_COLORS_STORAGE_PREFIX, workspaceId) : {},
@@ -332,6 +351,7 @@ export function useAgentCanvasData(
       setMcpNodePositions(workspaceId ? loadPositions(MCP_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
       setSkillNodePositions(workspaceId ? loadPositions(SKILL_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
       setHookNodePositions(workspaceId ? loadPositions(HOOK_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
+      setOutputNodePositions(workspaceId ? loadPositions(OUTPUT_POSITIONS_STORAGE_PREFIX, workspaceId) : {})
       setMountNodeColors(workspaceId ? loadColors(MOUNT_COLORS_STORAGE_PREFIX, workspaceId) : {})
     }, 0)
     return () => window.clearTimeout(id)
@@ -459,19 +479,43 @@ export function useAgentCanvasData(
       setLoaded(true)
 
       // Best-effort per agent — one failed read shouldn't blank out every
-      // other agent's already-known MCP nodes on canvas.
-      const capabilityEntries = await Promise.all(
-        agentsResponse.agents.map(async (agent) => {
-          try {
-            const response = await desktopApi.agentCapabilityRead({ workspaceId, agentId: agent.id })
-            return [agent.id, response.capability] as const
-          } catch {
-            return [agent.id, capabilityByAgentIdRef.current[agent.id]] as const
-          }
-        }),
-      )
+      // other agent's already-known MCP nodes on canvas. Run concurrently
+      // with the output-files fan-out below (single outer `Promise.all`,
+      // not two sequential `await`s) — the two read independent data
+      // (persisted capability snapshot vs. filesystem output scan) for the
+      // same agent list, so awaiting one before starting the other would
+      // roughly double this reload's wall-clock time for no reason.
+      const [capabilityEntries, outputFileEntries] = await Promise.all([
+        Promise.all(
+          agentsResponse.agents.map(async (agent) => {
+            try {
+              const response = await desktopApi.agentCapabilityRead({ workspaceId, agentId: agent.id })
+              return [agent.id, response.capability] as const
+            } catch {
+              return [agent.id, capabilityByAgentIdRef.current[agent.id]] as const
+            }
+          }),
+        ),
+        // Same best-effort-per-agent shape as the capability read above, for
+        // the output-list node's file scan (docs/cw/14_Agent輸出清單化.md
+        // §4.3) — a separate read since it's not part of the persisted
+        // capability snapshot, just a filesystem listing.
+        Promise.all(
+          agentsResponse.agents.map(async (agent) => {
+            try {
+              const response = await desktopApi.agentCapabilityListOutputFiles({ workspaceId, agentId: agent.id })
+              return [agent.id, response.files] as const
+            } catch {
+              return [agent.id, outputFilesByAgentIdRef.current[agent.id]] as const
+            }
+          }),
+        ),
+      ])
       setCapabilityByAgentId(
         Object.fromEntries(capabilityEntries.filter((entry): entry is [string, AgentCapabilitySnapshot] => Boolean(entry[1]))),
+      )
+      setOutputFilesByAgentId(
+        Object.fromEntries(outputFileEntries.filter((entry): entry is [string, AgentOutputFile[]] => Boolean(entry[1]))),
       )
 
       // One-time migration: a workspace that never had an `instances` key
@@ -537,6 +581,8 @@ export function useAgentCanvasData(
         skillNodePositions,
         hookNodePositions,
         mountNodeColors,
+        outputFilesByAgentId,
+        outputNodePositions,
       ),
     [
       agents,
@@ -550,6 +596,8 @@ export function useAgentCanvasData(
       skillNodePositions,
       hookNodePositions,
       mountNodeColors,
+      outputFilesByAgentId,
+      outputNodePositions,
     ],
   )
 
@@ -687,6 +735,33 @@ export function useAgentCanvasData(
       })
     },
     [workspaceId, hookNodePositions, pushHistory],
+  )
+
+  // Output-list mount node — same client-only, undoable position store as
+  // MCP/Skill/Hook above, just against `outputNodePositions`.
+  const commitOutputNodePosition = useCallback(
+    (outputNodeId: string, position: { x: number; y: number }) => {
+      if (!workspaceId) return
+      const previousPosition = outputNodePositions[outputNodeId]
+      setOutputNodePositions((previous) => {
+        const next = { ...previous, [outputNodeId]: position }
+        savePositions(OUTPUT_POSITIONS_STORAGE_PREFIX, workspaceId, next)
+        return next
+      })
+      pushHistory(() => {
+        setOutputNodePositions((previous) => {
+          const next = { ...previous }
+          if (previousPosition) {
+            next[outputNodeId] = previousPosition
+          } else {
+            delete next[outputNodeId]
+          }
+          savePositions(OUTPUT_POSITIONS_STORAGE_PREFIX, workspaceId, next)
+          return next
+        })
+      })
+    },
+    [workspaceId, outputNodePositions, pushHistory],
   )
 
   /** Sets (or, `color: null`, resets to default gray) one mount node's
@@ -1010,6 +1085,7 @@ export function useAgentCanvasData(
     commitMcpNodePosition,
     commitSkillNodePosition,
     commitHookNodePosition,
+    commitOutputNodePosition,
     setMcpServerEnabled,
     setMountNodeColor,
     createAuthoredLink,

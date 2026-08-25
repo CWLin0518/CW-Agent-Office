@@ -2236,6 +2236,42 @@ export interface AgentCapabilityListAvailableHooksResponse {
   hooks: DiscoveredHook[]
 }
 
+/** Mirrors `crates/gt-agent/src/capability/discovery.rs::AgentOutputKind`. */
+export type AgentOutputKind = 'markdown' | 'webpage' | 'other'
+
+/** One file found by `agent_capability_list_output_files` directly under an
+ * agent's fixed output directory (`<workspace_root>/.gtoffice/agents/<agent_id>/outputs/`,
+ * docs/cw/14_Agent輸出清單化.md §3.1/§4.1) — backs the Agent Canvas output
+ * list node. `id` is the file name (unique within a flat, non-recursive
+ * listing). */
+export interface AgentOutputFile {
+  id: string
+  fileName: string
+  absolutePath: string
+  kind: AgentOutputKind
+  modifiedAtMs: number
+  sizeBytes: number
+}
+
+export interface AgentCapabilityListOutputFilesRequest {
+  workspaceId: string
+  agentId: string
+}
+
+export interface AgentCapabilityListOutputFilesResponse {
+  files: AgentOutputFile[]
+}
+
+export interface AgentCapabilityOpenOutputFileRequest {
+  workspaceId: string
+  agentId: string
+  fileName: string
+}
+
+export interface AgentCapabilityOpenOutputFileResponse {
+  opened: boolean
+}
+
 export interface AgentGitTrackingSetRequest {
   workspaceId: string
   agentId: string
@@ -4772,6 +4808,26 @@ export const desktopApi = {
         },
       },
     )
+  },
+  agentCapabilityListOutputFiles(request: AgentCapabilityListOutputFilesRequest) {
+    return invokeCommand<AgentCapabilityListOutputFilesResponse>(
+      'agent_capability_list_output_files',
+      {
+        request: {
+          workspaceId: request.workspaceId,
+          agentId: request.agentId,
+        },
+      },
+    )
+  },
+  agentCapabilityOpenOutputFile(request: AgentCapabilityOpenOutputFileRequest) {
+    return invokeCommand<AgentCapabilityOpenOutputFileResponse>('agent_capability_open_output_file', {
+      request: {
+        workspaceId: request.workspaceId,
+        agentId: request.agentId,
+        fileName: request.fileName,
+      },
+    })
   },
   agentGitTrackingSet(request: AgentGitTrackingSetRequest) {
     return invokeCommand<AgentGitTrackingSetResponse>('agent_git_tracking_set', {

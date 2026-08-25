@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use gt_abstractions::{WorkspaceId, WorkspaceService};
 use gt_agent::{
-    default_agent_workdir, prompt_file_name_for_tool, AgentPolicy, AgentPolicyRepository,
-    AgentProfile, AgentRepository, AgentScope, AgentState, CreateAgentInput, UpdateAgentInput,
+    default_agent_workdir, default_output_guidance_prompt_content, prompt_file_name_for_tool,
+    AgentPolicy, AgentPolicyRepository, AgentProfile, AgentRepository, AgentScope, AgentState,
+    CreateAgentInput, UpdateAgentInput,
 };
 use gt_storage::{SqliteAgentRepository, SqliteStorage};
 use serde::Deserialize;
@@ -501,6 +502,18 @@ pub(crate) fn agent_create_with_repo(
 
     let agent = repo.create_agent(input).map_err(to_command_error)?;
     if prompt_enabled {
+        // Only when the user (and no external template) supplied any real
+        // content does `prompt_content` stay as-is — a genuinely empty
+        // prompt (docs/cw/14_Agent輸出清單化.md §4.1 follow-up: this repo's
+        // agents had no way to learn the output-list node's fixed directory
+        // convention exists at all, so it silently never got used) gets this
+        // one-line seed instead of an empty file. Never touches a prompt the
+        // user actually wrote or loaded.
+        let prompt_content = if prompt_content.as_deref().map(str::trim).is_none_or(str::is_empty) {
+            Some(default_output_guidance_prompt_content(&agent.id))
+        } else {
+            prompt_content
+        };
         if let Err(error) = write_prompt_file(
             workspace_root,
             workdir.as_str(),

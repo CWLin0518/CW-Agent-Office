@@ -165,6 +165,8 @@ pub fn run() {
             agent::capability::agent_capability_save,
             agent::capability::agent_capability_list_available_skills,
             agent::capability::agent_capability_list_available_hooks,
+            agent::capability::agent_capability_list_output_files,
+            agent::capability::agent_capability_open_output_file,
             agent_canvas::agent_canvas_list_links,
             agent_canvas::agent_canvas_runtime_status,
             agent_canvas::agent_canvas_set_layout,

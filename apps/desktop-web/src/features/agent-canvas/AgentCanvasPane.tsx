@@ -11,7 +11,8 @@ import {
 import { createPortal } from 'react-dom'
 import { localeOptions, t, type Locale, type TranslationKey } from '@shell/i18n/ui-locale'
 import { AppIcon } from '@shell/ui/icons'
-import type { AgentLink } from '@shell/integration/desktop-api'
+import { desktopApi, type AgentLink, type AgentOutputFile } from '@shell/integration/desktop-api'
+import { MarkdownRenderer } from '@/components/editor/MarkdownRenderer'
 import {
   GraphCanvas,
   type GraphCanvasHandle,
@@ -24,6 +25,7 @@ import {
   AgentCanvasHookNodeCard,
   AgentCanvasMcpNodeCard,
   AgentCanvasNodeCard,
+  AgentCanvasOutputNodeCard,
   AgentCanvasSkillNodeCard,
   type AgentPortHandlers,
   type AgentPortKind,
@@ -34,6 +36,7 @@ import {
   AGENT_NODE_HEIGHT,
   AGENT_NODE_WIDTH,
   computeAgentInputPortLayout,
+  computeAgentOutputPortLayout,
   computePortEdgeGeometry,
   computeVerticalPortEdgeGeometry,
   type AgentCanvasAgentNodeData,
@@ -258,6 +261,7 @@ export function AgentCanvasPane({
     commitMcpNodePosition,
     commitSkillNodePosition,
     commitHookNodePosition,
+    commitOutputNodePosition,
     setMcpServerEnabled,
     setMountNodeColor,
     createAuthoredLink,
@@ -276,6 +280,17 @@ export function AgentCanvasPane({
   const [nodeContextMenu, setNodeContextMenu] = useState<NodeContextMenuState | null>(null)
   const [wireContextMenu, setWireContextMenu] = useState<WireContextMenuState | null>(null)
   const [mountColorMenu, setMountColorMenu] = useState<MountColorMenuState | null>(null)
+  // Markdown preview dialog for an output-list row click (docs/cw/14_Agent輸出清單化.md
+  // §4.4/§3.2) — `content`/`error` start `null` (still loading) the instant
+  // `file` is set; a `webpage`/`other` row never sets this at all (it goes
+  // straight to `agentCapabilityOpenOutputFile` instead, see
+  // `handleOutputFileClick` below).
+  const [outputPreview, setOutputPreview] = useState<{
+    agentId: string
+    file: AgentOutputFile
+    content: string | null
+    error: string | null
+  } | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   // Independent of the app-wide `locale` prop — this dialog remembers its
   // own zh/en choice (seeded from the app locale on first render) so
@@ -592,11 +607,19 @@ export function AgentCanvasPane({
         commitSkillNodePosition(node.id, position)
       } else if (node.data.kind === 'hook') {
         commitHookNodePosition(node.id, position)
+      } else if (node.data.kind === 'output') {
+        commitOutputNodePosition(node.id, position)
       } else {
         commitInstancePosition(node.id, node.data.agent.id, position)
       }
     },
-    [commitInstancePosition, commitMcpNodePosition, commitSkillNodePosition, commitHookNodePosition],
+    [
+      commitInstancePosition,
+      commitMcpNodePosition,
+      commitSkillNodePosition,
+      commitHookNodePosition,
+      commitOutputNodePosition,
+    ],
   )
 
   const handleCommitNodePosition = useCallback(
@@ -783,6 +806,41 @@ export function AgentCanvasPane({
     [mountColorMenu, setMountNodeColor],
   )
 
+  // Clicking a row in the output-list node (docs/cw/14_Agent輸出清單化.md
+  // §4.4/§3.2): `markdown` opens the in-app preview dialog below (fetched via
+  // the existing `fs_read_file`, same command every other in-app markdown
+  // viewer in this app already uses — no new read path needed); `webpage`/
+  // `other` both hand off to the OS default program instead, no dialog.
+  const handleOutputFileClick = useCallback(
+    (agentId: string, file: AgentOutputFile) => {
+      if (!workspaceId) return
+      if (file.kind !== 'markdown') {
+        desktopApi
+          .agentCapabilityOpenOutputFile({ workspaceId, agentId, fileName: file.fileName })
+          .catch((error) => console.error('[agent-canvas] failed to open output file', error))
+        return
+      }
+      setOutputPreview({ agentId, file, content: null, error: null })
+      desktopApi
+        .fsReadFile(workspaceId, `.gtoffice/agents/${agentId}/outputs/${file.fileName}`)
+        .then((response) => {
+          setOutputPreview((previous) =>
+            previous && previous.agentId === agentId && previous.file.id === file.id
+              ? { ...previous, content: response.previewable ? response.content : null, error: response.previewable ? null : 'AGENT_OUTPUT_PREVIEW_UNAVAILABLE' }
+              : previous,
+          )
+        })
+        .catch((error) => {
+          setOutputPreview((previous) =>
+            previous && previous.agentId === agentId && previous.file.id === file.id
+              ? { ...previous, error: String(error) }
+              : previous,
+          )
+        })
+    },
+    [workspaceId],
+  )
+
   const selectedAuthoredLinks = resolveSelectedAuthoredLinks(selection.edgeIds)
 
   // Side effects (the confirm dialog, the delete calls) run directly in the
@@ -964,7 +1022,8 @@ export function AgentCanvasPane({
     mountColorMenuNode &&
     (mountColorMenuNode.data.kind === 'mcp' ||
       mountColorMenuNode.data.kind === 'skill' ||
-      mountColorMenuNode.data.kind === 'hook')
+      mountColorMenuNode.data.kind === 'hook' ||
+      mountColorMenuNode.data.kind === 'output')
       ? mountColorMenuNode.data.color ?? null
       : null
 
@@ -997,7 +1056,7 @@ export function AgentCanvasPane({
         if (node.data.kind === 'mcp') {
           return `agent-canvas-node-shell--mcp${node.data.server.enabled ? '' : ' agent-canvas-node-shell--mcp-disabled'}${selectedClass}`
         }
-        if (node.data.kind === 'skill' || node.data.kind === 'hook') {
+        if (node.data.kind === 'skill' || node.data.kind === 'hook' || node.data.kind === 'output') {
           return `agent-canvas-node-shell--capability agent-canvas-node-shell--${node.data.kind}${selectedClass}`
         }
         return `agent-canvas-node-shell--${node.data.runtimeState}${selectedClass}`
@@ -1008,6 +1067,7 @@ export function AgentCanvasPane({
         if (node.data.kind === 'mcp') return node.data.server.name?.trim() || node.data.server.id
         if (node.data.kind === 'skill') return 'Skills'
         if (node.data.kind === 'hook') return 'Hooks'
+        if (node.data.kind === 'output') return t(locale, '輸出', 'Output')
         return t(locale, 'agentCanvas.nodeLabel', {
           name: node.data.agent.name || node.data.agent.id,
           status: statusLabel(locale, node.data.runtimeState),
@@ -1044,6 +1104,16 @@ export function AgentCanvasPane({
               node={data}
               locale={locale}
               onContextMenu={(event) => handleMountNodeContextMenu(data.id, event)}
+            />
+          )
+        }
+        if (data.kind === 'output') {
+          return (
+            <AgentCanvasOutputNodeCard
+              node={data}
+              locale={locale}
+              onContextMenu={(event) => handleMountNodeContextMenu(data.id, event)}
+              onFileClick={(file) => handleOutputFileClick(data.agentId, file)}
             />
           )
         }
@@ -1117,6 +1187,27 @@ export function AgentCanvasPane({
                 d={geometry.path}
                 className={`agent-canvas-edge agent-canvas-edge--${edge.data.kind}`}
               />
+            </g>
+          )
+        }
+        if (edge.data.kind === 'output-mount') {
+          // Reversed vs. mcp/skill/hook-mount above — `from` is the AGENT
+          // here (the output node sits to its right, not left), so the
+          // anchor slot comes off `from`'s own combined output-side stack
+          // instead of `to`'s input-side one. See `AgentCanvasEdgeData`'s
+          // `output-mount` doc comment.
+          if (!isAgentNode(from)) return null
+          const { total, mountIndex } = computeAgentOutputPortLayout(from.data)
+          const geometry = computePortEdgeGeometry(
+            from,
+            to,
+            { index: mountIndex ?? 0, total },
+            undefined,
+          )
+          return (
+            <g pointerEvents="none">
+              <title>{t(locale, '輸出檔案', 'Output files')}</title>
+              <path d={geometry.path} className="agent-canvas-edge agent-canvas-edge--output-mount" />
             </g>
           )
         }
@@ -1465,6 +1556,47 @@ export function AgentCanvasPane({
                       <li key={key}>{t(helpLocale, key)}</li>
                     ))}
                   </ul>
+                </div>
+              </div>,
+              document.body,
+            )}
+          {outputPreview &&
+            createPortal(
+              <div className="agent-canvas-help-backdrop" onClick={() => setOutputPreview(null)}>
+                <div
+                  className="agent-canvas-output-preview-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={outputPreview.file.fileName}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="agent-canvas-help-dialog-header">
+                    <h2>{outputPreview.file.fileName}</h2>
+                    <button
+                      type="button"
+                      className="agent-canvas-icon-button"
+                      onClick={() => setOutputPreview(null)}
+                      title={t(locale, '關閉', 'Close')}
+                      aria-label={t(locale, '關閉', 'Close')}
+                    >
+                      <AppIcon name="close" aria-hidden="true" />
+                    </button>
+                  </div>
+                  <div className="agent-canvas-output-preview-body">
+                    {outputPreview.error ? (
+                      <p className="agent-canvas-output-preview-error">
+                        {t(locale, '無法預覽此檔案', 'Unable to preview this file')}
+                      </p>
+                    ) : outputPreview.content === null ? (
+                      <p className="agent-canvas-output-preview-loading">{t(locale, '載入中…', 'Loading…')}</p>
+                    ) : (
+                      <MarkdownRenderer
+                        content={outputPreview.content}
+                        filePath={outputPreview.file.absolutePath}
+                        workspaceRoot={null}
+                      />
+                    )}
+                  </div>
                 </div>
               </div>,
               document.body,

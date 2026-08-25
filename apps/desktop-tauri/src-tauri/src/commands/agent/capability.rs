@@ -159,6 +159,68 @@ pub fn agent_capability_list_available_hooks(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentCapabilityListOutputFilesRequest {
+    pub workspace_id: String,
+    pub agent_id: String,
+}
+
+/// Backs the Agent Canvas output list node (docs/cw/14_Agent輸出清單化.md
+/// §4.1) — read-only scan of this agent's fixed output directory
+/// (`<workspace_root>/.gtoffice/agents/<agent_id>/outputs/`), same
+/// "directory doesn't exist yet" == empty-list convention as
+/// `agent_capability_list_available_skills`/`_hooks` above. Lives alongside
+/// those two rather than in the `agent_canvas` command module: like skills/
+/// hooks discovery, this is a read-only scan of files belonging to the
+/// agent itself, not canvas-specific state (links/layout/color) the way the
+/// rest of `agent_canvas::*` is.
+#[tauri::command]
+pub fn agent_capability_list_output_files(
+    request: AgentCapabilityListOutputFilesRequest,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    ensure_workspace_exists(&state, &request.workspace_id)?;
+    let workspace_root = get_workspace_root(&state, &request.workspace_id)?;
+    let files = gt_agent::list_agent_output_files(&workspace_root, &request.agent_id);
+    Ok(json!({ "files": files }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilityOpenOutputFileRequest {
+    pub workspace_id: String,
+    pub agent_id: String,
+    pub file_name: String,
+}
+
+/// Backs the Agent Canvas output list node's non-markdown rows (docs/cw/14_Agent輸出清單化.md
+/// §3.2/§4.4) — hands the file off to the OS default program (a `.html` file
+/// opens in the user's default browser, anything else opens in whatever the
+/// OS associates with it). Reuses the same `open` crate `fs_show_in_folder`
+/// already depends on (`apps/desktop-tauri/src-tauri/Cargo.toml`'s
+/// `open = "5.3"`) rather than adding a Tauri plugin for this. `file_name`
+/// (not a client-supplied absolute path) is what's trusted here —
+/// `resolve_agent_output_file_path` reconstructs the real path server-side
+/// and rejects anything that isn't a single, existing, plain file name
+/// directly inside this agent's outputs directory.
+#[tauri::command]
+pub fn agent_capability_open_output_file(
+    request: AgentCapabilityOpenOutputFileRequest,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    ensure_workspace_exists(&state, &request.workspace_id)?;
+    let workspace_root = get_workspace_root(&state, &request.workspace_id)?;
+    let path = gt_agent::resolve_agent_output_file_path(
+        &workspace_root,
+        &request.agent_id,
+        &request.file_name,
+    )
+    .map_err(|error| format!("AGENT_OUTPUT_FILE_INVALID: {error}"))?;
+    open::that(&path).map_err(|error| format!("AGENT_OUTPUT_OPEN_FAILED: {error}"))?;
+    Ok(json!({ "opened": true }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentCapabilityReadRequest {
     pub workspace_id: String,
     pub agent_id: String,

@@ -228,6 +228,50 @@
   }
 }
 
+// Markdown output preview (docs/cw/14_Agent輸出清單化.md §4.4) — reuses
+// `.agent-canvas-help-backdrop`/`.agent-canvas-help-dialog-header` as-is
+// (generic modal chrome, not help-specific despite the class name) but
+// needs its own, wider dialog shell since rendered markdown reads worse
+// squeezed into the help dialog's 480px cap.
+.agent-canvas-output-preview-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: #{rem(12)};
+  width: 100%;
+  max-width: #{rem(720)};
+  max-height: 80vh;
+  padding: #{rem(18)} #{rem(20)};
+  border-radius: #{rem(14)};
+  // Same "opaque literal, opts out of vibrancy" reasoning as
+  // `.agent-canvas-help-dialog` above.
+  background: #f5f5f7;
+  border: var(--vb-border-width) solid var(--vb-border);
+  box-shadow: 0 #{rem(16)} #{rem(40)} rgba(0, 0, 0, 0.24);
+
+  h2 {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: #{rem(15)};
+    font-weight: 700;
+    color: var(--vb-text);
+  }
+}
+
+.agent-canvas-output-preview-body {
+  overflow-y: auto;
+  min-height: #{rem(80)};
+  font-size: #{rem(13)};
+  color: var(--vb-text);
+}
+
+.agent-canvas-output-preview-loading,
+.agent-canvas-output-preview-error {
+  margin: 0;
+  color: var(--vb-text-muted);
+}
+
 .agent-canvas-controls {
   position: absolute;
   bottom: #{rem(12)};
@@ -675,6 +719,29 @@
   &--disabled {
     opacity: 0.55;
   }
+
+  // Output-list rows (docs/cw/14_Agent輸出清單化.md §4.4) are `<button>`s,
+  // not `<div>`s — reset the browser chrome a Skill/Hook row's plain `<div>`
+  // never had, and lay the icon out inline with the file name instead of
+  // this base rule's stacked (name-above-command) column direction.
+  &--clickable {
+    flex-direction: row;
+    align-items: center;
+    gap: #{rem(6)};
+    width: 100%;
+    border: none;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+}
+
+.agent-canvas-capability-node-dropdown-item-icon {
+  flex: none;
+  width: #{rem(12)};
+  height: #{rem(12)};
+  color: var(--vb-text-muted);
 }
 
 .agent-canvas-capability-node-dropdown-item-name {
@@ -793,7 +860,8 @@
 // above.
 .agent-canvas-port--mcp,
 .agent-canvas-port--skill,
-.agent-canvas-port--hook {
+.agent-canvas-port--hook,
+.agent-canvas-port--output-mount {
   border-radius: #{rem(2)};
   border-color: var(--vb-accent);
   transform-origin: center;
@@ -807,6 +875,19 @@
 .agent-canvas-port--mcp-anchor {
   // -radius — see `.agent-canvas-port--input`'s comment above.
   right: -5px;
+  cursor: default;
+  pointer-events: none;
+}
+
+// The output-list node's own single, non-interactive anchor point — LEFT
+// side, unlike `.agent-canvas-port--mcp-anchor` above, because the
+// `output-mount` edge direction is reversed (agent -> output node, not
+// mount -> agent): this node sits to the agent's RIGHT, so the wire enters
+// HERE at its left edge (see `computePortEdgeGeometry`'s `to.x` == `to`'s
+// left edge, and `AgentCanvasEdgeData`'s `output-mount` doc comment).
+.agent-canvas-port--output-anchor {
+  // -radius — see `.agent-canvas-port--input`'s comment above.
+  left: -5px;
   cursor: default;
   pointer-events: none;
 }
@@ -922,7 +1003,8 @@
 // not "a relationship."
 .agent-canvas-edge--mcp-mount,
 .agent-canvas-edge--skill-mount,
-.agent-canvas-edge--hook-mount {
+.agent-canvas-edge--hook-mount,
+.agent-canvas-edge--output-mount {
   stroke: var(--vb-accent);
   stroke-dasharray: #{rem(1.5)} #{rem(4)};
   stroke-linecap: round;

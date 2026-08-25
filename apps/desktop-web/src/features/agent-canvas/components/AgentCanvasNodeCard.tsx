@@ -4,10 +4,12 @@ import { AppIcon, type AppIconName } from '@shell/ui/icons'
 import { resolveAgentModelDisplayLabel } from '@features/workspace-hub/agent-management-model'
 import {
   computeAgentInputPortLayout,
+  computeAgentOutputPortLayout,
   computePortSlotCenterOffset,
   type AgentCanvasAgentNodeData,
   type AgentCanvasHookNodeData,
   type AgentCanvasMcpNodeData,
+  type AgentCanvasOutputNodeData,
   type AgentCanvasSkillNodeData,
 } from '../model/agent-canvas-graph'
 import { statusLabel } from '../model/agent-canvas-status-label'
@@ -55,10 +57,15 @@ interface AgentCanvasNodeCardProps {
 
 /** One side's stack of port dots: one per already-connected authored link,
  * plus a trailing "+" to start a new one. `total` is shared across every
- * dot AND the "+" so they're evenly spaced and centered as one group. */
+ * dot AND the "+" so they're evenly spaced and centered as one group.
+ * `mountId` (output side only, docs/cw/14_Agent輸出清單化.md §4.2) fans a
+ * SECOND, non-interactive dot into the same stack after the link ids — same
+ * "mount dot gets its own modifier class" shape `InputPortSlots` below uses
+ * for MCP mounts, just with at most one item instead of an array. */
 function PortSlots({
   portKind,
   linkIds,
+  mountId,
   agentId,
   locale,
   getPortHandlers,
@@ -66,12 +73,22 @@ function PortSlots({
 }: {
   portKind: AgentPortKind
   linkIds: string[]
+  mountId?: string | null
   agentId: string
   locale: Locale
   getPortHandlers: (portKind: AgentPortKind, rewireLinkId?: string) => AgentPortHandlers
   onPortSlotContextMenu: (portKind: AgentPortKind, linkId: string, event: ReactMouseEvent<HTMLDivElement>) => void
 }) {
-  const total = linkIds.length + 1
+  const hasMount = mountId != null
+  // Shares its arithmetic with `AgentCanvasPane`'s `renderEdge` (both read
+  // off `computeAgentOutputPortLayout`) so the mount dot's slot here can
+  // never drift from where the `output-mount` wire anchors to it — same
+  // "single source of truth" reasoning `computeAgentInputPortLayout` and
+  // `InputPortSlots` below already follow for the input side.
+  const { total } = computeAgentOutputPortLayout({
+    outputLinkIds: linkIds,
+    outputMountId: mountId ?? null,
+  })
   const addHandlers = getPortHandlers(portKind)
   return (
     <>
@@ -88,10 +105,18 @@ function PortSlots({
           {...getPortHandlers(portKind, linkId)}
         />
       ))}
+      {hasMount && (
+        <div
+          className={`agent-canvas-port agent-canvas-port--${portKind} agent-canvas-port--output-mount`}
+          style={{ transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(linkIds.length, total)}px))` }}
+          title={t(locale, '輸出檔案', 'Output files')}
+          aria-hidden="true"
+        />
+      )}
       <div
         className={`agent-canvas-port agent-canvas-port--${portKind} agent-canvas-port--add`}
         style={{
-          transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(linkIds.length, total)}px))`,
+          transform: `translateY(calc(-50% + ${computePortSlotCenterOffset(linkIds.length + (hasMount ? 1 : 0), total)}px))`,
         }}
         data-no-drag
         data-port={portKind}
@@ -210,8 +235,17 @@ export function AgentCanvasNodeCard({
   onPortSlotContextMenu,
   onRequestEdit,
 }: AgentCanvasNodeCardProps) {
-  const { agent, runtimeState, outputLinkIds, inputLinkIds, childAgentIds, mcpMountIds, skillMountId, hookMountId } =
-    node
+  const {
+    agent,
+    runtimeState,
+    outputLinkIds,
+    inputLinkIds,
+    childAgentIds,
+    mcpMountIds,
+    skillMountId,
+    hookMountId,
+    outputMountId,
+  } = node
   const title = agent.name || agent.id
   const isSubagent = Boolean(agent.parentAgentId)
   const modelLabel = resolveAgentModelDisplayLabel(agent.tool, agent.launchCommand)
@@ -267,6 +301,7 @@ export function AgentCanvasNodeCard({
       <PortSlots
         portKind="output"
         linkIds={outputLinkIds}
+        mountId={outputMountId}
         agentId={agent.id}
         locale={locale}
         getPortHandlers={getPortHandlers}
@@ -553,6 +588,83 @@ export function AgentCanvasHookNodeCard({ node, locale, onContextMenu }: AgentCa
         )}
       </div>
       <div className="agent-canvas-port agent-canvas-port--mcp-anchor" aria-hidden="true" />
+    </>
+  )
+}
+
+interface AgentCanvasOutputNodeCardProps {
+  node: AgentCanvasOutputNodeData
+  locale: Locale
+  /** Same split as `AgentCanvasMcpNodeCardProps.onContextMenu`. */
+  onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>) => void
+  /** Fired when a row is clicked (docs/cw/14_Agent輸出清單化.md §4.4) — the
+   * caller decides what that means (markdown: open an in-app preview;
+   * webpage/other: hand off to the system default program), this component
+   * only reports which file was picked. */
+  onFileClick: (file: AgentCanvasOutputNodeData['files'][number]) => void
+}
+
+/** Output-list sibling of `AgentCanvasSkillNodeCard`/`AgentCanvasHookNodeCard`
+ * above — same collapsed-header-expands-to-list shape, but anchored to the
+ * agent's OUTPUT (right) side (see `InputPortSlots` vs. the output `PortSlots`
+ * call in `AgentCanvasNodeCard`) and, unlike those two read-only summaries,
+ * each row is clickable (`onFileClick`). */
+export function AgentCanvasOutputNodeCard({ node, locale, onContextMenu, onFileClick }: AgentCanvasOutputNodeCardProps) {
+  const [expanded, setExpanded] = useState(false)
+  const { files } = node
+  return (
+    <>
+      <div
+        className="agent-canvas-capability-node agent-canvas-capability-node--output"
+        style={mountColorStyle(node.color)}
+        onContextMenu={onContextMenu}
+      >
+        <CapabilityDropdownHeader
+          iconName="file-text"
+          title={t(locale, '輸出', 'Output')}
+          // Every scanned output file is "enabled" (there's no per-item
+          // on/off concept for a produced file, unlike a mounted Skill) —
+          // same "just the number" collapsed form Hooks uses.
+          enabledCount={files.length}
+          totalCount={files.length}
+          expanded={expanded}
+          onToggle={() => setExpanded((previous) => !previous)}
+          locale={locale}
+          expandLabelZh="展開輸出檔案清單"
+          expandLabelEn="Expand output files"
+          collapseLabelZh="收合輸出檔案清單"
+          collapseLabelEn="Collapse output files"
+        />
+        {expanded && (
+          <div
+            className="agent-canvas-capability-node-dropdown"
+            data-no-drag
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {files.map((file) => (
+              <button
+                type="button"
+                key={file.id}
+                className="agent-canvas-capability-node-dropdown-item agent-canvas-capability-node-dropdown-item--clickable"
+                title={file.absolutePath}
+                onClick={() => onFileClick(file)}
+              >
+                <AppIcon
+                  name={file.kind === 'webpage' ? 'external' : 'file-text'}
+                  className="agent-canvas-capability-node-dropdown-item-icon"
+                  aria-hidden="true"
+                />
+                <span className="agent-canvas-capability-node-dropdown-item-name">{file.fileName}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {/* Anchors at the node's LEFT edge, not `.agent-canvas-port--mcp-anchor`'s
+          right (docs/cw/14_Agent輸出清單化.md §4.2) — the `output-mount` edge
+          is reversed (`from` = agent, `to` = this node), so the wire enters
+          HERE at `to.x` (this node's left edge), not its right. */}
+      <div className="agent-canvas-port agent-canvas-port--output-anchor" aria-hidden="true" />
     </>
   )
 }

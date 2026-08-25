@@ -9,6 +9,7 @@
 
 import type {
   AgentLink,
+  AgentOutputFile,
   AgentProfile,
   AgentRuntimeState,
   AgentRuntimeStatus,
@@ -40,6 +41,12 @@ export const SKILL_NODE_WIDTH = 160
 export const SKILL_NODE_HEIGHT = 48
 export const HOOK_NODE_WIDTH = 160
 export const HOOK_NODE_HEIGHT = 48
+/** Output-list node (docs/cw/14_Agent輸出清單化.md §4.2) — same collapsed
+ * footprint as the MCP/Skill/Hook mount nodes, but anchored to the agent's
+ * OUTPUT (right) side instead of its input (left) side, since it summarizes
+ * what the agent produced rather than what's mounted on it. */
+export const OUTPUT_NODE_WIDTH = 160
+export const OUTPUT_NODE_HEIGHT = 48
 const NODE_HSPACING = 64
 const NODE_VSPACING = 56
 
@@ -60,6 +67,13 @@ export function buildSkillNodeId(agentId: string): string {
 
 export function buildHookNodeId(agentId: string): string {
   return `hook:${agentId}`
+}
+
+/** Sibling of `buildSkillNodeId`/`buildHookNodeId` for the output-list node
+ * (docs/cw/14_Agent輸出清單化.md §4.2) — one per agent, same "at most one"
+ * rule. */
+export function buildOutputNodeId(agentId: string): string {
+  return `output:${agentId}`
 }
 
 function nodeSizeForAgent(agent: AgentProfile): { width: number; height: number } {
@@ -127,6 +141,14 @@ export interface AgentCanvasAgentNodeData {
   /** `buildHookNodeId(agentId)`, same "null when nothing mounted" rule as
    * `skillMountId`, fanned in after it. */
   hookMountId: string | null
+  /** `buildOutputNodeId(agentId)` when this agent has at least one file in
+   * its fixed output directory (docs/cw/14_Agent輸出清單化.md §3.1/§4.2),
+   * else `null` — same "presence == has something to show" rule as
+   * `skillMountId`/`hookMountId`. Unlike those three, this fans into the
+   * agent's OUTPUT-side port stack (with `outputLinkIds`), not the input-side
+   * one — see `computeAgentOutputPortLayout`. Only populated on the primary
+   * instance, same as the other mount ids. */
+  outputMountId: string | null
 }
 
 /** One MCP-server-mount node — a draggable canvas citizen (position is
@@ -179,11 +201,27 @@ export interface AgentCanvasHookNodeData {
   color?: string | null
 }
 
+/** Output-list node — one per agent, summarizing every file found in that
+ * agent's fixed output directory (docs/cw/14_Agent輸出清單化.md §3.1/§4.2).
+ * Read-only, same shape as `AgentCanvasSkillNodeData`/`AgentCanvasHookNodeData`
+ * (collapsed dropdown header expanding to a list), but anchored to the
+ * agent's OUTPUT side — see `AgentCanvasAgentNodeData.outputMountId`. */
+export interface AgentCanvasOutputNodeData {
+  kind: 'output'
+  id: string
+  agentId: string
+  files: AgentOutputFile[]
+  /** Same "right-click to change, default gray" convention as
+   * `AgentCanvasMcpNodeData.color`. */
+  color?: string | null
+}
+
 export type AgentCanvasNodeData =
   | AgentCanvasAgentNodeData
   | AgentCanvasMcpNodeData
   | AgentCanvasSkillNodeData
   | AgentCanvasHookNodeData
+  | AgentCanvasOutputNodeData
 
 /** Vertical spacing (canvas units) between stacked port slots on one side of
  * a node. */
@@ -255,6 +293,35 @@ export function computeAgentInputPortLayout(node: AgentInputPortLayoutInput): Ag
   return { total, skillIndex, hookIndex }
 }
 
+export interface AgentOutputPortLayout {
+  /** Combined slot count: authored-link outputs, plus the output-mount node
+   * (if any), plus the trailing "+". */
+  total: number
+  /** Slot index of the output-mount dot, or `null` when this agent has no
+   * output files. */
+  mountIndex: number | null
+}
+
+/** Narrowed input for `computeAgentOutputPortLayout`, same "just the fields
+ * the layout math needs" reasoning as `AgentInputPortLayoutInput`. */
+export interface AgentOutputPortLayoutInput {
+  outputLinkIds: string[]
+  outputMountId: string | null
+}
+
+/** Output-side sibling of `computeAgentInputPortLayout` — fans the
+ * output-mount node into the SAME combined right-side stack as authored
+ * output links (docs/cw/14_Agent輸出清單化.md §4.2), one slot simpler than
+ * the input side since there's only one possible mount kind here (not
+ * three). Used by both `AgentCanvasNodeCard`'s output `PortSlots` (rendering
+ * the dots) and `AgentCanvasPane`'s `renderEdge` (anchoring the
+ * `output-mount` wire to that same slot). */
+export function computeAgentOutputPortLayout(node: AgentOutputPortLayoutInput): AgentOutputPortLayout {
+  const mountIndex = node.outputMountId !== null ? node.outputLinkIds.length : null
+  const total = node.outputLinkIds.length + (node.outputMountId !== null ? 1 : 0) + 1
+  return { total, mountIndex }
+}
+
 /** `link` edges are `agent_links` rows (authored, hand-drawn, interactive;
  * derived, automatic, read-only). `ownership` edges are derived purely
  * client-side from `agent.parentAgentId` — deliberately not persisted as an
@@ -290,6 +357,14 @@ export type AgentCanvasEdgeData =
    * index into). */
   | { kind: 'skill-mount'; agentId: string; mountId: string }
   | { kind: 'hook-mount'; agentId: string; mountId: string }
+  /** From the agent to its `AgentCanvasOutputNodeData` node — direction is
+   * REVERSED from `mcp-mount`/`skill-mount`/`hook-mount` above (which point
+   * mount -> agent): those three sit to the agent's LEFT (inputs), this one
+   * sits to the agent's RIGHT (an output), so the natural left-to-right wire
+   * is agent -> mount instead. Resolved via `computeAgentOutputPortLayout`'s
+   * `mountIndex`, same "at most one, no array to index into" reasoning as
+   * `skill-mount`/`hook-mount`. */
+  | { kind: 'output-mount'; agentId: string; mountId: string }
 
 export interface AgentCanvasGraphView {
   nodes: GraphCanvasNode<AgentCanvasNodeData>[]
@@ -349,6 +424,8 @@ export function buildAgentCanvasGraph(
    * is already unique to its kind (see `useAgentCanvasData`'s
    * `MOUNT_COLORS_STORAGE_PREFIX`). */
   mountNodeColors: Record<string, string> = {},
+  outputFilesByAgentId: Record<string, AgentOutputFile[]> = {},
+  outputNodePositions: Record<string, { x: number; y: number }> = {},
 ): AgentCanvasGraphView {
   const agentById = new Map(agents.map((agent) => [agent.id, agent]))
   const statusByAgentId = new Map(statuses.map((status) => [status.agentId, status.state]))
@@ -439,6 +516,10 @@ export function buildAgentCanvasGraph(
           isPrimaryInstance && (skillsByAgentId[agent.id]?.length ?? 0) > 0 ? buildSkillNodeId(agent.id) : null,
         hookMountId:
           isPrimaryInstance && (hooksByAgentId[agent.id]?.length ?? 0) > 0 ? buildHookNodeId(agent.id) : null,
+        outputMountId:
+          isPrimaryInstance && (outputFilesByAgentId[agent.id]?.length ?? 0) > 0
+            ? buildOutputNodeId(agent.id)
+            : null,
       },
     }
   })
@@ -460,6 +541,13 @@ export function buildAgentCanvasGraph(
   const hookNodes: GraphCanvasNode<AgentCanvasNodeData>[] = []
   const skillMountEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = []
   const hookMountEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = []
+  // Output-list node — unlike the three above, this anchors to the agent's
+  // RIGHT side (an output, not an input), so its default position is offset
+  // past the agent's own width instead of subtracted from its x (see the
+  // loop body below); it also doesn't stack against the MCP/Skill/Hook
+  // column since it lives in a column of its own.
+  const outputNodes: GraphCanvasNode<AgentCanvasNodeData>[] = []
+  const outputMountEdges: GraphCanvasEdge<AgentCanvasEdgeData>[] = []
   for (const [agentId, agentPosition] of primaryAgentPositions) {
     const servers = mcpServersByAgentId[agentId] ?? []
     const primaryInstanceId = primaryInstanceIdByAgentId.get(agentId) as string
@@ -545,6 +633,36 @@ export function buildAgentCanvasGraph(
         data: { kind: 'hook-mount' as const, agentId, mountId },
       })
     }
+
+    const outputFiles = outputFilesByAgentId[agentId] ?? []
+    if (outputFiles.length > 0) {
+      const mountId = buildOutputNodeId(agentId)
+      const stored = outputNodePositions[mountId]
+      const agentWidth = nodeSizeForAgent(agentById.get(agentId) as AgentProfile).width
+      const position = stored
+        ? { x: Math.max(0, stored.x), y: Math.max(0, stored.y) }
+        : {
+            x: Math.max(0, agentPosition.x + agentWidth + NODE_HSPACING),
+            y: Math.max(0, agentPosition.y),
+          }
+      maxX = Math.max(maxX, position.x + OUTPUT_NODE_WIDTH)
+      maxY = Math.max(maxY, position.y + OUTPUT_NODE_HEIGHT)
+      outputNodes.push({
+        id: mountId,
+        x: position.x,
+        y: position.y,
+        width: OUTPUT_NODE_WIDTH,
+        height: OUTPUT_NODE_HEIGHT,
+        data: { kind: 'output' as const, id: mountId, agentId, files: outputFiles, color: mountNodeColors[mountId] ?? null },
+      })
+      // Reversed direction vs. the mcp/skill/hook-mount edges above — see
+      // `AgentCanvasEdgeData`'s `output-mount` doc comment.
+      outputMountEdges.push({
+        fromId: primaryInstanceId,
+        toId: mountId,
+        data: { kind: 'output-mount' as const, agentId, mountId },
+      })
+    }
   }
 
   const liveLinks = links.filter(
@@ -619,10 +737,17 @@ export function buildAgentCanvasGraph(
       data: { kind: 'ownership' },
     }))
 
-  const edges = [...linkEdges, ...ownershipEdges, ...mcpMountEdges, ...skillMountEdges, ...hookMountEdges]
+  const edges = [
+    ...linkEdges,
+    ...ownershipEdges,
+    ...mcpMountEdges,
+    ...skillMountEdges,
+    ...hookMountEdges,
+    ...outputMountEdges,
+  ]
 
   return {
-    nodes: [...nodes, ...mcpNodes, ...skillNodes, ...hookNodes],
+    nodes: [...nodes, ...mcpNodes, ...skillNodes, ...hookNodes, ...outputNodes],
     edges,
     bounds: {
       width: Math.max(maxX + NODE_HSPACING, 800),
