@@ -248,6 +248,14 @@
   border: var(--vb-border-width) solid var(--vb-border);
   box-shadow: 0 #{rem(16)} #{rem(40)} rgba(0, 0, 0, 0.24);
 
+  :root[data-theme='graphite-dark'] & {
+    background: #1c1c1e;
+  }
+
+  :root[data-theme='sakura-night'] & {
+    background: #1c0e1a;
+  }
+
   h2 {
     margin: 0;
     overflow: hidden;
