@@ -342,7 +342,7 @@ export type AgentCanvasEdgeData =
        * one edge with a double-headed arrow instead keeps the "two agents
        * talk to each other" fact visible without the backward-looking
        * duplicate line. */
-      reverseLinkId?: string
+      bidirectional?: boolean
     }
   | { kind: 'ownership' }
   /** From an `AgentCanvasMcpNodeData` node to the agent it's mounted on —
@@ -699,19 +699,39 @@ export function buildAgentCanvasGraph(
     for (const pairLinks of inner.values()) {
       // `list_links` orders rows by most-recently-active first, so which
       // direction happens to be `pairLinks[0]` flips between polls for a
-      // pair that's genuinely talking both ways — picking that as "primary"
-      // would flip `fromId`/`toId` (and so the edge's React key and its
-      // directional curve shape) every ~8s. Pick the lexicographically
-      // smaller `fromAgentId` instead so the rendered edge is stable across
-      // polls regardless of which side spoke most recently.
-      const [primary, reverse] =
-        pairLinks.length === 2 && pairLinks[0].fromAgentId > pairLinks[1].fromAgentId
-          ? [pairLinks[1], pairLinks[0]]
-          : pairLinks
+      // pair that's genuinely talking both ways. Start from a stable row for
+      // reverse-direction detection and for the one-way/equal-position
+      // fallback; mutual rendering is oriented by canvas position below.
+      const stableLinks = [...pairLinks].sort(
+        (left, right) => left.fromAgentId.localeCompare(right.fromAgentId) || left.id.localeCompare(right.id),
+      )
+      const first = stableLinks[0]
+      const bidirectional = pairLinks.some(
+        (candidate) =>
+          candidate.fromAgentId === first.toAgentId && candidate.toAgentId === first.fromAgentId,
+      )
+      // A mutual relationship has no semantic source side. Always orient its
+      // merged wire from the node currently on the left to the node on the
+      // right, avoiding a backward output-to-input loop. Dragging a node
+      // rebuilds the graph and therefore updates this orientation.
+      const firstPosition = primaryAgentPositions.get(first.fromAgentId) as { x: number; y: number }
+      const secondPosition = primaryAgentPositions.get(first.toAgentId) as { x: number; y: number }
+      const firstComesBefore =
+        firstPosition.x < secondPosition.x ||
+        (firstPosition.x === secondPosition.x &&
+          (firstPosition.y < secondPosition.y ||
+            (firstPosition.y === secondPosition.y && first.fromAgentId < first.toAgentId)))
+      const leftAgentId = firstComesBefore ? first.fromAgentId : first.toAgentId
+      const rightAgentId = firstComesBefore ? first.toAgentId : first.fromAgentId
+      const primary = bidirectional
+        ? pairLinks.find(
+            (candidate) => candidate.fromAgentId === leftAgentId && candidate.toAgentId === rightAgentId,
+          ) ?? first
+        : first
       derivedEdges.push({
         fromId: primaryInstanceIdByAgentId.get(primary.fromAgentId) as string,
         toId: primaryInstanceIdByAgentId.get(primary.toAgentId) as string,
-        data: { kind: 'link' as const, link: primary, reverseLinkId: reverse?.id },
+        data: { kind: 'link' as const, link: primary, bidirectional },
       })
     }
   }

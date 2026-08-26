@@ -25,6 +25,8 @@
     "src/features/file-preview/previewers/image-load-state.ts",
     "src/features/file-explorer/file-tree-data.ts",
     "src/features/file-explorer/file-tree-selection.ts",
+    "src/features/agent-canvas/model/agent-canvas-display-preferences.ts",
+    "src/features/agent-canvas/model/agent-canvas-graph.ts",
     "src/shell/layout/window-performance-policy.ts",
     "src/features/workspace-hub/station-action-command-sheet-focus.ts",
     "src/features/git/components/git-helpers.ts",

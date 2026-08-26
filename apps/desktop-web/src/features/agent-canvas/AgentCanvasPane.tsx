@@ -33,6 +33,10 @@ import {
 import { useAgentCanvasData } from './controllers/useAgentCanvasData'
 import { parseAgentCanvasDragPayload } from './model/agent-canvas-drag'
 import {
+  loadDerivedEdgesVisible,
+  saveDerivedEdgesVisible,
+} from './model/agent-canvas-display-preferences'
+import {
   AGENT_NODE_HEIGHT,
   AGENT_NODE_WIDTH,
   computeAgentInputPortLayout,
@@ -299,7 +303,17 @@ export function AgentCanvasPane({
   const [selection, setSelection] = useState<AgentCanvasSelection>(EMPTY_SELECTION)
   // Purely a display filter — hiding derived edges never touches the
   // underlying `agent_links` rows, only what this pane renders.
-  const [derivedEdgesVisible, setDerivedEdgesVisible] = useState(true)
+  const [derivedEdgesVisible, setDerivedEdgesVisible] = useState(() => loadDerivedEdgesVisible(workspaceId))
+  useEffect(() => {
+    setDerivedEdgesVisible(loadDerivedEdgesVisible(workspaceId))
+  }, [workspaceId])
+  const toggleDerivedEdgesVisible = useCallback(() => {
+    setDerivedEdgesVisible((previous) => {
+      const next = !previous
+      saveDerivedEdgesVisible(workspaceId, next)
+      return next
+    })
+  }, [workspaceId])
   // Mirrors whichever port element currently holds pointer capture for the
   // in-progress drag (set in handlePortPointerDown, cleared in
   // handlePortPointerUp/Cancel) so the Escape path — which has no pointer
@@ -886,7 +900,7 @@ export function AgentCanvasPane({
   const handleDeleteDerivedEdge = useCallback(
     (fromAgentId: string, toAgentId: string, alsoReverse: boolean) => {
       if (!window.confirm(t(locale, 'agentCanvas.edge.derivedDeleteConfirm'))) return
-      // A merged bidirectional edge (see `reverseLinkId` in
+      // A merged bidirectional edge (see `bidirectional` in
       // `buildAgentCanvasGraph`) is drawn as one line — clearing it should
       // clear both underlying directional rows, not leave the reverse one to
       // silently reappear as a single-arrow line. `Promise.all` (not two
@@ -1212,17 +1226,17 @@ export function AgentCanvasPane({
           )
         }
         if (!isAgentNode(from) || !isAgentNode(to)) return null
-        const { link, reverseLinkId } = edge.data
+        const { link, bidirectional } = edge.data
         if (link.kind === 'derived') {
           // Also center-anchored — derived lines are read-only observations,
           // never created via drag, so they don't need/get their own slot.
           const geometry = computePortEdgeGeometry(from, to)
-          // `reverseLinkId` is only set when the opposite direction was ALSO
-          // recorded (docs on `AgentCanvasEdgeData.reverseLinkId`) — draw a
+          // `bidirectional` is only set when the opposite direction was ALSO
+          // recorded (docs on `AgentCanvasEdgeData.bidirectional`) — draw a
           // double-headed arrow instead of a single one so the merged edge
           // still reads as "these two talk both ways," without a second,
           // directionally-mirrored line looping back to the previous agent.
-          const isBidirectional = Boolean(reverseLinkId)
+          const isBidirectional = Boolean(bidirectional)
           return (
             <g
               pointerEvents="auto"
@@ -1316,7 +1330,7 @@ export function AgentCanvasPane({
             <button
               type="button"
               className={`agent-canvas-icon-button${derivedEdgesVisible ? '' : ' is-active'}`}
-              onClick={() => setDerivedEdgesVisible((previous) => !previous)}
+              onClick={toggleDerivedEdgesVisible}
               title={t(locale, derivedEdgesVisible ? 'agentCanvas.toggleDerived.hide' : 'agentCanvas.toggleDerived.show')}
               aria-label={t(locale, derivedEdgesVisible ? 'agentCanvas.toggleDerived.hide' : 'agentCanvas.toggleDerived.show')}
               aria-pressed={!derivedEdgesVisible}
