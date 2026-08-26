@@ -50,6 +50,23 @@ fn build_initial_prompt_includes_primary_text_files_and_selection() {
 }
 
 #[test]
+fn collaboration_context_is_injected_even_without_a_user_prompt() {
+    let collaboration = "[GT Office collaboration context]".to_string();
+    assert_eq!(
+        append_collaboration_context(None, Some(collaboration.clone())),
+        Some(collaboration)
+    );
+}
+
+#[test]
+fn collaboration_context_follows_the_user_prompt() {
+    let prompt =
+        append_collaboration_context(Some("Do the task".into()), Some("Collaborate".into()))
+            .expect("combined prompt");
+    assert_eq!(prompt, "Do the task\n\nCollaborate");
+}
+
+#[test]
 fn agent_profile_launch_skips_login_shell_by_default_but_respects_explicit_choice() {
     assert!(!resolve_profile_login_shell(None));
     assert!(!resolve_profile_login_shell(Some(

@@ -108,6 +108,7 @@ export function StationManageModal({
   const [promptContent, setPromptContent] = useState('')
   const [customWorkdirEnabled, setCustomWorkdirEnabled] = useState(false)
   const [promptEnabled, setPromptEnabled] = useState(false)
+  const [outputCollectionEnabled, setOutputCollectionEnabled] = useState(false)
   const [promptDraftMode, setPromptDraftMode] = useState<'auto' | 'manual'>('auto')
   const [promptPrefillLoading, setPromptPrefillLoading] = useState(false)
   const [externalTemplatePath, setExternalTemplatePath] = useState('')
@@ -156,6 +157,7 @@ export function StationManageModal({
     setLaunchCommand(editingStation?.launchCommand ?? '')
     setPromptContent('')
     setPromptEnabled(editingStation?.promptEnabled ?? false)
+    setOutputCollectionEnabled(editingStation?.outputCollectionEnabled ?? false)
     setPromptDraftMode(editingStation ? 'manual' : 'auto')
     setPromptPrefillLoading(false)
     setExternalTemplatePath('')
@@ -804,6 +806,29 @@ export function StationManageModal({
             )}
 
             <div className="station-form-field station-form-span-2">
+              <div className="station-form-surface">
+                <label className="station-form-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={outputCollectionEnabled}
+                    disabled={saving || deleting || promptPrefillLoading}
+                    onChange={(event) => {
+                      const checked = event.target.checked
+                      setOutputCollectionEnabled(checked)
+                    }}
+                  />
+                  <span>
+                    {locale === 'zh-CN'
+                      ? '让说明文件显示在 Agent Canvas 的「输出」清单节点'
+                      : 'Show generated documents in the Agent Canvas Output list'}
+                  </span>
+                </label>
+                <p>
+                  {locale === 'zh-CN'
+                    ? '启用后，GT Office 会为 Codex 与 Claude 的终端注入输出目录，并在每次任务派发时加入单次输出指示；不会修改系统提示词文件。'
+                    : 'Injects an output directory for Codex and Claude and adds one-time guidance to dispatched tasks without changing system prompt files.'}
+                </p>
+              </div>
               <div className="station-form-heading-row">
                 <span>{locale === 'zh-CN' ? '系统提示词' : 'System Prompt'}</span>
                 <label className="station-form-checkbox">
@@ -1065,6 +1090,7 @@ export function StationManageModal({
                     customWorkdir: customWorkdirEnabled,
                     promptEnabled,
                     promptContent: promptEnabled ? promptContent : '',
+                    outputCollectionEnabled,
                     launchCommand: launchCommand.trim() || null,
                     externalTemplatePath: !isEdit && externalTemplatePath.trim() ? externalTemplatePath.trim() : null,
                     parentAgentId: !isEdit ? initialParentAgentId ?? null : null,

@@ -9,6 +9,7 @@ export interface CreateStationInput {
   customWorkdir: boolean
   promptEnabled: boolean
   promptContent: string
+  outputCollectionEnabled: boolean
   launchCommand?: string | null
   /** Local filesystem path to seed promptContent from at creation time only —
    * see docs/cw/04_客製化設計.md §2. Ignored on update. */
@@ -34,6 +35,7 @@ export interface AgentStation {
   promptFileName?: string | null
   promptFileRelativePath?: string | null
   launchCommand?: string | null
+  outputCollectionEnabled: boolean
   terminalSessionId: string
   state: 'running' | 'idle' | 'blocked'
   workspaceId: string
@@ -84,6 +86,7 @@ export function mapAgentProfileToStation(
     promptFileName: agent.promptFileName,
     promptFileRelativePath: agent.promptFileRelativePath,
     launchCommand: agent.launchCommand,
+    outputCollectionEnabled: agent.outputCollectionEnabled,
     terminalSessionId: '',
     state: agent.state === 'blocked' ? 'blocked' : 'idle',
     workspaceId: agent.workspaceId,
@@ -102,6 +105,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     terminalSessionId: 'ts_101',
     state: 'running',
     workspaceId: 'ws_gtoffice',
+    outputCollectionEnabled: false,
   }),
   createDefaultStationSeed({
     id: 'agent-02',
@@ -111,6 +115,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     terminalSessionId: 'ts_102',
     state: 'running',
     workspaceId: 'ws_gtoffice',
+    outputCollectionEnabled: false,
   }),
   createDefaultStationSeed({
     id: 'agent-03',
@@ -120,6 +125,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     terminalSessionId: 'ts_103',
     state: 'running',
     workspaceId: 'ws_gtoffice',
+    outputCollectionEnabled: false,
   }),
   createDefaultStationSeed({
     id: 'agent-04',
@@ -129,6 +135,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     terminalSessionId: 'ts_104',
     state: 'idle',
     workspaceId: 'ws_gtoffice',
+    outputCollectionEnabled: false,
   }),
 ]
 

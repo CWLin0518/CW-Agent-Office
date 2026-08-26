@@ -2,7 +2,7 @@
 
 > 需求原話：「若 agent 執行的結果會產出 md 檔或網頁等說明用的文件，請在 agent canvas 的 agent 節點 output 自動接上一個清單節點，選擇清單上的某一檔案可以直接閱覽內容，若是網頁則是直接打開瀏覽器。」
 >
-> 狀態（2026-08-25）：**P1-P4 皆已完成**（程式碼已寫完，過 `cargo test`/`cargo clippy`/`npm run typecheck`，尚未 commit、尚未真人操作驗收）。P4 原本因為牽涉「新建 agent 時 CLAUDE.md/AGENTS.md 產生邏輯」這個不同子系統而先跳過，後來使用者實測發現 agent 把產出檔案寫到 workspace 之外（桌面），確認 P4 這道引導確實必要，回頭補做——實作方式與範圍見第 6 節 P4 小節。
+> 狀態（2026-08-26）：P1-P3 已完成；P4 已改版為執行層機制。Add/Edit Agent 的 `outputCollectionEnabled` 獨立持久化，不再把輸出條件寫入 CLAUDE.md/AGENTS.md。GT Office 啟動 Codex/Claude 時注入 `GTO_OUTPUT_DIR`，派發任務時依目標 Agent 設定加入單次輸出指示；既有受管理 Prompt 區塊會在下一次 Edit Agent 保存時移除。
 
 ## 1. 現況地基（本次調查結果）
 
@@ -59,7 +59,7 @@
 
 不新建資料庫表——跟 `list_available_hooks`/`list_available_skills` 一樣是「唯讀掃描檔案系統、每次讀即時反映」，沒有持久化的必要，也不會有「清單跟磁碟不同步」的問題。
 
-**這是一個慣例，不是自動的**：v1 不強迫、不攔截 agent 的實際輸出行為，只掃描這個目錄。若 agent 沒有把產出檔案放進這個目錄，清單就是空的，節點也就不會出現（presence-based，同 Skill/Hook 規則）。要讓這個慣例生效，需要在 agent 的 prompt/policy 材料裡加入「產出文件請放進 `.gtoffice/agents/<agent_id>/outputs/`」的引導——這件事本次不做，留給下一輪任務派發相關的工作（`docs/WORKFLOWS.md`/task-center 派發流程）處理，本文件只定資料層跟畫布呈現。
+**這是一個慣例，不是檔案攔截**：若 Agent 沒有把產出檔案放進這個目錄，清單就是空的，節點也不會出現（presence-based，同 Skill/Hook 規則）。觸發條件屬於 GT Office 執行層：勾選 `outputCollectionEnabled` 後，Codex/Claude 終端取得 `GTO_OUTPUT_DIR`，GT Office 任務派發則加入只對該次任務有效的輸出指示。不得把這段條件寫入 Agent 的永久 system prompt。
 
 被否決的兩個方案，記錄理由方便之後回頭查：
 
@@ -158,7 +158,7 @@ export interface AgentCanvasOutputNodeData {
 - Markdown 內容檢視沒有另外新增 `AgentCanvasOutputPreviewModal.tsx`，直接在 `AgentCanvasPane.tsx` 內用既有的 `createPortal` + `MarkdownRenderer`（`apps/desktop-web/src/components/editor/MarkdownRenderer.tsx`）組出彈出面板，未另立元件檔
 - 「開啟系統預設程式」沒有新增 Tauri plugin——`fs_show_in_folder`（`apps/desktop-tauri/src-tauri/src/commands/file_explorer/mod.rs`）已經在用 `open` crate（`open = "5.3"`，`apps/desktop-tauri/src-tauri/Cargo.toml`），新 command `agent_capability_open_output_file` 直接複用同一顆 crate，沒有新增依賴
 - 「開啟檔案」command 沒有放進 `agent_canvas` 模組，而是跟 P1 的 `agent_capability_list_output_files` 放在同一個檔案 `apps/desktop-tauri/src-tauri/src/commands/agent/capability.rs`（唯讀掃描 agent 自己的檔案，跟 skill/hook discovery 同一類，不是畫布視覺狀態）
-- P4（本文件狀態列已更新）額外新增/修改：`crates/gt-agent/src/models.rs`（`default_output_guidance_prompt_content`）、`apps/desktop-tauri/src-tauri/src/commands/agent.rs`（`agent_create_with_repo` 掛勾點）
+- P4 改版後新增 `agents.output_collection_enabled`；一般 terminal、tool profile launch、local bridge bootstrap 都會為啟用的 Codex/Claude 注入 `GTO_OUTPUT_DIR`，Task Center 與 local bridge 派發會依每個 target 加入單次輸出指示。Agent system prompt 不再承載此功能。
 
 ## 6. 路線圖
 
@@ -167,28 +167,28 @@ export interface AgentCanvasOutputNodeData {
 | P1 | 後端唯讀掃描：`list_agent_output_files` + command + 型別，不接 UI | `cargo test`（含目錄不存在/空目錄/混合副檔名的單元測試）、`cargo clippy`、手動在某 agent 的 `outputs/` 目錄放測試檔案驗證掃描結果 |
 | P2 | 畫布節點模型 + 摺疊清單 UI（先不做點擊互動，只驗證節點出現/消失、展開/收合、port 位置正確） | `npm run typecheck`、`npm run build:tauri`、手動驗證畫布渲染 |
 | P3 | 點擊互動：markdown 內容檢視、webpage/other 系統開啟 | 手動驗證：放一份 md、一份 html，分別點擊確認行為符合預期 |
-| P4 | Agent prompt 引導「產出請放進 outputs/」——實測發現 P1-P3 完成後，agent 產出的檔案預設不會落在這個目錄（範例：一次真實測試裡 agent 把 HTML 寫到了桌面，完全在 workspace 之外），確認這道引導必要。實作範圍刻意收窄：只在**建立新 agent、且使用者完全沒填寫 prompt 內容（沒手動輸入、也沒載入外部範本）**時，`crates/gt-agent/src/models.rs` 的 `default_output_guidance_prompt_content(agent_id)` 才會被寫進 CLAUDE.md/AGENTS.md，內容是一段告知 `.gtoffice/agents/<agent_id>/outputs/` 用途的短說明；使用者只要填了任何 prompt 內容或載入外部範本，完全不受影響。掛勾點在 `apps/desktop-tauri/src-tauri/src/commands/agent.rs` 的 `agent_create_with_repo`，只加在 `repo.create_agent()` 之後、`write_prompt_file()` 之前一段條件判斷，不改動任何既有 agent 的 prompt、也不影響「編輯 agent」流程 | `cargo test -p gt-agent models`、`cargo check --workspace`、`cargo clippy -p gt-agent`/`-p gtoffice-desktop-tauri --lib` 皆過；`gtoffice-desktop-tauri --lib` 的完整測試套件目前因既有、無關的 roles 功能未完成（`local_bridge_tests.rs` 缺 `role_key`/`list_roles`/`seed_agent_defaults`，docs/cw/12 已記錄過同一問題）而整體編譯失敗，`agent_tests.rs` 內既有的 create-agent 測試無法用 `cargo test` 實際跑過——改以人工檢查：目前唯三個 `prompt_enabled = Some(true)` 的既有測試都同時給了非空 `prompt_content`，不會觸發新的引導分支，理論上不受影響，但這點仍待這個既有阻塞問題解掉後、或真人在畫面上建立一個「不填 prompt」的新 agent 實際驗證 |
+| P4 | Add/Edit Agent 保存 `outputCollectionEnabled`；Codex/Claude 啟動時注入專案級 `GTO_OUTPUT_DIR`，GT Office 任務派發時加入只對該 target、該次任務有效的輸出指示。完全不修改 CLAUDE.md/AGENTS.md；保存既有 Agent 時會移除舊版 GT Office 管理區塊。 | `cargo check --workspace`、`npm ... tsc -b`、storage round-trip 測試、gt-task 單次指示測試 |
 
 ## 7. 手動驗收清單（真人在畫面上操作）
 
-程式碼尚未 commit，以下是給人在實際跑起來的 App 裡驗證整條流程用的步驟。**舊 agent 不會自動獲得 P4 的引導**（見狀態列說明）——要驗證完整流程必須用「新建」的 agent，不能拿既有 agent 測。
+程式碼尚未 commit，以下是給人在實際跑起來的 App 裡驗證整條流程用的步驟。新建與既有 Agent 都能透過 Add/Edit 的輸出收集勾選項啟用。
 
 ### 7.1 準備：重新編譯啟動 App
 
 這些改動都是後端 Rust + 前端 TS，需要重跑一次 `npm run tauri dev`（或對應的開發啟動指令）讓新程式碼生效，單純重整網頁不會套用 Rust 端的變更。
 
-### 7.2 驗證 P4：新 agent 是否拿到引導文字
+### 7.2 驗證 P4：Codex／Claude 執行層觸發
 
-1. 在某個 workspace 裡新建一個 agent，**建立當下不要輸入任何 prompt 內容**（留空，也不要用「從外部路徑載入範本」）
-2. 建立完成後，打開這個 agent 的 prompt 編輯畫面（或直接去檔案系統看 `<workspace_root>/CLAUDE.md`／`<workspace_root>/AGENTS.md`，實際檔名依 agent 的 tool 而定，工作目錄若不是 `.` 則在對應子目錄下）
-3. 確認內容包含 `.gtoffice/agents/<這個新 agent 的 id>/outputs/` 這一段路徑（agent id 可以在 agent 管理畫面或 URL/資料上看到）
-4. 對照組：另外用同樣方式建一個 agent，但這次**手動輸入任意 prompt 內容**，確認它的 prompt 檔案「沒有」被加上這段引導文字（沒被動過）
+1. 在 Add 或 Edit Agent 勾選輸出收集並保存；Codex、Claude 各測一支。
+2. 重新啟動 Agent 終端，確認環境中存在 `GTO_OUTPUT_DIR`，且值為 `<workspace_root>/.gtoffice/agents/<agent_id>/outputs`。
+3. 確認 CLAUDE.md／AGENTS.md 沒有被新增任何輸出條件；若原本含舊版 GT Office marker，保存後只移除該管理區塊。
+4. 透過 GT Office 派發任務，確認收到的單次任務文字含 `GTO_OUTPUT_DIR` 與正確完整路徑。
 
 ### 7.3 驗證 P1-P3：畫布輸出清單節點是否正確出現與運作
 
 有兩種驗證路徑，選一種即可：
 
-**A. 端到端（最貼近真實情境）**：用 7.2 建立的、拿到引導的那個新 agent，實際派發一個任務，要求它產出一份說明文件（例如「寫一份這次分析的 markdown 報告」）。因為它的 prompt 已經知道 `.gtoffice/agents/<agent_id>/outputs/` 這個慣例，正常情況下它應該會把檔案寫進那裡。完成後回到 Agent Canvas，等一次輪詢（約 8 秒）或切換分頁再切回來，確認該 agent 節點右側出現「輸出」清單節點。
+**A. 端到端（最貼近真實情境）**：對 7.2 已勾選的 Agent 派發「產出一份 Markdown 報告」任務。Agent 會從該次任務指示與 `GTO_OUTPUT_DIR` 得到目標位置；完成後回到 Agent Canvas，等一次輪詢（約 8 秒）或切換分頁再切回來，確認右側出現「輸出」清單節點。
 
 **B. 手動放測試檔（排除 agent 是否真的遵守慣例的變數，單獨驗證畫布機制）**：
 1. 直接在 `<workspace_root>/.gtoffice/agents/<某 agent_id>/outputs/` 這個目錄手動建立測試檔案（目錄不存在就自己建），至少放一份 `.md` 和一份 `.html`

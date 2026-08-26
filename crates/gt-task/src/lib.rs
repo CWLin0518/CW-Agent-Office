@@ -1170,7 +1170,25 @@ impl TaskService {
     pub fn dispatch_batch<F>(
         &self,
         request: &TaskDispatchBatchRequest,
+        workspace_root: &Path,
+        write_terminal: F,
+    ) -> TaskDispatchBatchOutcome
+    where
+        F: FnMut(&str, &str, &str) -> Result<(), String>,
+    {
+        self.dispatch_batch_with_output_directories(
+            request,
+            workspace_root,
+            &HashMap::new(),
+            write_terminal,
+        )
+    }
+
+    pub fn dispatch_batch_with_output_directories<F>(
+        &self,
+        request: &TaskDispatchBatchRequest,
         _workspace_root: &Path,
+        output_directories: &HashMap<String, String>,
         mut write_terminal: F,
     ) -> TaskDispatchBatchOutcome
     where
@@ -1293,6 +1311,7 @@ impl TaskService {
                 &request.markdown,
                 request,
                 &task_id,
+                output_directories.get(&target_agent_id),
             ));
             if let Err(error) = write_terminal(&runtime.session_id, &command, &submit_sequence) {
                 warn!(
@@ -1800,6 +1819,7 @@ fn enrich_dispatch_markdown(
     markdown: &str,
     request: &TaskDispatchBatchRequest,
     task_id: &str,
+    output_directory: Option<&String>,
 ) -> String {
     let mut sections = Vec::new();
     let body = markdown.trim();
@@ -1809,11 +1829,40 @@ fn enrich_dispatch_markdown(
     if let Some(reply_instruction) = build_managed_agent_reply_instruction(request, task_id) {
         sections.push(reply_instruction.trim().to_string());
     }
+    if let Some(output_directory) = output_directory {
+        sections.push(format!(
+            "## GT Office Output\n\nIf this task produces explanatory files such as Markdown or HTML, write them to the directory in `GTO_OUTPUT_DIR`: `{output_directory}`. This is task-scoped execution guidance, not a system-prompt rule."
+        ));
+    }
     sections.join("\n\n")
 }
 
 pub fn module_name() -> &'static str {
     "gt-task"
+}
+
+#[cfg(test)]
+mod output_collection_tests {
+    use super::*;
+
+    #[test]
+    fn task_scoped_output_instruction_names_env_and_directory() {
+        let request = TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender::default(),
+            targets: vec!["agent-1".to_string()],
+            title: "Report".to_string(),
+            markdown: "Create a report".to_string(),
+            attachments: vec![],
+            submit_sequences: HashMap::new(),
+        };
+        let output_dir = "C:/project/.gtoffice/agents/agent-1/outputs".to_string();
+        let enriched =
+            enrich_dispatch_markdown(&request.markdown, &request, "task-1", Some(&output_dir));
+        assert!(enriched.contains("GTO_OUTPUT_DIR"));
+        assert!(enriched.contains(&output_dir));
+        assert!(enriched.contains("task-scoped execution guidance"));
+    }
 }
 
 #[cfg(test)]

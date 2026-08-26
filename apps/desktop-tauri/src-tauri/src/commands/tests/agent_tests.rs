@@ -104,6 +104,7 @@ impl AgentCommandFixture {
             prompt_enabled: Some(false),
             prompt_file_name: None,
             prompt_content: None,
+            output_collection_enabled: None,
             launch_command: None,
         }
     }
@@ -260,6 +261,7 @@ fn agent_update_rejects_custom_workdir_symlink_outside_workspace_without_prompt(
             prompt_enabled: Some(false),
             prompt_file_name: None,
             prompt_content: None,
+            output_collection_enabled: None,
             launch_command: None,
         },
         &fixture.repo,
@@ -315,6 +317,7 @@ fn agent_update_moves_prompt_file_and_prompt_read_returns_latest_content() {
             prompt_enabled: Some(true),
             prompt_file_name: None,
             prompt_content: Some("updated prompt".to_string()),
+            output_collection_enabled: None,
             launch_command: Some("claude".to_string()),
         },
         &fixture.repo,

@@ -113,6 +113,7 @@ function mapDetachedStation(payload: SurfaceDetachedStationPayload, index: numbe
     toolKind: normalizeStationToolKind(payload.tool),
     promptFileName: null,
     promptFileRelativePath: null,
+    outputCollectionEnabled: false,
     terminalSessionId: payload.sessionId?.trim() ?? '',
     state: payload.sessionId ? 'running' : 'idle',
     workspaceId: payload.workspaceId,

@@ -532,6 +532,12 @@ fn build_directory_snapshot<R: tauri::Runtime>(
     let agents = repo
         .list_agents(workspace_id)
         .map_err(|error| error.to_string())?;
+    let authored_links = repo
+        .list_links(workspace_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|link| link.kind == gt_agent::AgentLinkKind::Authored)
+        .collect::<Vec<_>>();
     let runtimes = state.task_service.list_runtimes(Some(workspace_id));
 
     let updated_at_ms = chrono_like_now_ms();
@@ -577,6 +583,7 @@ fn build_directory_snapshot<R: tauri::Runtime>(
         "directoryVersion": updated_at_ms.to_string(),
         "updatedAtMs": updated_at_ms,
         "agents": agent_entries,
+        "authoredLinks": authored_links,
         "runtimes": runtimes,
     }))
 }
@@ -683,12 +690,13 @@ fn record_derived_links(
 }
 
 fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Value, BridgeError> {
-    let request: TaskDispatchBatchRequest = serde_json::from_value(params).map_err(|error| {
-        BridgeError::new(
-            "LOCAL_BRIDGE_INVALID_PARAMS",
-            format!("task.dispatch_batch params invalid: {error}"),
-        )
-    })?;
+    let request: TaskDispatchBatchRequest =
+        serde_json::from_value(params).map_err(|error| {
+            BridgeError::new(
+                "LOCAL_BRIDGE_INVALID_PARAMS",
+                format!("task.dispatch_batch params invalid: {error}"),
+            )
+        })?;
 
     if request.workspace_id.trim().is_empty() {
         return Err(BridgeError::new(
@@ -720,10 +728,35 @@ fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Va
     let workspace_root = state
         .workspace_root_path(&request.workspace_id)
         .map_err(|error| BridgeError::new("LOCAL_BRIDGE_WORKSPACE_INVALID", error))?;
+    let repo = crate::commands::agent::resolve_agent_repository(app)
+        .map_err(|error| BridgeError::new("LOCAL_BRIDGE_STORAGE_INVALID", error))?;
+    repo.ensure_schema()
+        .map_err(|error| BridgeError::new("LOCAL_BRIDGE_STORAGE_INVALID", error.to_string()))?;
+    let mut output_directories = std::collections::HashMap::new();
+    for agent in repo
+        .list_agents(&request.workspace_id)
+        .map_err(|error| BridgeError::new("LOCAL_BRIDGE_STORAGE_INVALID", error.to_string()))?
+    {
+        if agent.output_collection_enabled && request.targets.contains(&agent.id) {
+            let output_dir = workspace_root
+                .join(".gtoffice")
+                .join("agents")
+                .join(&agent.id)
+                .join("outputs");
+            fs::create_dir_all(&output_dir).map_err(|error| {
+                BridgeError::new(
+                    "LOCAL_BRIDGE_OUTPUT_DIR_INVALID",
+                    format!("failed to create agent output directory: {error}"),
+                )
+            })?;
+            output_directories.insert(agent.id.clone(), output_dir.to_string_lossy().into_owned());
+        }
+    }
 
-    let outcome = state.task_service.dispatch_batch(
+    let outcome = state.task_service.dispatch_batch_with_output_directories(
         &request,
         &workspace_root,
+        &output_directories,
         |session_id, command, submit_sequence| {
             write_terminal_with_submit(state, session_id, command, submit_sequence)
         },
@@ -906,8 +939,31 @@ fn dev_bootstrap_agents(
             continue;
         }
 
-        let terminal_env =
+        let mut terminal_env =
             build_agent_terminal_env(workspace.workspace_id.as_str(), &agent_id, &agent_id);
+        let output_collection_enabled = repo
+            .list_agents(workspace.workspace_id.as_str())
+            .map_err(|error| BridgeError::new("LOCAL_BRIDGE_STORAGE_INVALID", error.to_string()))?
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
+            .is_some_and(|agent| agent.output_collection_enabled);
+        if output_collection_enabled {
+            let output_dir = Path::new(&workspace.root)
+                .join(".gtoffice")
+                .join("agents")
+                .join(&agent_id)
+                .join("outputs");
+            fs::create_dir_all(&output_dir).map_err(|error| {
+                BridgeError::new(
+                    "LOCAL_BRIDGE_OUTPUT_DIR_INVALID",
+                    format!("failed to create agent output directory: {error}"),
+                )
+            })?;
+            terminal_env.insert(
+                "GTO_OUTPUT_DIR".to_string(),
+                output_dir.to_string_lossy().into_owned(),
+            );
+        }
         let terminal_env = augment_terminal_env_for_agent(
             app,
             state,

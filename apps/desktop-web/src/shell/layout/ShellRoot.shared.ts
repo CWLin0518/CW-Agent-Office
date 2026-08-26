@@ -797,6 +797,7 @@ export function createStationFromNumber(
     toolKind: normalizeStationToolKind(tool),
     promptFileName: null,
     promptFileRelativePath: null,
+    outputCollectionEnabled: input?.outputCollectionEnabled ?? false,
     launchCommand: input?.launchCommand ?? null,
     terminalSessionId: `ts_${String(number).padStart(3, '0')}`,
     state: 'idle',
@@ -814,6 +815,7 @@ export function createStationEditInput(station: AgentStation): UpdateStationInpu
     customWorkdir: station.customWorkdir,
     promptEnabled: Boolean(station.promptFileRelativePath),
     promptContent: '',
+    outputCollectionEnabled: station.outputCollectionEnabled,
     launchCommand: station.launchCommand,
   }
 }

@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS agents (
   tool TEXT NOT NULL DEFAULT 'codex', workdir TEXT,
   custom_workdir INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT 'station',
   state TEXT NOT NULL, employee_no TEXT, policy_snapshot_id TEXT,
-  launch_command TEXT, order_index INTEGER NOT NULL DEFAULT 0,
+  launch_command TEXT, output_collection_enabled INTEGER NOT NULL DEFAULT 0,
+  order_index INTEGER NOT NULL DEFAULT 0,
   parent_agent_id TEXT, external_template_path TEXT,
   git_tracked INTEGER NOT NULL DEFAULT 1,
   layout_x REAL, layout_y REAL, color TEXT,
@@ -226,6 +227,10 @@ impl AgentRepository for SqliteAgentRepository {
             "ALTER TABLE agents ADD COLUMN capability_snapshot_id TEXT",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN output_collection_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         conn.execute_batch(AGENT_LINKS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
@@ -272,7 +277,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn list_agents(&self, workspace_id: &str) -> AgentResult<Vec<AgentProfile>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, color, capability_snapshot_id, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, output_collection_enabled, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, color, capability_snapshot_id, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         let rows = stmt
             .query_map(params![workspace_id], |row| {
@@ -290,18 +295,19 @@ impl AgentRepository for SqliteAgentRepository {
                     employee_no: row.get(8)?,
                     policy_snapshot_id: row.get(9)?,
                     launch_command: row.get(10)?,
-                    order_index: row.get(11)?,
-                    parent_agent_id: row.get(12)?,
-                    external_template_path: row.get(13)?,
-                    git_tracked: row.get::<_, i32>(14)? != 0,
-                    layout_x: row.get(15)?,
-                    layout_y: row.get(16)?,
-                    color: row.get(17)?,
-                    capability_snapshot_id: row.get(18)?,
+                    output_collection_enabled: row.get::<_, i32>(11)? != 0,
+                    order_index: row.get(12)?,
+                    parent_agent_id: row.get(13)?,
+                    external_template_path: row.get(14)?,
+                    git_tracked: row.get::<_, i32>(15)? != 0,
+                    layout_x: row.get(16)?,
+                    layout_y: row.get(17)?,
+                    color: row.get(18)?,
+                    capability_snapshot_id: row.get(19)?,
                     prompt_file_name: None,
                     prompt_file_relative_path: None,
-                    created_at_ms: row.get(19)?,
-                    updated_at_ms: row.get(20)?,
+                    created_at_ms: row.get(20)?,
+                    updated_at_ms: row.get(21)?,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -334,7 +340,7 @@ impl AgentRepository for SqliteAgentRepository {
             .unwrap_or(1)
         });
         let now = Self::now_ms();
-        conn.execute("INSERT INTO agents (id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, order_index, parent_agent_id, external_template_path, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15)", params![id, input.workspace_id, input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.scope.as_str(), input.state.as_str(), input.employee_no, input.launch_command, order_index, input.parent_agent_id, input.external_template_path, now, now])
+        conn.execute("INSERT INTO agents (id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, output_collection_enabled, order_index, parent_agent_id, external_template_path, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15, ?16)", params![id, input.workspace_id, input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.scope.as_str(), input.state.as_str(), input.employee_no, input.launch_command, if input.output_collection_enabled { 1 } else { 0 }, order_index, input.parent_agent_id, input.external_template_path, now, now])
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         self.list_agents(&input.workspace_id)?
             .into_iter()
@@ -346,7 +352,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn update_agent(&self, input: UpdateAgentInput) -> AgentResult<AgentProfile> {
         let conn = self.connection()?;
-        let updated = conn.execute("UPDATE agents SET name = ?1, tool = ?2, workdir = ?3, custom_workdir = ?4, state = ?5, employee_no = ?6, launch_command = ?7, updated_at_ms = ?8 WHERE workspace_id = ?9 AND id = ?10", params![input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.state.as_str(), input.employee_no, input.launch_command, Self::now_ms(), input.workspace_id, input.agent_id])
+        let updated = conn.execute("UPDATE agents SET name = ?1, tool = ?2, workdir = ?3, custom_workdir = ?4, state = ?5, employee_no = ?6, launch_command = ?7, output_collection_enabled = ?8, updated_at_ms = ?9 WHERE workspace_id = ?10 AND id = ?11", params![input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.state.as_str(), input.employee_no, input.launch_command, if input.output_collection_enabled { 1 } else { 0 }, Self::now_ms(), input.workspace_id, input.agent_id])
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         if updated == 0 {
             return Err(AgentError::InvalidArgument {
@@ -1023,7 +1029,7 @@ mod p0_migration_tests {
     }
 
     #[test]
-    fn create_agent_round_trips_parent_agent_id_and_external_template_path() {
+    fn create_agent_round_trips_parent_template_and_output_collection() {
         let scratch = ScratchDb::new("roundtrip");
         let storage = SqliteStorage::new(&scratch.path).expect("open storage");
         let repo = SqliteAgentRepository::new(storage);
@@ -1040,6 +1046,7 @@ mod p0_migration_tests {
             employee_no: None,
             state: AgentState::Ready,
             launch_command: None,
+            output_collection_enabled: true,
             order_index: None,
             parent_agent_id: Some("agent-parent".to_string()),
             external_template_path: Some("/tmp/template.md".to_string()),
@@ -1057,6 +1064,7 @@ mod p0_migration_tests {
             employee_no: None,
             state: AgentState::Ready,
             launch_command: None,
+            output_collection_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,
@@ -1069,6 +1077,7 @@ mod p0_migration_tests {
             .find(|agent| agent.id == "agent-with-parent")
             .expect("agent-with-parent present");
         assert_eq!(with_parent.parent_agent_id.as_deref(), Some("agent-parent"));
+        assert!(with_parent.output_collection_enabled);
         assert_eq!(
             with_parent.external_template_path.as_deref(),
             Some("/tmp/template.md")
@@ -1080,6 +1089,7 @@ mod p0_migration_tests {
             .expect("agent-without-parent present");
         assert_eq!(without_parent.parent_agent_id, None);
         assert_eq!(without_parent.external_template_path, None);
+        assert!(!without_parent.output_collection_enabled);
     }
 }
 
@@ -1125,6 +1135,7 @@ mod p3_agent_policy_tests {
             employee_no: None,
             state: AgentState::Ready,
             launch_command: None,
+            output_collection_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,
@@ -1274,6 +1285,7 @@ mod p3_5_agent_capability_tests {
             employee_no: None,
             state: AgentState::Ready,
             launch_command: None,
+            output_collection_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,
@@ -1495,11 +1507,21 @@ mod p3_5_3_agent_capability_audit_tests {
         let repo = repo(&scratch);
         let hash = sample_hook().content_hash();
 
-        repo.confirm_hook_hashes("ws-1", "agent-1", std::slice::from_ref(&hash), "System Admin")
-            .expect("confirm once");
+        repo.confirm_hook_hashes(
+            "ws-1",
+            "agent-1",
+            std::slice::from_ref(&hash),
+            "System Admin",
+        )
+        .expect("confirm once");
         // Re-confirming must not error or duplicate.
-        repo.confirm_hook_hashes("ws-1", "agent-1", std::slice::from_ref(&hash), "System Admin")
-            .expect("confirm again");
+        repo.confirm_hook_hashes(
+            "ws-1",
+            "agent-1",
+            std::slice::from_ref(&hash),
+            "System Admin",
+        )
+        .expect("confirm again");
 
         let confirmed_a1 = repo
             .confirmed_hook_hashes("ws-1", "agent-1")
@@ -1623,6 +1645,7 @@ mod p4_agent_link_tests {
                 employee_no: None,
                 state: AgentState::Ready,
                 launch_command: None,
+                output_collection_enabled: false,
                 order_index: None,
                 parent_agent_id: None,
                 external_template_path: None,
@@ -1920,6 +1943,7 @@ mod p4_agent_link_tests {
             employee_no: None,
             state: AgentState::Ready,
             launch_command: None,
+            output_collection_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,

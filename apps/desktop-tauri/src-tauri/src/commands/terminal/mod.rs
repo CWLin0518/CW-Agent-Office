@@ -2,6 +2,7 @@ use base64::Engine;
 use gt_abstractions::{
     AbstractionError, TerminalCreateRequest, TerminalCwdMode, TerminalProvider, WorkspaceId,
 };
+use gt_agent::AgentRepository;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -259,7 +260,7 @@ pub fn terminal_create(
     let cwd_mode = parse_cwd_mode(cwd_mode)?;
     let shell_name = shell.unwrap_or_else(|| "auto".to_string());
     let tool_kind = agent_tool_kind_from_param(agent_tool_kind.clone());
-    let env = augment_terminal_env_for_agent(
+    let mut env = augment_terminal_env_for_agent(
         &app,
         state.inner(),
         &workspace_id,
@@ -267,6 +268,30 @@ pub fn terminal_create(
         inject_provider_env.unwrap_or(true),
         env.unwrap_or_default(),
     )?;
+    if let Some(agent_id) = env.get("GTO_AGENT_ID").cloned() {
+        let repo = crate::commands::agent::resolve_agent_repository(&app)?;
+        repo.ensure_schema().map_err(|error| error.to_string())?;
+        let output_enabled = repo
+            .list_agents(&workspace_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
+            .is_some_and(|agent| agent.output_collection_enabled);
+        if output_enabled {
+            let output_dir = state
+                .workspace_root_path(&workspace_id)?
+                .join(".gtoffice")
+                .join("agents")
+                .join(&agent_id)
+                .join("outputs");
+            std::fs::create_dir_all(&output_dir)
+                .map_err(|error| format!("AGENT_OUTPUT_DIR_CREATE_FAILED: {error}"))?;
+            env.insert(
+                "GTO_OUTPUT_DIR".to_string(),
+                output_dir.to_string_lossy().into_owned(),
+            );
+        }
+    }
     let request = TerminalCreateRequest {
         workspace_id: WorkspaceId::new(workspace_id.clone()),
         shell: Some(shell_name.clone()),

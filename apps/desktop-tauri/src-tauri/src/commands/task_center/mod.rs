@@ -1,4 +1,5 @@
 use gt_abstractions::AbstractionError;
+use gt_agent::AgentRepository;
 use gt_task::{
     AgentRuntimeRegistration, ChannelAckEvent, ChannelMessageEvent, ChannelPublishRequest,
     TaskDispatchBatchRequest, TaskDispatchProgressEvent, TaskGetThreadRequest,
@@ -6,6 +7,7 @@ use gt_task::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::{thread, time::Duration};
 use tauri::{AppHandle, Emitter, State};
 
@@ -168,9 +170,28 @@ pub fn task_dispatch_batch(
     }
 
     let workspace_root = state.workspace_root_path(&request.workspace_id)?;
-    let outcome = state.task_service.dispatch_batch(
+    let repo = crate::commands::agent::resolve_agent_repository(&app)?;
+    repo.ensure_schema().map_err(|error| error.to_string())?;
+    let mut output_directories = HashMap::new();
+    for agent in repo
+        .list_agents(&request.workspace_id)
+        .map_err(|error| error.to_string())?
+    {
+        if agent.output_collection_enabled && request.targets.contains(&agent.id) {
+            let output_dir = workspace_root
+                .join(".gtoffice")
+                .join("agents")
+                .join(&agent.id)
+                .join("outputs");
+            std::fs::create_dir_all(&output_dir)
+                .map_err(|error| format!("AGENT_OUTPUT_DIR_CREATE_FAILED: {error}"))?;
+            output_directories.insert(agent.id, output_dir.to_string_lossy().into_owned());
+        }
+    }
+    let outcome = state.task_service.dispatch_batch_with_output_directories(
         &request,
         &workspace_root,
+        &output_directories,
         |session_id, command, submit_sequence| {
             write_terminal_with_submit(state.inner(), session_id, command, submit_sequence)
         },

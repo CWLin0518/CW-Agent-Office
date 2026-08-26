@@ -8,7 +8,7 @@ use std::{
 use gt_abstractions::{
     AbstractionError, TerminalCreateRequest, TerminalCwdMode, TerminalProvider, WorkspaceId,
 };
-use gt_agent::AgentRepository;
+use gt_agent::{build_collaboration_context, AgentLinkRepository, AgentRepository};
 use gt_agent_session::{Provider, ResumeService};
 use gt_ai_config::{AiConfigService, AiConfigSnapshot, ClaudeConfigSnapshot, CodexConfigSnapshot};
 use gt_storage::{SqliteAgentRepository, SqliteAiConfigRepository, SqliteStorage};
@@ -500,6 +500,45 @@ fn build_initial_prompt(context: Option<&Value>) -> Option<String> {
     }
 }
 
+fn append_collaboration_context(
+    initial_prompt: Option<String>,
+    collaboration_context: Option<String>,
+) -> Option<String> {
+    match (initial_prompt, collaboration_context) {
+        (Some(prompt), Some(collaboration)) => Some(format!("{prompt}\n\n{collaboration}")),
+        (Some(prompt), None) => Some(prompt),
+        (None, Some(collaboration)) => Some(collaboration),
+        (None, None) => None,
+    }
+}
+
+fn load_collaboration_context(
+    app: &AppHandle,
+    workspace_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, String> {
+    let base_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let storage =
+        SqliteStorage::new(base_dir.join("gtoffice.db")).map_err(|error| error.to_string())?;
+    let repo = SqliteAgentRepository::new(storage);
+    repo.ensure_schema().map_err(|error| error.to_string())?;
+    let agents = repo
+        .list_agents(workspace_id)
+        .map_err(|error| error.to_string())?;
+    let links = repo
+        .list_links(workspace_id)
+        .map_err(|error| error.to_string())?;
+    Ok(build_collaboration_context(
+        workspace_id,
+        agent_id,
+        &agents,
+        &links,
+    ))
+}
+
 fn build_launch_env(
     workspace_id: &str,
     agent_id: &str,
@@ -570,9 +609,12 @@ pub fn tool_launch(
     let cwd_mode = parse_launch_cwd_mode(context.as_ref(), resolved_cwd.is_some())?;
     let shell_name =
         context_string(context.as_ref(), &["shell"]).unwrap_or_else(|| "auto".to_string());
-    let initial_prompt = build_initial_prompt(context.as_ref());
     let (agent_id, station_id, submit_sequence) =
         build_runtime_identity(context.as_ref(), tool_kind);
+    let initial_prompt = append_collaboration_context(
+        build_initial_prompt(context.as_ref()),
+        load_collaboration_context(&app, &workspace_id, &agent_id)?,
+    );
 
     if let Some(cwd) = resolved_cwd.as_deref() {
         let cwd_path = std::path::Path::new(cwd);
@@ -588,8 +630,34 @@ pub fn tool_launch(
 
     let mut env = build_launch_env(&workspace_id, &agent_id, &station_id);
     env.extend(context_env_map(context.as_ref()));
-    let env =
+    let mut env =
         augment_terminal_env_for_agent(&app, state.inner(), &workspace_id, tool_kind, true, env)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let repo = SqliteAgentRepository::new(
+        SqliteStorage::new(app_data_dir.join("gtoffice.db")).map_err(|error| error.to_string())?,
+    );
+    repo.ensure_schema().map_err(|error| error.to_string())?;
+    let output_collection_enabled = repo
+        .list_agents(&workspace_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|agent| agent.id == agent_id)
+        .is_some_and(|agent| agent.output_collection_enabled);
+    if output_collection_enabled {
+        let output_dir = workspace_root
+            .join(".gtoffice")
+            .join("agents")
+            .join(&agent_id)
+            .join("outputs");
+        std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
+        env.insert(
+            "GTO_OUTPUT_DIR".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+        );
+    }
 
     let request = TerminalCreateRequest {
         workspace_id: WorkspaceId::new(workspace_id.clone()),

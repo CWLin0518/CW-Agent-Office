@@ -2,9 +2,8 @@ use std::path::{Path, PathBuf};
 
 use gt_abstractions::{WorkspaceId, WorkspaceService};
 use gt_agent::{
-    default_agent_workdir, default_output_guidance_prompt_content, prompt_file_name_for_tool,
-    AgentPolicy, AgentPolicyRepository, AgentProfile, AgentRepository, AgentScope, AgentState,
-    CreateAgentInput, UpdateAgentInput,
+    default_agent_workdir, prompt_file_name_for_tool, AgentPolicy, AgentPolicyRepository,
+    AgentProfile, AgentRepository, AgentScope, AgentState, CreateAgentInput, UpdateAgentInput,
 };
 use gt_storage::{SqliteAgentRepository, SqliteStorage};
 use serde::Deserialize;
@@ -329,6 +328,33 @@ pub(crate) fn read_external_template_content(path: &str) -> Result<String, Strin
         .map_err(|_error| "AGENT_EXTERNAL_TEMPLATE_READ_FAILED".to_string())
 }
 
+fn strip_managed_output_guidance(content: &str) -> String {
+    const START: &str = "<!-- gtoffice:output-guidance:start -->";
+    const END: &str = "<!-- gtoffice:output-guidance:end -->";
+    if let Some(start) = content.find(START) {
+        if let Some(relative_end) = content[start..].find(END) {
+            let end = start + relative_end + END.len();
+            let before = content[..start].trim_end();
+            let after = content[end..].trim_start();
+            return match (before.is_empty(), after.is_empty()) {
+                (true, true) => String::new(),
+                (true, false) => format!("{after}\n"),
+                (false, true) => format!("{before}\n"),
+                (false, false) => format!("{before}\n\n{after}"),
+            };
+        }
+    }
+    let trimmed = content.trim();
+    if trimmed.starts_with("# 输出文件")
+        && trimmed.contains(".gtoffice/agents/")
+        && trimmed.contains("/outputs/")
+        && trimmed.contains("会自动出现在 Agent Canvas 该 Agent 节点的「输出」清单节点里")
+    {
+        return String::new();
+    }
+    content.to_string()
+}
+
 fn delete_prompt_file(workspace_root: &Path, relative_path: &str) -> Result<(), String> {
     let absolute_path = ensure_path_within_workspace(workspace_root, relative_path)?;
     match std::fs::remove_file(absolute_path) {
@@ -408,6 +434,8 @@ pub struct AgentCreateRequest {
     pub prompt_enabled: Option<bool>,
     pub prompt_file_name: Option<String>,
     pub prompt_content: Option<String>,
+    #[serde(default)]
+    pub output_collection_enabled: Option<bool>,
     pub launch_command: Option<String>,
     #[serde(default)]
     pub external_template_path: Option<String>,
@@ -426,6 +454,7 @@ pub(crate) fn agent_create_with_repo(
     let agent_state = parse_agent_state(request.state)?;
     let tool = resolve_agent_tool(request.tool);
     let name = request.name.trim().to_string();
+    let output_collection_enabled = request.output_collection_enabled.unwrap_or(false);
     let prompt_enabled = request.prompt_enabled.unwrap_or(false);
     let (workdir, custom_workdir) = resolve_agent_workdir(
         name.as_str(),
@@ -495,6 +524,7 @@ pub(crate) fn agent_create_with_repo(
         employee_no: request.employee_no,
         state: agent_state,
         launch_command: request.launch_command,
+        output_collection_enabled,
         order_index: None,
         parent_agent_id,
         external_template_path,
@@ -502,18 +532,6 @@ pub(crate) fn agent_create_with_repo(
 
     let agent = repo.create_agent(input).map_err(to_command_error)?;
     if prompt_enabled {
-        // Only when the user (and no external template) supplied any real
-        // content does `prompt_content` stay as-is — a genuinely empty
-        // prompt (docs/cw/14_Agent輸出清單化.md §4.1 follow-up: this repo's
-        // agents had no way to learn the output-list node's fixed directory
-        // convention exists at all, so it silently never got used) gets this
-        // one-line seed instead of an empty file. Never touches a prompt the
-        // user actually wrote or loaded.
-        let prompt_content = if prompt_content.as_deref().map(str::trim).is_none_or(str::is_empty) {
-            Some(default_output_guidance_prompt_content(&agent.id))
-        } else {
-            prompt_content
-        };
         if let Err(error) = write_prompt_file(
             workspace_root,
             workdir.as_str(),
@@ -584,6 +602,8 @@ pub struct AgentUpdateRequest {
     pub prompt_enabled: Option<bool>,
     pub prompt_file_name: Option<String>,
     pub prompt_content: Option<String>,
+    #[serde(default)]
+    pub output_collection_enabled: Option<bool>,
     pub launch_command: Option<String>,
 }
 
@@ -607,14 +627,16 @@ pub(crate) fn agent_update_with_repo(
     let prompt_enabled = request
         .prompt_enabled
         .unwrap_or(existing_prompt_file_name.is_some());
-    let should_write_prompt = should_write_prompt_file_on_update(
-        existing_agent.tool.as_str(),
-        request.tool.as_deref(),
-        existing_prompt_file_name.as_deref(),
-        request.prompt_file_name.as_deref(),
-        request.prompt_content.as_deref(),
-        prompt_enabled,
-    );
+    let should_write_prompt = (request.output_collection_enabled.is_some()
+        && existing_prompt_file_name.is_some())
+        || should_write_prompt_file_on_update(
+            existing_agent.tool.as_str(),
+            request.tool.as_deref(),
+            existing_prompt_file_name.as_deref(),
+            request.prompt_file_name.as_deref(),
+            request.prompt_content.as_deref(),
+            prompt_enabled,
+        );
     let prompt_file_name = resolve_update_agent_prompt_file_name(
         existing_agent.tool.as_str(),
         request.tool.as_deref(),
@@ -631,6 +653,9 @@ pub(crate) fn agent_update_with_repo(
         employee_no: request.employee_no,
         state: agent_state,
         launch_command: request.launch_command,
+        output_collection_enabled: request
+            .output_collection_enabled
+            .unwrap_or(existing_agent.output_collection_enabled),
     };
 
     let agent = repo.update_agent(input).map_err(to_command_error)?;
@@ -639,14 +664,17 @@ pub(crate) fn agent_update_with_repo(
             delete_prompt_file(workspace_root, existing_relative_path)?;
         }
     } else if should_write_prompt {
+        let prompt_content = strip_managed_output_guidance(
+            &request
+                .prompt_content
+                .unwrap_or_else(|| existing_prompt_content.clone()),
+        );
         let written = write_prompt_file(
             workspace_root,
             workdir.as_str(),
             tool.as_str(),
             prompt_file_name.as_deref(),
-            request
-                .prompt_content
-                .or_else(|| Some(existing_prompt_content.clone())),
+            Some(prompt_content),
         )?;
         if let (Some(existing_relative_path), Some((_, written_relative_path))) = (
             existing_prompt_file_relative_path.as_deref(),
@@ -1100,6 +1128,7 @@ mod subagent_creation_tests {
                 employee_no: None,
                 state: AgentState::Ready,
                 launch_command: None,
+                output_collection_enabled: false,
                 order_index: None,
                 parent_agent_id: None,
                 external_template_path: None,
@@ -1131,6 +1160,7 @@ mod subagent_creation_tests {
             prompt_enabled: None,
             prompt_file_name: None,
             prompt_content: None,
+            output_collection_enabled: None,
             launch_command: None,
             external_template_path: None,
             parent_agent_id: Some(parent_agent_id.to_string()),

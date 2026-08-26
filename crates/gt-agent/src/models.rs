@@ -79,6 +79,8 @@ pub struct AgentProfile {
     pub prompt_file_name: Option<String>,
     pub prompt_file_relative_path: Option<String>,
     pub launch_command: Option<String>,
+    #[serde(default)]
+    pub output_collection_enabled: bool,
     pub order_index: i32,
     /// Points at the `AgentProfile.id` of the agent that created this one via
     /// agent-canvas's "new subagent" action. `None` for top-level agents.
@@ -224,12 +226,6 @@ pub fn default_prompt_content(agent_name: &str, tool: &str) -> String {
 /// §3.1/§4.1) — an agent asked to produce a report/webpage had no reason to
 /// write it there instead of wherever its task happened to imply, so the
 /// list node never had anything to show.
-pub fn default_output_guidance_prompt_content(agent_id: &str) -> String {
-    format!(
-        "# 输出文件\n\n如果这次任务会产出说明用的文件（例如 Markdown 报告、HTML 网页），请把它们放进这个目录：\n\n```\n.gtoffice/agents/{agent_id}/outputs/\n```\n\n放在这个目录下的文件会自动出现在 Agent Canvas 该 Agent 节点的「输出」清单节点里，方便直接检视内容或用系统默认程序打开。\n"
-    )
-}
-
 pub fn normalize_agent_slug(value: &str) -> String {
     let lowered = value.trim().to_ascii_lowercase();
     let mut output = String::with_capacity(lowered.len());
@@ -270,21 +266,12 @@ pub fn prompt_file_relative_path(workdir: &str, tool: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        default_agent_workdir, default_output_guidance_prompt_content, prompt_file_name_for_tool,
-        prompt_file_relative_path,
-    };
+    use super::{default_agent_workdir, prompt_file_name_for_tool, prompt_file_relative_path};
 
     #[test]
     fn default_agent_workdir_uses_workspace_root() {
         assert_eq!(default_agent_workdir("My Product Agent"), ".");
         assert_eq!(default_agent_workdir("  "), ".");
-    }
-
-    #[test]
-    fn output_guidance_names_the_agents_own_outputs_directory() {
-        let content = default_output_guidance_prompt_content("agent-a");
-        assert!(content.contains(".gtoffice/agents/agent-a/outputs/"));
     }
 
     #[test]

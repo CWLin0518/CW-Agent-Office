@@ -1886,6 +1886,7 @@ export interface AgentProfile {
   promptFileName?: string | null
   promptFileRelativePath?: string | null
   launchCommand?: string | null
+  outputCollectionEnabled: boolean
   orderIndex: number
   parentAgentId?: string | null
   externalTemplatePath?: string | null
@@ -1950,6 +1951,7 @@ export interface AgentCreateRequest {
   promptEnabled?: boolean
   promptFileName?: string | null
   promptContent?: string | null
+  outputCollectionEnabled?: boolean
   launchCommand?: string | null
   externalTemplatePath?: string | null
   /** Set when creating a subagent from agent-canvas's "new subagent" context
@@ -1981,6 +1983,7 @@ export interface AgentUpdateRequest {
   promptEnabled?: boolean
   promptFileName?: string | null
   promptContent?: string | null
+  outputCollectionEnabled?: boolean
   launchCommand?: string | null
 }
 
@@ -4631,6 +4634,7 @@ export const desktopApi = {
         promptEnabled: request.promptEnabled ?? false,
         promptFileName: request.promptFileName ?? null,
         promptContent: request.promptContent ?? null,
+        outputCollectionEnabled: request.outputCollectionEnabled ?? false,
         launchCommand: request.launchCommand ?? null,
         externalTemplatePath: request.externalTemplatePath ?? null,
         parentAgentId: request.parentAgentId ?? null,
@@ -4705,6 +4709,7 @@ export const desktopApi = {
         promptEnabled: request.promptEnabled ?? false,
         promptFileName: request.promptFileName ?? null,
         promptContent: request.promptContent ?? null,
+        outputCollectionEnabled: request.outputCollectionEnabled ?? false,
         launchCommand: request.launchCommand ?? null,
       },
     })
