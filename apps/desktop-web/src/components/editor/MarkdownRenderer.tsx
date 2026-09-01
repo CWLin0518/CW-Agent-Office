@@ -4,6 +4,7 @@ import rehypeHighlight from 'rehype-highlight'
 import remarkGfm from 'remark-gfm'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { resolveMediaPreviewPath } from '@features/file-preview/previewers/media-preview-path'
+import './MarkdownRenderer.scss'
 
 function isWindowsAbsolutePath(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path) || /^\\\\\?\\[A-Za-z]:[\\/]/.test(path)
@@ -153,12 +154,14 @@ export function MarkdownRenderer({ content, filePath, workspaceRoot }: MarkdownR
   )
 
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
-      components={markdownComponents}
-    >
-      {deferredContent}
-    </ReactMarkdown>
+    <div className="markdown-renderer">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={markdownComponents}
+      >
+        {deferredContent}
+      </ReactMarkdown>
+    </div>
   )
 }

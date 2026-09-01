@@ -524,7 +524,7 @@ pub enum MaterializedCapability {
 ///   `$CODEX_HOME` is global but `agent_id` is only unique within one
 ///   workspace (see `codex_profile_name`'s doc comment).
 ///
-/// Returns `Ok(None)` when the snapshot has no MCP servers (nothing to
+/// Returns `Ok(None)` when the snapshot has no enabled capability (nothing to
 /// overlay — callers should launch with no `-p` flag at all, same as
 /// today). Same content-hash short-circuit + per-agent lock discipline as
 /// the Claude path (§2.6, 決策4), except the lock is keyed by the computed
@@ -557,7 +557,10 @@ pub fn materialize_codex_capability(
     let profile_path = codex_home.join(format!("{profile_name}.config.toml"));
     let hash_path = codex_home.join(format!("{profile_name}.capability-hash"));
 
-    if !snapshot.mcp_servers.iter().any(|s| s.enabled) {
+    let has_enabled_capability = snapshot.mcp_servers.iter().any(|item| item.enabled)
+        || snapshot.skills.iter().any(|item| item.enabled)
+        || !snapshot.hooks.is_empty();
+    if !has_enabled_capability {
         // Nothing enabled to overlay (either no servers at all, or every
         // one of them is toggled off). Clean up a stale profile from a
         // previous snapshot that did have enabled servers, so a leftover
@@ -594,7 +597,7 @@ pub fn materialize_codex_capability(
         }
     }
 
-    let toml_text = build_codex_profile_toml(&snapshot.mcp_servers)
+    let toml_text = build_codex_profile_toml(snapshot)
         .map_err(|error| MaterializeError::InvalidSnapshot(error.to_string()))?;
     write_atomic(&profile_path, &toml_text)?;
     write_atomic(&hash_path, &content_hash)?;
@@ -653,9 +656,11 @@ pub fn resolve_codex_home() -> Option<PathBuf> {
 /// (Codex's `codex mcp add --url` only distinguishes "stdio vs URL", not a
 /// separate sse/http type the way Claude does, so both `McpTransport::Sse`
 /// and `McpTransport::Http` map to the same `url`-only shape here).
-fn build_codex_profile_toml(servers: &[McpServerCapability]) -> Result<String, toml::ser::Error> {
+fn build_codex_profile_toml(
+    snapshot: &AgentCapabilitySnapshot,
+) -> Result<String, toml::ser::Error> {
     let mut mcp_servers = toml::value::Table::new();
-    for server in servers.iter().filter(|server| server.enabled) {
+    for server in snapshot.mcp_servers.iter().filter(|server| server.enabled) {
         let mut entry = toml::value::Table::new();
         match server.transport {
             McpTransport::Stdio => {
@@ -691,7 +696,66 @@ fn build_codex_profile_toml(servers: &[McpServerCapability]) -> Result<String, t
         mcp_servers.insert(server.id.clone(), toml::Value::Table(entry));
     }
     let mut root = toml::value::Table::new();
-    root.insert("mcp_servers".to_string(), toml::Value::Table(mcp_servers));
+    if !mcp_servers.is_empty() {
+        root.insert("mcp_servers".to_string(), toml::Value::Table(mcp_servers));
+    }
+
+    let skill_configs = snapshot
+        .skills
+        .iter()
+        .filter(|skill| skill.enabled)
+        .map(|skill| {
+            let skill_dir = Path::new(&skill.source_path)
+                .parent()
+                .unwrap_or_else(|| Path::new(&skill.source_path));
+            let mut entry = toml::value::Table::new();
+            entry.insert(
+                "path".to_string(),
+                toml::Value::String(skill_dir.to_string_lossy().into_owned()),
+            );
+            entry.insert("enabled".to_string(), toml::Value::Boolean(true));
+            toml::Value::Table(entry)
+        })
+        .collect::<Vec<_>>();
+    if !skill_configs.is_empty() {
+        let mut skills = toml::value::Table::new();
+        skills.insert("config".to_string(), toml::Value::Array(skill_configs));
+        root.insert("skills".to_string(), toml::Value::Table(skills));
+    }
+
+    let mut hooks = toml::value::Table::new();
+    for hook in &snapshot.hooks {
+        let mut handler = toml::value::Table::new();
+        handler.insert(
+            "type".to_string(),
+            toml::Value::String("command".to_string()),
+        );
+        handler.insert(
+            "command".to_string(),
+            toml::Value::String(hook.command.clone()),
+        );
+
+        let mut group = toml::value::Table::new();
+        if let Some(matcher) = hook.matcher.as_deref().filter(|value| !value.is_empty()) {
+            group.insert(
+                "matcher".to_string(),
+                toml::Value::String(matcher.to_string()),
+            );
+        }
+        group.insert(
+            "hooks".to_string(),
+            toml::Value::Array(vec![toml::Value::Table(handler)]),
+        );
+        hooks
+            .entry(hook.event.clone())
+            .or_insert_with(|| toml::Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("hook event is always initialized as an array")
+            .push(toml::Value::Table(group));
+    }
+    if !hooks.is_empty() {
+        root.insert("hooks".to_string(), toml::Value::Table(hooks));
+    }
     toml::to_string_pretty(&toml::Value::Table(root))
 }
 
@@ -1359,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_rejects_a_snapshot_with_skills_or_hooks() {
+    fn codex_materializes_skills_and_hooks_into_the_profile() {
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_home = temp.path().join("codex-home");
         std::fs::create_dir_all(&codex_home).expect("create codex home");
@@ -1370,13 +1434,22 @@ mod tests {
             source_path: "/tmp/reviewer/SKILL.md".to_string(),
             enabled: true,
         });
+        snapshot.hooks.push(HookCapability {
+            event: "PreToolUse".to_string(),
+            matcher: Some("Bash".to_string()),
+            command: "echo inspect".to_string(),
+            note: None,
+        });
 
-        let result = materialize_codex_capability(&codex_home, "ws-1", "agent-a", &snapshot);
-        assert!(result.is_err());
-        let expected_name = codex_profile_name("ws-1", "agent-a");
-        assert!(!codex_home
-            .join(format!("{expected_name}.config.toml"))
-            .exists());
+        let result = materialize_codex_capability(&codex_home, "ws-1", "agent-a", &snapshot)
+            .expect("materialize")
+            .expect("profile");
+        let contents = std::fs::read_to_string(result.profile_path).expect("read profile");
+        assert!(contents.contains("[[skills.config]]"));
+        assert!(contents.contains("enabled = true"));
+        assert!(contents.contains("[[hooks.PreToolUse]]"));
+        assert!(contents.contains("matcher = \"Bash\""));
+        assert!(contents.contains("command = \"echo inspect\""));
     }
 
     #[test]

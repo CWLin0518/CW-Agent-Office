@@ -26,8 +26,7 @@ pub struct DiscoveredSkill {
     pub scope: SkillScope,
 }
 
-/// Scans the two filesystem locations Claude Code itself reads project vs.
-/// user-level skills from (docs/cw/08_MCP_Hook_Skill掛載設計.md §1):
+/// Scans the repository and user locations used by Claude Code and Codex.
 /// - workspace-scoped: `<workspace_root>/.claude/skills/<id>/SKILL.md`
 /// - globally installed: `$CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md`, falling
 ///   back to `~/.claude/skills/<id>/SKILL.md` when `CLAUDE_CONFIG_DIR` is
@@ -42,9 +41,21 @@ pub fn list_available_skills(workspace_root: &Path) -> Vec<DiscoveredSkill> {
         &workspace_root.join(".claude").join("skills"),
         SkillScope::Workspace,
     );
+    skills.extend(scan_skills_dir(
+        &workspace_root.join(".agents").join("skills"),
+        SkillScope::Workspace,
+    ));
     if let Some(global_root) = resolve_global_skills_root() {
         skills.extend(scan_skills_dir(&global_root, SkillScope::Global));
     }
+    if let Some(home) = gt_tools::agent_installer::AgentInstaller::user_home_dir() {
+        skills.extend(scan_skills_dir(
+            &home.join(".agents").join("skills"),
+            SkillScope::Global,
+        ));
+    }
+    skills.sort_by_key(|skill| skill.name.to_lowercase());
+    skills.dedup_by(|left, right| left.source_path == right.source_path);
     skills
 }
 
@@ -175,9 +186,8 @@ pub struct DiscoveredHook {
     pub inferred_description: Option<String>,
 }
 
-/// Scans the two `.claude/settings.json` files Claude Code itself reads
-/// hooks from — same two roots `list_available_skills` uses (workspace vs.
-/// global), pointed at `settings.json` instead of `skills/`:
+/// Scans Claude `settings.json` and Codex `hooks.json` sources at workspace
+/// and user scope.
 /// - workspace-scoped: `<workspace_root>/.claude/settings.json`
 /// - globally installed: `$CLAUDE_CONFIG_DIR/settings.json`, falling back to
 ///   `~/.claude/settings.json` when unset
@@ -194,6 +204,11 @@ pub fn list_available_hooks(workspace_root: &Path) -> Vec<DiscoveredHook> {
         HookScope::Workspace,
         workspace_root,
     );
+    hooks.extend(scan_settings_hooks(
+        &workspace_root.join(".codex").join("hooks.json"),
+        HookScope::Workspace,
+        workspace_root,
+    ));
     if let Some(global_settings) = resolve_global_settings_path() {
         hooks.extend(scan_settings_hooks(
             &global_settings,
@@ -201,6 +216,23 @@ pub fn list_available_hooks(workspace_root: &Path) -> Vec<DiscoveredHook> {
             workspace_root,
         ));
     }
+    if let Some(home) = gt_tools::agent_installer::AgentInstaller::user_home_dir() {
+        hooks.extend(scan_settings_hooks(
+            &home.join(".codex").join("hooks.json"),
+            HookScope::Global,
+            workspace_root,
+        ));
+    }
+    hooks.sort_by(|a, b| {
+        (a.event.as_str(), a.matcher.as_deref().unwrap_or(""), a.command.as_str())
+            .cmp(&(b.event.as_str(), b.matcher.as_deref().unwrap_or(""), b.command.as_str()))
+    });
+    hooks.dedup_by(|left, right| {
+        left.event == right.event
+            && left.matcher == right.matcher
+            && left.command == right.command
+            && left.source_path == right.source_path
+    });
     hooks
 }
 

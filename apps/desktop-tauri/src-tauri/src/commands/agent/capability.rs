@@ -51,7 +51,7 @@ pub(crate) fn materialize_capability_for_launch(
             return None;
         }
     };
-    if snapshot.mcp_servers.is_empty() {
+    if snapshot.mcp_servers.is_empty() && snapshot.skills.is_empty() && snapshot.hooks.is_empty() {
         return None;
     }
 
@@ -96,7 +96,7 @@ pub(crate) fn materialize_capability_for_launch(
                     tracing::warn!(
                         agent_id,
                         %error,
-                        "failed to materialize Codex MCP capability; launching unmounted"
+                        "failed to materialize Codex capability; launching unmounted"
                     );
                     None
                 }

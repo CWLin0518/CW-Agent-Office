@@ -238,8 +238,8 @@
   flex-direction: column;
   gap: #{rem(12)};
   width: 100%;
-  max-width: #{rem(720)};
-  max-height: 80vh;
+  max-width: #{rem(880)};
+  max-height: 86vh;
   padding: #{rem(18)} #{rem(20)};
   border-radius: #{rem(14)};
   // Same "opaque literal, opts out of vibrancy" reasoning as
@@ -270,8 +270,16 @@
 .agent-canvas-output-preview-body {
   overflow-y: auto;
   min-height: #{rem(80)};
-  font-size: #{rem(13)};
+  padding: #{rem(20)} #{rem(24)};
+  border: var(--vb-border-width) solid var(--vb-border);
+  border-radius: #{rem(10)};
+  background: var(--vb-surface);
   color: var(--vb-text);
+
+  .markdown-renderer {
+    max-width: #{rem(768)};
+    margin: 0 auto;
+  }
 }
 
 .agent-canvas-output-preview-loading,

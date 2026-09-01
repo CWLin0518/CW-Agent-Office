@@ -10,11 +10,9 @@ import type {
 
 export type CapabilitySubTab = 'mcp' | 'skills' | 'hooks'
 
-/** Codex agents only get `mcpServers` materialized (v1 scope,
- * docs/cw/08_MCP_Hook_Skill掛載設計.md §2.1 決策2) — the Skills/Hooks
- * sub-tabs must be disabled, not just "empty," for a Codex agent. */
+/** Claude Code and Codex both support mounted skills and lifecycle hooks. */
 export function isSkillsOrHooksSupportedForToolKind(toolKind: string): boolean {
-  return toolKind === 'claude'
+  return toolKind === 'claude' || toolKind === 'codex'
 }
 
 export function createEmptyMcpServer(): McpServerCapability {

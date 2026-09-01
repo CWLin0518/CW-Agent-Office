@@ -1,0 +1,123 @@
+@use '../../styles/tokens/responsive' as *;
+
+// Document typography lives on the renderer so previews outside the file
+// editor never fall back to browser-default Markdown styles.
+.markdown-renderer {
+  min-width: 0;
+  font-size: #{rem(15)};
+  line-height: 1.6;
+  overflow-wrap: break-word;
+  color: var(--vb-text);
+
+  > :first-child,
+  > :first-child > :first-child { margin-top: 0; }
+
+  > :last-child,
+  > :last-child > :last-child { margin-bottom: 0; }
+
+  h1, h2, h3, h4, h5, h6 {
+    margin: 1.5em 0 0.5em;
+    font-weight: 600;
+    line-height: 1.25;
+    color: var(--vb-text);
+  }
+
+  h1, h2 {
+    padding-bottom: 0.3em;
+    border-bottom: var(--vb-border-width) solid var(--vb-border);
+  }
+
+  h1 { font-size: #{rem(30)}; }
+  h2 { font-size: #{rem(24)}; }
+  h3 { font-size: #{rem(20)}; }
+  h4 { font-size: #{rem(16)}; }
+  h5 { font-size: #{rem(14)}; }
+  h6 { font-size: #{rem(13)}; color: var(--vb-text-muted); }
+
+  p, ul, ol, pre, blockquote, table { margin: 0 0 1em; }
+  ul, ol { padding-left: 2em; }
+  li + li { margin-top: 0.25em; }
+  li > ul, li > ol { margin-bottom: 0; }
+  li::marker { color: var(--vb-text-muted); }
+
+  code, kbd, pre { font-family: var(--vb-font-mono); }
+
+  code {
+    padding: 0.15em 0.35em;
+    border-radius: var(--vb-radius-xs);
+    background: var(--vb-surface-muted);
+    font-size: 0.875em;
+  }
+
+  pre {
+    max-width: 100%;
+    padding: 1em;
+    overflow: auto;
+    border: var(--vb-border-width) solid var(--vb-border);
+    border-radius: var(--vb-radius-sm);
+    background: var(--vb-surface-muted);
+    line-height: 1.45;
+
+    code {
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      font-size: #{rem(14)};
+      overflow-wrap: normal;
+      white-space: pre;
+    }
+  }
+
+  blockquote {
+    padding: 0.25em 1em;
+    border-left: #{rem(4)} solid var(--vb-border);
+    color: var(--vb-text-muted);
+
+    > :last-child { margin-bottom: 0; }
+  }
+
+  table {
+    display: block;
+    width: max-content;
+    max-width: 100%;
+    overflow-x: auto;
+    border-spacing: 0;
+    border-collapse: collapse;
+  }
+
+  th, td {
+    padding: 0.45em 0.8em;
+    border: var(--vb-border-width) solid var(--vb-border);
+    text-align: left;
+  }
+
+  th { background: var(--vb-surface-muted); font-weight: 600; }
+  tr:nth-child(even) td { background: color-mix(in srgb, var(--vb-surface-muted) 48%, transparent); }
+
+  hr {
+    height: var(--vb-border-width);
+    margin: 1.5em 0;
+    border: 0;
+    background: var(--vb-border);
+  }
+
+  img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--vb-radius-sm);
+  }
+
+  a {
+    color: var(--vb-accent);
+    text-decoration: none;
+
+    &:hover { text-decoration: underline; }
+  }
+
+  input[type='checkbox'] {
+    margin: 0 0.45em 0.2em 0;
+    vertical-align: middle;
+    accent-color: var(--vb-accent);
+  }
+}

@@ -2,8 +2,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::normalize_tool_provider_key;
-
 mod discovery;
 mod materialize;
 
@@ -37,28 +35,15 @@ impl AgentCapabilitySnapshot {
         serde_json::from_str(json)
     }
 
-    /// v1 scope decision (§2.1, §6 決策 2): Codex agents only get `mcpServers`
-    /// materialized. `skills`/`hooks` are allowed to be *stored* for a Codex
-    /// agent (so switching an agent's `tool` later doesn't lose data) but
-    /// must be rejected at the point they'd otherwise silently do nothing —
-    /// a silent no-op here is exactly the "假掛載" (fake mount) failure mode
-    /// this design explicitly calls out. Callers persisting a snapshot must
-    /// run this check first.
-    pub fn validate_for_tool(&self, tool: &str) -> Result<(), String> {
+    /// Provider-independent validation. Codex now supports both skill
+    /// overrides and lifecycle hooks in profile config, so the former
+    /// MCP-only restriction no longer applies.
+    pub fn validate_for_tool(&self, _tool: &str) -> Result<(), String> {
         for server in &self.mcp_servers {
             server.validate_transport_fields()?;
         }
         self.validate_no_duplicate_enabled_skill_ids()?;
 
-        if normalize_tool_provider_key(tool) != "codex" {
-            return Ok(());
-        }
-        if !self.skills.is_empty() || !self.hooks.is_empty() {
-            return Err(
-                "Codex agents do not support skills/hooks capabilities yet (v1 scope: MCP only)"
-                    .to_string(),
-            );
-        }
         Ok(())
     }
 
@@ -360,14 +345,14 @@ mod tests {
     }
 
     #[test]
-    fn skills_or_hooks_are_rejected_for_codex() {
+    fn skills_and_hooks_are_allowed_for_codex() {
         let mut with_skill = AgentCapabilitySnapshot::default();
         with_skill.skills.push(SkillCapability {
             id: "reviewer".to_string(),
             source_path: "/tmp/reviewer/SKILL.md".to_string(),
             enabled: true,
         });
-        assert!(with_skill.validate_for_tool("codex").is_err());
+        assert!(with_skill.validate_for_tool("codex").is_ok());
 
         let mut with_hook = AgentCapabilitySnapshot::default();
         with_hook.hooks.push(HookCapability {
@@ -376,7 +361,7 @@ mod tests {
             command: "echo hi".to_string(),
             note: None,
         });
-        assert!(with_hook.validate_for_tool("codex").is_err());
+        assert!(with_hook.validate_for_tool("codex").is_ok());
     }
 
     #[test]
