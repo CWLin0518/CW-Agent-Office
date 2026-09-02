@@ -178,6 +178,18 @@ const STATION_TERMINAL_FOCUS_MAX_RETRY_FRAMES = 8
 const STATION_TERMINAL_FOCUS_RETRY_FALLBACK_DELAY_MS = 48
 const STATION_TASK_SUBMIT_RETRY_FALLBACK_DELAY_MS = 48
 
+// Matches a session-handoff file written per the guidance block agent.rs
+// injects when `sessionBoundaryAutoSplitEnabled` is on (docs/cw/04_客製化設計.md
+// "內建自動分 session"). Capture group 1 is the owning station's workdir
+// (workspace-root-relative, "" for the workspace root itself) — matched
+// against each station's `agentWorkdirRel` below to find which station wrote it.
+const SESSION_HANDOFF_PATH_PATTERN = /^(.*?)\/?\.claude\/session-handoff\/[^/]+-handoff\.md$/
+// Deliberately a distinct action from the user's global
+// `~/.claude/hooks/session-boundary-trigger.js` PostToolUse hook (which only
+// reacts to `action="new_session"` and opens a separate card) — this one
+// restarts the same station's session in place, so it must never fire both.
+const SESSION_BOUNDARY_RESTART_SIGNAL_PATTERN = /<SESSION_CONTROL\s+action=["']restart_in_place["']\s*\/>/
+
 function isTerminalSessionBindingInvalid(detail: string): boolean {
   return (
     detail.includes('TERMINAL_SESSION_NOT_FOUND') ||
@@ -4876,143 +4888,161 @@ export function useShellTerminalController({
     setForceCloseConfirmPendingId(stationId)
   }, [recordStationLifecycleDiagnostic])
 
+  // Shared by the two-step manual "force close" flow (dialog-confirmed) and
+  // the automatic session-boundary-auto-split restart (station-boundary
+  // detection below) — both need to kill every live session for a station
+  // and leave it idle-and-launchable without removing the station card
+  // itself (unlike cleanupRemovedStationRuntimeState, which also deletes
+  // the station).
+  const forceCloseStationTerminalById = useCallback(
+    async (stationId: string, reason: string) => {
+      const runtime = stationTerminalsRef.current[stationId]
+      const activeSessionId = runtime?.sessionId ?? null
+      if (!activeSessionId) {
+        return
+      }
+      // Diagnostic detail is intentionally independent of `reason` (which
+      // only flows into the requestTerminalKill API call below) — this
+      // string was 'kill-request' before this helper was extracted from
+      // the manual force-close flow, and stays that way for both callers
+      // so existing diagnostic-log readers aren't surprised by it changing
+      // per caller.
+      recordStationLifecycleDiagnostic(stationId, activeSessionId, 'force-close-confirm', 'kill-request')
+      const station = stationsRef.current.find((entry) => entry.id === stationId)
+
+      const workspaceId = activeWorkspaceIdRef.current
+      // A station can be showing several open tabs (see stationSessionTabs) — force
+      // closing must kill every one of them, not just the currently active tab, or
+      // the sibling tabs' PTYs leak and their stale ids resurface on the next
+      // "New Session" click (see cleanupRemovedStationRuntimeState for the same fix).
+      const mappedSessionIds = Object.entries(sessionStationRef.current)
+        .filter(([, mappedStationId]) => mappedStationId === stationId)
+        .map(([sessionId]) => sessionId)
+      const targetSessionIds = Array.from(
+        new Set([
+          activeSessionId,
+          ...(stationSessionTabsRef.current[stationId] ?? []),
+          ...mappedSessionIds,
+        ]),
+      )
+
+      for (const sessionId of targetSessionIds) {
+        try {
+          if (desktopApi.isTauriRuntime()) {
+            const response = await requestTerminalKill({
+              sessionId,
+              signal: 'KILL',
+              reason,
+              stationId,
+              workspaceId,
+            })
+            if (!workspaceId || !isMatchingTerminalWorkspaceSessionResponse(response, workspaceId, sessionId)) {
+              // A stale/mismatched response for this one session must not abandon
+              // the remaining sessions mid-loop — see cleanupRemovedStationRuntimeState
+              // for the same fix and rationale.
+              continue
+            }
+            if (!response.killed) {
+              appendStationTerminalOutput(
+                stationId,
+                t(locale, 'system.killFailed', {
+                  detail: TERMINAL_KILL_REJECTED_DETAIL,
+                }),
+              )
+              continue
+            }
+          }
+        } catch (error) {
+          const detail = describeError(error)
+          if (!isTerminalSessionBindingInvalid(detail)) {
+            appendStationTerminalOutput(
+              stationId,
+              t(locale, 'system.killFailed', {
+                detail,
+              }),
+            )
+            continue
+          }
+        }
+
+        delete sessionStationRef.current[sessionId]
+        delete terminalSessionSeqRef.current[sessionId]
+        delete terminalOutputQueueRef.current[sessionId]
+        delete terminalSessionVisibilityRef.current[sessionId]
+        delete terminalChunkDecoderBySessionRef.current[sessionId]
+
+        if (workspaceId) {
+          const document = workspaceTerminalCacheRef.current[workspaceId]
+          if (document) {
+            // Persist idle (not killed/exited chrome) so warm restore returns to history.
+            removeWorkspaceTerminalSessionBinding(document, sessionId, 'exited')
+          }
+        }
+      }
+
+      delete stationSubmitSequenceRef.current[stationId]
+      delete stationTerminalRestoreStateRef.current[stationId]
+      stationTerminalInputControllerRef.current?.clear(stationId)
+      // Closing the agent must not leave a parked live buffer that presentation
+      // can resurrect as a "running" terminal after a workspace switch.
+      disposeParkedStationTerminalHost(workspaceId, stationId)
+      setStationSessionTabs((previous) => {
+        if (!(stationId in previous)) {
+          return previous
+        }
+        const next = { ...previous }
+        delete next[stationId]
+        return next
+      })
+
+      if (workspaceId) {
+        const document = workspaceTerminalCacheRef.current[workspaceId]
+        if (document) {
+          const closedRuntime = document.stationTerminals[stationId]
+          if (closedRuntime) {
+            document.stationTerminals[stationId] = {
+              ...closedRuntime,
+              sessionId: null,
+              stateRaw: 'idle',
+              shell: null,
+              cwdMode: 'workspace_root',
+              resolvedCwd: null,
+            }
+          }
+        }
+        void desktopApi.agentRuntimeUnregister(workspaceId, stationId).catch(() => {
+          // Runtime sync will reconcile if a later session is started.
+        })
+      }
+
+      resetStationTerminalOutput(stationId, station ? getStationIdleBanner(station) : undefined)
+      setStationTerminalState(stationId, {
+        sessionId: null,
+        stateRaw: 'idle',
+        unreadCount: 0,
+        shell: null,
+        cwdMode: 'workspace_root',
+        resolvedCwd: null,
+      })
+    },
+    [
+      appendStationTerminalOutput,
+      locale,
+      recordStationLifecycleDiagnostic,
+      requestTerminalKill,
+      resetStationTerminalOutput,
+      setStationTerminalState,
+    ],
+  )
+
   const confirmForceCloseStationTerminal = useCallback(async () => {
     const stationId = forceCloseConfirmPendingId
     if (!stationId) {
       return
     }
     setForceCloseConfirmPendingId(null)
-    const runtime = stationTerminalsRef.current[stationId]
-    const activeSessionId = runtime?.sessionId ?? null
-    if (!activeSessionId) {
-      return
-    }
-    recordStationLifecycleDiagnostic(stationId, activeSessionId, 'force-close-confirm', 'kill-request')
-    const station = stationsRef.current.find((entry) => entry.id === stationId)
-
-    const workspaceId = activeWorkspaceIdRef.current
-    // A station can be showing several open tabs (see stationSessionTabs) — force
-    // closing must kill every one of them, not just the currently active tab, or
-    // the sibling tabs' PTYs leak and their stale ids resurface on the next
-    // "New Session" click (see cleanupRemovedStationRuntimeState for the same fix).
-    const mappedSessionIds = Object.entries(sessionStationRef.current)
-      .filter(([, mappedStationId]) => mappedStationId === stationId)
-      .map(([sessionId]) => sessionId)
-    const targetSessionIds = Array.from(
-      new Set([
-        activeSessionId,
-        ...(stationSessionTabsRef.current[stationId] ?? []),
-        ...mappedSessionIds,
-      ]),
-    )
-
-    for (const sessionId of targetSessionIds) {
-      try {
-        if (desktopApi.isTauriRuntime()) {
-          const response = await requestTerminalKill({
-            sessionId,
-            signal: 'KILL',
-            reason: 'force-close-confirmed',
-            stationId,
-            workspaceId,
-          })
-          if (!workspaceId || !isMatchingTerminalWorkspaceSessionResponse(response, workspaceId, sessionId)) {
-            // A stale/mismatched response for this one session must not abandon
-            // the remaining sessions mid-loop — see cleanupRemovedStationRuntimeState
-            // for the same fix and rationale.
-            continue
-          }
-          if (!response.killed) {
-            appendStationTerminalOutput(
-              stationId,
-              t(locale, 'system.killFailed', {
-                detail: TERMINAL_KILL_REJECTED_DETAIL,
-              }),
-            )
-            continue
-          }
-        }
-      } catch (error) {
-        const detail = describeError(error)
-        if (!isTerminalSessionBindingInvalid(detail)) {
-          appendStationTerminalOutput(
-            stationId,
-            t(locale, 'system.killFailed', {
-              detail,
-            }),
-          )
-          continue
-        }
-      }
-
-      delete sessionStationRef.current[sessionId]
-      delete terminalSessionSeqRef.current[sessionId]
-      delete terminalOutputQueueRef.current[sessionId]
-      delete terminalSessionVisibilityRef.current[sessionId]
-      delete terminalChunkDecoderBySessionRef.current[sessionId]
-
-      if (workspaceId) {
-        const document = workspaceTerminalCacheRef.current[workspaceId]
-        if (document) {
-          // Persist idle (not killed/exited chrome) so warm restore returns to history.
-          removeWorkspaceTerminalSessionBinding(document, sessionId, 'exited')
-        }
-      }
-    }
-
-    delete stationSubmitSequenceRef.current[stationId]
-    delete stationTerminalRestoreStateRef.current[stationId]
-    stationTerminalInputControllerRef.current?.clear(stationId)
-    // Closing the agent must not leave a parked live buffer that presentation
-    // can resurrect as a "running" terminal after a workspace switch.
-    disposeParkedStationTerminalHost(workspaceId, stationId)
-    setStationSessionTabs((previous) => {
-      if (!(stationId in previous)) {
-        return previous
-      }
-      const next = { ...previous }
-      delete next[stationId]
-      return next
-    })
-
-    if (workspaceId) {
-      const document = workspaceTerminalCacheRef.current[workspaceId]
-      if (document) {
-        const closedRuntime = document.stationTerminals[stationId]
-        if (closedRuntime) {
-          document.stationTerminals[stationId] = {
-            ...closedRuntime,
-            sessionId: null,
-            stateRaw: 'idle',
-            shell: null,
-            cwdMode: 'workspace_root',
-            resolvedCwd: null,
-          }
-        }
-      }
-      void desktopApi.agentRuntimeUnregister(workspaceId, stationId).catch(() => {
-        // Runtime sync will reconcile if a later session is started.
-      })
-    }
-
-    resetStationTerminalOutput(stationId, station ? getStationIdleBanner(station) : undefined)
-    setStationTerminalState(stationId, {
-      sessionId: null,
-      stateRaw: 'idle',
-      unreadCount: 0,
-      shell: null,
-      cwdMode: 'workspace_root',
-      resolvedCwd: null,
-    })
-  }, [
-    forceCloseConfirmPendingId,
-    appendStationTerminalOutput,
-    locale,
-    recordStationLifecycleDiagnostic,
-    requestTerminalKill,
-    resetStationTerminalOutput,
-    setStationTerminalState,
-  ])
+    await forceCloseStationTerminalById(stationId, 'force-close-confirmed')
+  }, [forceCloseConfirmPendingId, forceCloseStationTerminalById])
 
   const dismissForceCloseConfirm = useCallback(() => {
     if (forceCloseConfirmPendingId) {
@@ -5024,6 +5054,196 @@ export function useShellTerminalController({
     }
     setForceCloseConfirmPendingId(null)
   }, [forceCloseConfirmPendingId, recordStationLifecycleDiagnostic])
+
+  // ── Session-boundary auto-restart ───────────────────────────────────────
+  // When an agent with sessionBoundaryAutoSplitEnabled writes a handoff
+  // signal (guidance block injected by agent.rs's
+  // apply_session_boundary_guidance), the CLI process that wrote it is
+  // still alive — it just finished a Write tool call, it doesn't exit on
+  // its own. Force-close it and relaunch in the same card via the same
+  // path the manual "launch" button uses.
+  const sessionBoundaryRestartInFlightRef = useRef<Set<string>>(new Set())
+
+  const handleSessionBoundaryRestartSignal = useCallback(
+    async (stationId: string) => {
+      if (sessionBoundaryRestartInFlightRef.current.has(stationId)) {
+        return
+      }
+      sessionBoundaryRestartInFlightRef.current.add(stationId)
+      try {
+        appendStationTerminalOutput(stationId, t(locale, 'system.sessionBoundaryRestarting'))
+        await forceCloseStationTerminalById(stationId, 'session-boundary-auto-restart')
+        await launchStationCliAgentRef.current?.(stationId)
+      } catch (error) {
+        appendStationTerminalOutput(
+          stationId,
+          t(locale, 'system.sessionBoundaryRestartFailed', { detail: describeError(error) }),
+        )
+      } finally {
+        sessionBoundaryRestartInFlightRef.current.delete(stationId)
+      }
+    },
+    [appendStationTerminalOutput, forceCloseStationTerminalById, locale],
+  )
+
+  // Persists across effect re-subscribes (see the useEffect below) so a
+  // path already confirmed-and-renamed by one run can't be re-read by a
+  // reconciliation pass kicked off by the next.
+  const sessionBoundaryHandledPathsRef = useRef<Set<string>>(new Set())
+
+  // Shared by the live filesystem-watch listener and the reconciliation
+  // scan below: reads `path`, and if it really carries the restart signal,
+  // renames it (so it can't retrigger) and restarts every station in
+  // `stationIds` — plural because nothing stops two stations from sharing
+  // the same `agentWorkdirRel` (custom workdirs aren't required to be
+  // unique), in which case the same handoff legitimately belongs to all of
+  // them, not just the first found.
+  const consumeSessionBoundaryHandoffIfSignaled = useCallback(
+    async (workspaceId: string, path: string, stationIds: string[]) => {
+      if (sessionBoundaryHandledPathsRef.current.has(path)) {
+        return
+      }
+      try {
+        // fsReadFile's preview cap is fine here (not fsReadFileFull): the
+        // guidance instructs the agent to put the signal on the first
+        // line, and handoff files are short, so the preview always covers it.
+        const response = await desktopApi.fsReadFile(workspaceId, path)
+        if (
+          sessionBoundaryHandledPathsRef.current.has(path) ||
+          response.workspaceId !== activeWorkspaceIdRef.current ||
+          !SESSION_BOUNDARY_RESTART_SIGNAL_PATTERN.test(response.content)
+        ) {
+          return
+        }
+        sessionBoundaryHandledPathsRef.current.add(path)
+        try {
+          // Rename (not delete) so the handoff stays on disk for debugging
+          // but its ".md" suffix no longer matches the watch/scan pattern —
+          // belt-and-suspenders against this same signal re-triggering a
+          // restart loop, whether from the fresh session's own filesystem
+          // activity churning the watcher or from a later reconciliation pass.
+          await desktopApi.fsMove(workspaceId, path, `${path.slice(0, -3)}.consumed.md`)
+        } catch {
+          // Non-fatal: sessionBoundaryHandledPathsRef + the in-flight guard
+          // in handleSessionBoundaryRestartSignal still prevent a duplicate
+          // restart from this same signal.
+        }
+        for (const stationId of stationIds) {
+          void handleSessionBoundaryRestartSignal(stationId)
+        }
+      } catch {
+        // Likely a transient/partial write (live-watch path) or a file
+        // already consumed by a concurrent pass (reconciliation path); a
+        // later "modified" event or the next reconciliation pass retries.
+      }
+    },
+    [handleSessionBoundaryRestartSignal],
+  )
+
+  useEffect(() => {
+    if (!desktopApi.isTauriRuntime()) {
+      return
+    }
+    let disposed = false
+    let cleanup: (() => void) | null = null
+
+    const findEligibleStationIds = (ownerDir: string): string[] =>
+      stationsRef.current
+        .filter(
+          (entry) =>
+            entry.sessionBoundaryAutoSplitEnabled &&
+            (entry.agentWorkdirRel === '.' ? '' : entry.agentWorkdirRel) === ownerDir,
+        )
+        .map((entry) => entry.id)
+
+    void desktopApi
+      .subscribeFilesystemEvents((payload) => {
+        if (disposed || (payload.kind !== 'created' && payload.kind !== 'modified')) {
+          return
+        }
+        if (payload.workspaceId !== activeWorkspaceIdRef.current) {
+          return
+        }
+        const workspaceId = payload.workspaceId
+        for (const path of payload.paths) {
+          const match = SESSION_HANDOFF_PATH_PATTERN.exec(path)
+          if (!match) {
+            continue
+          }
+          const stationIds = findEligibleStationIds(match[1] ?? '')
+          if (stationIds.length === 0) {
+            continue
+          }
+          void consumeSessionBoundaryHandoffIfSignaled(workspaceId, path, stationIds)
+        }
+      })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten()
+          return
+        }
+        cleanup = unlisten
+      })
+
+    return () => {
+      disposed = true
+      if (cleanup) {
+        cleanup()
+      }
+    }
+  }, [consumeSessionBoundaryHandoffIfSignaled])
+
+  // Reconciliation backstop: catches handoff signals nothing was listening
+  // for — before the live-watch subscription above finishes registering (a
+  // real, if narrow, async gap on every re-subscribe), or from before GT
+  // Office was even running. Deliberately a *separate* effect from the live
+  // watcher, keyed on the reactive `stations` value (not just `stationsRef`,
+  // which never changes identity and so can never re-trigger a ref-only
+  // effect): stations load asynchronously after mount, so a version of this
+  // keyed only on mount would run its one-shot scan against a still-empty
+  // station list and silently reconcile nothing. Re-running whenever
+  // `stations` changes — initial load landing, an agent being added/edited,
+  // a workspace switch — closes that gap without coupling the live watcher's
+  // subscribe/unsubscribe lifecycle to how often the station list changes.
+  useEffect(() => {
+    if (!desktopApi.isTauriRuntime()) {
+      return
+    }
+    let disposed = false
+    const workspaceId = activeWorkspaceId
+    if (!workspaceId) {
+      return
+    }
+    void (async () => {
+      const eligibleStations = stations.filter((entry) => entry.sessionBoundaryAutoSplitEnabled)
+      await Promise.all(
+        eligibleStations.map(async (station) => {
+          const handoffDir =
+            station.agentWorkdirRel === '.'
+              ? '.claude/session-handoff'
+              : `${station.agentWorkdirRel}/.claude/session-handoff`
+          try {
+            const response = await desktopApi.fsListDir(workspaceId, handoffDir, 1)
+            for (const entry of response.entries) {
+              if (disposed) {
+                return
+              }
+              if (entry.kind !== 'file' || !entry.name.endsWith('-handoff.md')) {
+                continue
+              }
+              await consumeSessionBoundaryHandoffIfSignaled(workspaceId, entry.path, [station.id])
+            }
+          } catch {
+            // No .claude/session-handoff directory yet for this station —
+            // nothing to reconcile.
+          }
+        }),
+      )
+    })()
+    return () => {
+      disposed = true
+    }
+  }, [activeWorkspaceId, stations, consumeSessionBoundaryHandoffIfSignaled])
 
   // ── Station delete cleanup ─────────────────────────────────────────────
   const handleStationDeleteCleanupChange = useCallback((patch: Partial<StationDeleteCleanupState>) => {

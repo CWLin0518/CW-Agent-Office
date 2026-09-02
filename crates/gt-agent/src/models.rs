@@ -81,6 +81,11 @@ pub struct AgentProfile {
     pub launch_command: Option<String>,
     #[serde(default)]
     pub output_collection_enabled: bool,
+    /// Whether this agent should auto-detect task/session boundaries and
+    /// restart its own terminal session on one (session-boundary-planner
+    /// pattern). `false` = manual only, the default.
+    #[serde(default)]
+    pub session_boundary_auto_split_enabled: bool,
     pub order_index: i32,
     /// Points at the `AgentProfile.id` of the agent that created this one via
     /// agent-canvas's "new subagent" action. `None` for top-level agents.

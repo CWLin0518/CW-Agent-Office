@@ -1887,6 +1887,7 @@ export interface AgentProfile {
   promptFileRelativePath?: string | null
   launchCommand?: string | null
   outputCollectionEnabled: boolean
+  sessionBoundaryAutoSplitEnabled: boolean
   orderIndex: number
   parentAgentId?: string | null
   externalTemplatePath?: string | null
@@ -1952,6 +1953,7 @@ export interface AgentCreateRequest {
   promptFileName?: string | null
   promptContent?: string | null
   outputCollectionEnabled?: boolean
+  sessionBoundaryAutoSplitEnabled?: boolean
   launchCommand?: string | null
   externalTemplatePath?: string | null
   /** Set when creating a subagent from agent-canvas's "new subagent" context
@@ -1984,6 +1986,7 @@ export interface AgentUpdateRequest {
   promptFileName?: string | null
   promptContent?: string | null
   outputCollectionEnabled?: boolean
+  sessionBoundaryAutoSplitEnabled?: boolean
   launchCommand?: string | null
 }
 
@@ -2241,6 +2244,7 @@ export interface AgentCapabilityListAvailableHooksResponse {
 
 /** Mirrors `crates/gt-agent/src/capability/discovery.rs::AgentOutputKind`. */
 export type AgentOutputKind = 'markdown' | 'webpage' | 'other'
+export type AgentOutputDocumentKind = 'log' | 'handoff' | 'artifact'
 
 /** One file found by `agent_capability_list_output_files` directly under an
  * agent's fixed output directory (`<workspace_root>/.gtoffice/agents/<agent_id>/outputs/`,
@@ -2252,6 +2256,7 @@ export interface AgentOutputFile {
   fileName: string
   absolutePath: string
   kind: AgentOutputKind
+  documentKind: AgentOutputDocumentKind
   modifiedAtMs: number
   sizeBytes: number
 }
@@ -4635,6 +4640,7 @@ export const desktopApi = {
         promptFileName: request.promptFileName ?? null,
         promptContent: request.promptContent ?? null,
         outputCollectionEnabled: request.outputCollectionEnabled ?? false,
+        sessionBoundaryAutoSplitEnabled: request.sessionBoundaryAutoSplitEnabled ?? false,
         launchCommand: request.launchCommand ?? null,
         externalTemplatePath: request.externalTemplatePath ?? null,
         parentAgentId: request.parentAgentId ?? null,
@@ -4710,6 +4716,7 @@ export const desktopApi = {
         promptFileName: request.promptFileName ?? null,
         promptContent: request.promptContent ?? null,
         outputCollectionEnabled: request.outputCollectionEnabled ?? false,
+        sessionBoundaryAutoSplitEnabled: request.sessionBoundaryAutoSplitEnabled ?? false,
         launchCommand: request.launchCommand ?? null,
       },
     })

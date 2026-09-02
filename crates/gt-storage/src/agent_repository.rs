@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS agents (
   custom_workdir INTEGER NOT NULL DEFAULT 0, scope TEXT NOT NULL DEFAULT 'station',
   state TEXT NOT NULL, employee_no TEXT, policy_snapshot_id TEXT,
   launch_command TEXT, output_collection_enabled INTEGER NOT NULL DEFAULT 0,
+  session_boundary_auto_split_enabled INTEGER NOT NULL DEFAULT 0,
   order_index INTEGER NOT NULL DEFAULT 0,
   parent_agent_id TEXT, external_template_path TEXT,
   git_tracked INTEGER NOT NULL DEFAULT 1,
@@ -231,6 +232,10 @@ impl AgentRepository for SqliteAgentRepository {
             "ALTER TABLE agents ADD COLUMN output_collection_enabled INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN session_boundary_auto_split_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         conn.execute_batch(AGENT_LINKS_SCHEMA)
             .map_err(|error| AgentError::Storage {
                 message: error.to_string(),
@@ -277,7 +282,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn list_agents(&self, workspace_id: &str) -> AgentResult<Vec<AgentProfile>> {
         let conn = self.connection()?;
-        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, output_collection_enabled, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, color, capability_snapshot_id, created_at_ms, updated_at_ms FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
+        let mut stmt = conn.prepare("SELECT id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, output_collection_enabled, order_index, parent_agent_id, external_template_path, git_tracked, layout_x, layout_y, color, capability_snapshot_id, created_at_ms, updated_at_ms, session_boundary_auto_split_enabled FROM agents WHERE workspace_id = ?1 ORDER BY order_index, created_at_ms")
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         let rows = stmt
             .query_map(params![workspace_id], |row| {
@@ -308,6 +313,7 @@ impl AgentRepository for SqliteAgentRepository {
                     prompt_file_relative_path: None,
                     created_at_ms: row.get(20)?,
                     updated_at_ms: row.get(21)?,
+                    session_boundary_auto_split_enabled: row.get::<_, i32>(22)? != 0,
                 })
             })
             .map_err(|error| AgentError::Storage {
@@ -340,7 +346,7 @@ impl AgentRepository for SqliteAgentRepository {
             .unwrap_or(1)
         });
         let now = Self::now_ms();
-        conn.execute("INSERT INTO agents (id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, output_collection_enabled, order_index, parent_agent_id, external_template_path, created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15, ?16)", params![id, input.workspace_id, input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.scope.as_str(), input.state.as_str(), input.employee_no, input.launch_command, if input.output_collection_enabled { 1 } else { 0 }, order_index, input.parent_agent_id, input.external_template_path, now, now])
+        conn.execute("INSERT INTO agents (id, workspace_id, name, tool, workdir, custom_workdir, scope, state, employee_no, policy_snapshot_id, launch_command, output_collection_enabled, order_index, parent_agent_id, external_template_path, created_at_ms, updated_at_ms, session_boundary_auto_split_enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)", params![id, input.workspace_id, input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.scope.as_str(), input.state.as_str(), input.employee_no, input.launch_command, if input.output_collection_enabled { 1 } else { 0 }, order_index, input.parent_agent_id, input.external_template_path, now, now, if input.session_boundary_auto_split_enabled { 1 } else { 0 }])
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         self.list_agents(&input.workspace_id)?
             .into_iter()
@@ -352,7 +358,7 @@ impl AgentRepository for SqliteAgentRepository {
 
     fn update_agent(&self, input: UpdateAgentInput) -> AgentResult<AgentProfile> {
         let conn = self.connection()?;
-        let updated = conn.execute("UPDATE agents SET name = ?1, tool = ?2, workdir = ?3, custom_workdir = ?4, state = ?5, employee_no = ?6, launch_command = ?7, output_collection_enabled = ?8, updated_at_ms = ?9 WHERE workspace_id = ?10 AND id = ?11", params![input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.state.as_str(), input.employee_no, input.launch_command, if input.output_collection_enabled { 1 } else { 0 }, Self::now_ms(), input.workspace_id, input.agent_id])
+        let updated = conn.execute("UPDATE agents SET name = ?1, tool = ?2, workdir = ?3, custom_workdir = ?4, state = ?5, employee_no = ?6, launch_command = ?7, output_collection_enabled = ?8, session_boundary_auto_split_enabled = ?9, updated_at_ms = ?10 WHERE workspace_id = ?11 AND id = ?12", params![input.name, input.tool, input.workdir, if input.custom_workdir { 1 } else { 0 }, input.state.as_str(), input.employee_no, input.launch_command, if input.output_collection_enabled { 1 } else { 0 }, if input.session_boundary_auto_split_enabled { 1 } else { 0 }, Self::now_ms(), input.workspace_id, input.agent_id])
             .map_err(|error| AgentError::Storage { message: error.to_string() })?;
         if updated == 0 {
             return Err(AgentError::InvalidArgument {
@@ -1047,6 +1053,7 @@ mod p0_migration_tests {
             state: AgentState::Ready,
             launch_command: None,
             output_collection_enabled: true,
+            session_boundary_auto_split_enabled: false,
             order_index: None,
             parent_agent_id: Some("agent-parent".to_string()),
             external_template_path: Some("/tmp/template.md".to_string()),
@@ -1065,6 +1072,7 @@ mod p0_migration_tests {
             state: AgentState::Ready,
             launch_command: None,
             output_collection_enabled: false,
+            session_boundary_auto_split_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,
@@ -1136,6 +1144,7 @@ mod p3_agent_policy_tests {
             state: AgentState::Ready,
             launch_command: None,
             output_collection_enabled: false,
+            session_boundary_auto_split_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,
@@ -1286,6 +1295,7 @@ mod p3_5_agent_capability_tests {
             state: AgentState::Ready,
             launch_command: None,
             output_collection_enabled: false,
+            session_boundary_auto_split_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,
@@ -1646,6 +1656,7 @@ mod p4_agent_link_tests {
                 state: AgentState::Ready,
                 launch_command: None,
                 output_collection_enabled: false,
+                session_boundary_auto_split_enabled: false,
                 order_index: None,
                 parent_agent_id: None,
                 external_template_path: None,
@@ -1944,6 +1955,7 @@ mod p4_agent_link_tests {
             state: AgentState::Ready,
             launch_command: None,
             output_collection_enabled: false,
+            session_boundary_auto_split_enabled: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,

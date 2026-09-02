@@ -136,6 +136,7 @@ export function useShellStationController({
             promptEnabled: input.promptEnabled,
             promptContent: input.promptContent,
             outputCollectionEnabled: input.outputCollectionEnabled,
+            sessionBoundaryAutoSplitEnabled: input.sessionBoundaryAutoSplitEnabled,
             launchCommand: input.launchCommand,
             externalTemplatePath: input.externalTemplatePath,
             parentAgentId: input.parentAgentId,
@@ -192,6 +193,7 @@ export function useShellStationController({
             promptEnabled: input.promptEnabled,
             promptContent: input.promptContent,
             outputCollectionEnabled: input.outputCollectionEnabled,
+            sessionBoundaryAutoSplitEnabled: input.sessionBoundaryAutoSplitEnabled,
             launchCommand: input.launchCommand,
           })
           await loadStationsFromDatabase(activeWorkspaceId)

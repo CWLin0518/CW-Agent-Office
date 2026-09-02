@@ -74,6 +74,7 @@ pub(crate) fn ensure_agent_station_at(
         prompt_file_name: None,
         prompt_content: None,
         output_collection_enabled: Some(false),
+        session_boundary_auto_split_enabled: Some(false),
         launch_command: None,
         external_template_path: None,
         parent_agent_id: None,

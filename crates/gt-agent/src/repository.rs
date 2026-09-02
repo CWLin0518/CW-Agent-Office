@@ -32,6 +32,8 @@ pub struct CreateAgentInput {
     pub launch_command: Option<String>,
     #[serde(default)]
     pub output_collection_enabled: bool,
+    #[serde(default)]
+    pub session_boundary_auto_split_enabled: bool,
     pub order_index: Option<i32>,
     #[serde(default)]
     pub parent_agent_id: Option<String>,
@@ -53,6 +55,8 @@ pub struct UpdateAgentInput {
     pub launch_command: Option<String>,
     #[serde(default)]
     pub output_collection_enabled: bool,
+    #[serde(default)]
+    pub session_boundary_auto_split_enabled: bool,
 }
 
 pub trait AgentRepository: Send + Sync {

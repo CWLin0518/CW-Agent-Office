@@ -1570,6 +1570,14 @@ export const messages = {
     'zh-CN': '[系统] 会话终止失败: {detail}\n',
     'en-US': '[system] failed to kill session: {detail}\n',
   },
+  'system.sessionBoundaryRestarting': {
+    'zh-CN': '[系统] 侦测到任务边界信号，正在重启此 Agent 的会话…\n',
+    'en-US': '[system] Detected a session-boundary signal, restarting this agent…\n',
+  },
+  'system.sessionBoundaryRestartFailed': {
+    'zh-CN': '[系统] 自动重启失败: {detail}\n',
+    'en-US': '[system] automatic restart failed: {detail}\n',
+  },
   'system.killSkippedNoRuntime': {
     'zh-CN': '[系统] 当前为 Web 预览，未执行会话终止: {sessionId}\n',
     'en-US': '[system] skip kill in web preview: {sessionId}\n',

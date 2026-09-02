@@ -355,6 +355,81 @@ fn strip_managed_output_guidance(content: &str) -> String {
     content.to_string()
 }
 
+const SESSION_BOUNDARY_GUIDANCE_START: &str = "<!-- gtoffice:session-boundary-guidance:start -->";
+const SESSION_BOUNDARY_GUIDANCE_END: &str = "<!-- gtoffice:session-boundary-guidance:end -->";
+
+/// Body text for the managed session-boundary-auto-split guidance block
+/// (docs/cw/04_客製化設計.md's "內建自動分 session" direction). Self-contained
+/// (doesn't assume the user's `~/.claude/skills/session-boundary-planner`
+/// skill is installed) and tool-agnostic (plain prose, not a Claude-only
+/// Skill invocation) since this gets written into both Claude and Codex
+/// prompt files. Uses a distinct `restart_in_place` signal action — never
+/// `new_session` — so it can't collide with the user's global
+/// `session-boundary-trigger` PostToolUse hook, which only reacts to
+/// `new_session` and opens a separate card instead of restarting this one.
+fn session_boundary_guidance_block() -> String {
+    format!(
+        "{SESSION_BOUNDARY_GUIDANCE_START}\n\
+# 任務邊界自動重啟\n\
+\n\
+在多步驟工作中主動判斷任務邊界。符合以下任一條件即代表到達邊界：下一階段\n\
+目標不同、上一階段已達穩定檢查點、不需要延續目前階段的詳細推理過程、進入\n\
+code review 階段、設計轉為實作、實作轉為獨立驗證、目前累積的上下文對下一\n\
+階段幾乎沒有價值、跨越主要子系統邊界。單純除錯同一個問題、實作緊密耦合的\n\
+檔案、或需要目前階段的詳細暫時上下文時，不算到達邊界。\n\
+\n\
+判定已到達邊界、且目前階段的工作已經穩定完成時，用 Write 工具把交接內容\n\
+寫到**你目前的工作目錄**（這個 session 啟動時所在的資料夾，不是整個專案／\n\
+repo 的最上層目錄）下的固定相對路徑 `.claude/session-handoff/<phase-slug>-handoff.md`\n\
+（`<phase-slug>` 用當前階段的簡短 kebab-case 名稱；目錄不存在就建立），\n\
+內容第一行必須是這個固定訊號：\n\
+\n\
+`<SESSION_CONTROL action=\"restart_in_place\" />`\n\
+\n\
+訊號下面接著寫：已完成工作、決策、修改的檔案、未解決問題、測試結果、下一\n\
+階段目標、限制條件——不要複製對話歷史，只寫下一階段真正需要的資訊。寫出\n\
+這個訊號會讓 GT Office 自動終止並重啟這個 agent 的終端機 session，所以只在\n\
+真的到達邊界、且交接內容已經確定可信賴時才寫出訊號；單純草擬 handoff 內容\n\
+時不要一併寫出訊號。\n\
+{SESSION_BOUNDARY_GUIDANCE_END}"
+    )
+}
+
+fn strip_managed_session_boundary_guidance(content: &str) -> String {
+    let Some(start) = content.find(SESSION_BOUNDARY_GUIDANCE_START) else {
+        return content.to_string();
+    };
+    let Some(relative_end) = content[start..].find(SESSION_BOUNDARY_GUIDANCE_END) else {
+        return content.to_string();
+    };
+    let end = start + relative_end + SESSION_BOUNDARY_GUIDANCE_END.len();
+    let before = content[..start].trim_end();
+    let after = content[end..].trim_start();
+    match (before.is_empty(), after.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!("{after}\n"),
+        (false, true) => format!("{before}\n"),
+        (false, false) => format!("{before}\n\n{after}"),
+    }
+}
+
+/// Strips any stale managed block, then re-appends a fresh one when `enabled`.
+/// Always returns `Some` (an empty string is a valid, harmless
+/// `write_prompt_file` input) so callers don't need to special-case `None`.
+fn apply_session_boundary_guidance(content: Option<String>, enabled: bool) -> Option<String> {
+    let stripped = strip_managed_session_boundary_guidance(&content.unwrap_or_default());
+    if !enabled {
+        return Some(stripped);
+    }
+    let block = session_boundary_guidance_block();
+    let composed = if stripped.trim().is_empty() {
+        block
+    } else {
+        format!("{}\n\n{block}", stripped.trim_end())
+    };
+    Some(composed)
+}
+
 fn delete_prompt_file(workspace_root: &Path, relative_path: &str) -> Result<(), String> {
     let absolute_path = ensure_path_within_workspace(workspace_root, relative_path)?;
     match std::fs::remove_file(absolute_path) {
@@ -436,6 +511,8 @@ pub struct AgentCreateRequest {
     pub prompt_content: Option<String>,
     #[serde(default)]
     pub output_collection_enabled: Option<bool>,
+    #[serde(default)]
+    pub session_boundary_auto_split_enabled: Option<bool>,
     pub launch_command: Option<String>,
     #[serde(default)]
     pub external_template_path: Option<String>,
@@ -455,6 +532,8 @@ pub(crate) fn agent_create_with_repo(
     let tool = resolve_agent_tool(request.tool);
     let name = request.name.trim().to_string();
     let output_collection_enabled = request.output_collection_enabled.unwrap_or(false);
+    let session_boundary_auto_split_enabled =
+        request.session_boundary_auto_split_enabled.unwrap_or(false);
     let prompt_enabled = request.prompt_enabled.unwrap_or(false);
     let (workdir, custom_workdir) = resolve_agent_workdir(
         name.as_str(),
@@ -525,6 +604,7 @@ pub(crate) fn agent_create_with_repo(
         state: agent_state,
         launch_command: request.launch_command,
         output_collection_enabled,
+        session_boundary_auto_split_enabled,
         order_index: None,
         parent_agent_id,
         external_template_path,
@@ -532,6 +612,8 @@ pub(crate) fn agent_create_with_repo(
 
     let agent = repo.create_agent(input).map_err(to_command_error)?;
     if prompt_enabled {
+        let prompt_content =
+            apply_session_boundary_guidance(prompt_content, session_boundary_auto_split_enabled);
         if let Err(error) = write_prompt_file(
             workspace_root,
             workdir.as_str(),
@@ -604,6 +686,8 @@ pub struct AgentUpdateRequest {
     pub prompt_content: Option<String>,
     #[serde(default)]
     pub output_collection_enabled: Option<bool>,
+    #[serde(default)]
+    pub session_boundary_auto_split_enabled: Option<bool>,
     pub launch_command: Option<String>,
 }
 
@@ -627,7 +711,11 @@ pub(crate) fn agent_update_with_repo(
     let prompt_enabled = request
         .prompt_enabled
         .unwrap_or(existing_prompt_file_name.is_some());
-    let should_write_prompt = (request.output_collection_enabled.is_some()
+    let session_boundary_auto_split_enabled = request
+        .session_boundary_auto_split_enabled
+        .unwrap_or(existing_agent.session_boundary_auto_split_enabled);
+    let should_write_prompt = ((request.output_collection_enabled.is_some()
+        || request.session_boundary_auto_split_enabled.is_some())
         && existing_prompt_file_name.is_some())
         || should_write_prompt_file_on_update(
             existing_agent.tool.as_str(),
@@ -656,6 +744,7 @@ pub(crate) fn agent_update_with_repo(
         output_collection_enabled: request
             .output_collection_enabled
             .unwrap_or(existing_agent.output_collection_enabled),
+        session_boundary_auto_split_enabled,
     };
 
     let agent = repo.update_agent(input).map_err(to_command_error)?;
@@ -669,12 +758,16 @@ pub(crate) fn agent_update_with_repo(
                 .prompt_content
                 .unwrap_or_else(|| existing_prompt_content.clone()),
         );
+        let prompt_content = apply_session_boundary_guidance(
+            Some(prompt_content),
+            session_boundary_auto_split_enabled,
+        );
         let written = write_prompt_file(
             workspace_root,
             workdir.as_str(),
             tool.as_str(),
             prompt_file_name.as_deref(),
-            Some(prompt_content),
+            prompt_content,
         )?;
         if let (Some(existing_relative_path), Some((_, written_relative_path))) = (
             existing_prompt_file_relative_path.as_deref(),
@@ -1129,6 +1222,7 @@ mod subagent_creation_tests {
                 state: AgentState::Ready,
                 launch_command: None,
                 output_collection_enabled: false,
+                session_boundary_auto_split_enabled: false,
                 order_index: None,
                 parent_agent_id: None,
                 external_template_path: None,
@@ -1161,6 +1255,7 @@ mod subagent_creation_tests {
             prompt_file_name: None,
             prompt_content: None,
             output_collection_enabled: None,
+            session_boundary_auto_split_enabled: None,
             launch_command: None,
             external_template_path: None,
             parent_agent_id: Some(parent_agent_id.to_string()),
@@ -1211,5 +1306,64 @@ mod subagent_creation_tests {
         )
         .expect_err("subagent creation should fail for an unknown parent");
         assert_eq!(error, "AGENT_NOT_FOUND");
+    }
+}
+
+#[cfg(test)]
+mod session_boundary_guidance_tests {
+    use super::*;
+
+    #[test]
+    fn apply_appends_block_to_existing_content_when_enabled() {
+        let result = apply_session_boundary_guidance(Some("# My Agent\n".to_string()), true);
+        let content = result.expect("some content");
+        assert!(content.starts_with("# My Agent"));
+        assert!(content.contains(SESSION_BOUNDARY_GUIDANCE_START));
+        assert!(content.contains(SESSION_BOUNDARY_GUIDANCE_END));
+        assert!(content.contains("restart_in_place"));
+    }
+
+    #[test]
+    fn apply_writes_only_the_block_when_content_is_empty() {
+        let result = apply_session_boundary_guidance(None, true);
+        let content = result.expect("some content");
+        assert!(content.starts_with(SESSION_BOUNDARY_GUIDANCE_START));
+        assert!(content.trim_end().ends_with(SESSION_BOUNDARY_GUIDANCE_END));
+    }
+
+    #[test]
+    fn apply_strips_block_and_leaves_other_content_untouched_when_disabled() {
+        let with_block = apply_session_boundary_guidance(Some("# My Agent\n".to_string()), true)
+            .expect("some content");
+        let stripped =
+            apply_session_boundary_guidance(Some(with_block), false).expect("some content");
+        // strip_managed_session_boundary_guidance's (before non-empty, after
+        // empty) branch deliberately keeps a trailing newline after `before`
+        // (same convention as strip_managed_output_guidance).
+        assert_eq!(stripped, "# My Agent\n");
+    }
+
+    #[test]
+    fn apply_is_idempotent_across_repeated_toggles() {
+        let base = Some("# My Agent\n\nSome other instructions.".to_string());
+        let enabled_once = apply_session_boundary_guidance(base, true).expect("some content");
+        let enabled_twice = apply_session_boundary_guidance(Some(enabled_once.clone()), true)
+            .expect("some content");
+        assert_eq!(
+            enabled_once, enabled_twice,
+            "re-applying while enabled must not duplicate the block"
+        );
+        assert_eq!(
+            enabled_twice
+                .matches(SESSION_BOUNDARY_GUIDANCE_START)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn strip_leaves_unrelated_content_unchanged() {
+        let content = "# My Agent\n\nNo managed block here.";
+        assert_eq!(strip_managed_session_boundary_guidance(content), content);
     }
 }

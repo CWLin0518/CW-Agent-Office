@@ -10,6 +10,7 @@ export interface CreateStationInput {
   promptEnabled: boolean
   promptContent: string
   outputCollectionEnabled: boolean
+  sessionBoundaryAutoSplitEnabled: boolean
   launchCommand?: string | null
   /** Local filesystem path to seed promptContent from at creation time only —
    * see docs/cw/04_客製化設計.md §2. Ignored on update. */
@@ -36,6 +37,7 @@ export interface AgentStation {
   promptFileRelativePath?: string | null
   launchCommand?: string | null
   outputCollectionEnabled: boolean
+  sessionBoundaryAutoSplitEnabled: boolean
   terminalSessionId: string
   state: 'running' | 'idle' | 'blocked'
   workspaceId: string
@@ -87,6 +89,7 @@ export function mapAgentProfileToStation(
     promptFileRelativePath: agent.promptFileRelativePath,
     launchCommand: agent.launchCommand,
     outputCollectionEnabled: agent.outputCollectionEnabled,
+    sessionBoundaryAutoSplitEnabled: agent.sessionBoundaryAutoSplitEnabled,
     terminalSessionId: '',
     state: agent.state === 'blocked' ? 'blocked' : 'idle',
     workspaceId: agent.workspaceId,
@@ -106,6 +109,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     state: 'running',
     workspaceId: 'ws_gtoffice',
     outputCollectionEnabled: false,
+    sessionBoundaryAutoSplitEnabled: false,
   }),
   createDefaultStationSeed({
     id: 'agent-02',
@@ -116,6 +120,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     state: 'running',
     workspaceId: 'ws_gtoffice',
     outputCollectionEnabled: false,
+    sessionBoundaryAutoSplitEnabled: false,
   }),
   createDefaultStationSeed({
     id: 'agent-03',
@@ -126,6 +131,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     state: 'running',
     workspaceId: 'ws_gtoffice',
     outputCollectionEnabled: false,
+    sessionBoundaryAutoSplitEnabled: false,
   }),
   createDefaultStationSeed({
     id: 'agent-04',
@@ -136,6 +142,7 @@ const defaultStationSeeds: Array<DefaultStationSeed & { toolKind: StationToolKin
     state: 'idle',
     workspaceId: 'ws_gtoffice',
     outputCollectionEnabled: false,
+    sessionBoundaryAutoSplitEnabled: false,
   }),
 ]
 

@@ -66,6 +66,7 @@ mod tests {
             prompt_file_relative_path: None,
             launch_command: None,
             output_collection_enabled: false,
+            session_boundary_auto_split_enabled: false,
             order_index: 0,
             parent_agent_id: None,
             external_template_path: None,
