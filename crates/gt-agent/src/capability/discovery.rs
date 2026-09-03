@@ -224,8 +224,16 @@ pub fn list_available_hooks(workspace_root: &Path) -> Vec<DiscoveredHook> {
         ));
     }
     hooks.sort_by(|a, b| {
-        (a.event.as_str(), a.matcher.as_deref().unwrap_or(""), a.command.as_str())
-            .cmp(&(b.event.as_str(), b.matcher.as_deref().unwrap_or(""), b.command.as_str()))
+        (
+            a.event.as_str(),
+            a.matcher.as_deref().unwrap_or(""),
+            a.command.as_str(),
+        )
+            .cmp(&(
+                b.event.as_str(),
+                b.matcher.as_deref().unwrap_or(""),
+                b.command.as_str(),
+            ))
     });
     hooks.dedup_by(|left, right| {
         left.event == right.event
@@ -422,7 +430,10 @@ fn resolve_script_path(raw: &str, workspace_root: &Path) -> PathBuf {
 /// `resolve_script_path` for why that distinction matters on Windows.
 fn join_segments(base: &Path, rest: &str) -> PathBuf {
     let mut path = base.to_path_buf();
-    for segment in rest.split(['/', '\\']).filter(|segment| !segment.is_empty()) {
+    for segment in rest
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+    {
         path.push(segment);
     }
     path
@@ -528,6 +539,41 @@ pub enum AgentOutputKind {
     Other,
 }
 
+/// Lifecycle role of a file in the managed Agent output contract. This is
+/// separate from `AgentOutputKind`, which describes how the file is opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentOutputDocumentKind {
+    Log,
+    Handoff,
+    Artifact,
+}
+
+fn classify_output_document(file_name: &str) -> AgentOutputDocumentKind {
+    let lowered = file_name.to_ascii_lowercase();
+    if lowered.ends_with("-handoff.md") || lowered.ends_with("-handoff.markdown") {
+        return AgentOutputDocumentKind::Handoff;
+    }
+    let stem = lowered
+        .strip_suffix(".markdown")
+        .or_else(|| lowered.strip_suffix(".md"));
+    if let Some(stem) = stem {
+        if let Some(prefix) = stem.strip_suffix("-log") {
+            let stamp = prefix.rsplit('-').take(2).collect::<Vec<_>>();
+            if stamp.len() == 2
+                && stamp[0].len() == 6
+                && stamp[1].len() == 8
+                && stamp
+                    .iter()
+                    .all(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+            {
+                return AgentOutputDocumentKind::Log;
+            }
+        }
+    }
+    AgentOutputDocumentKind::Artifact
+}
+
 fn classify_output_extension(extension: &str) -> AgentOutputKind {
     match extension.to_lowercase().as_str() {
         "md" | "markdown" => AgentOutputKind::Markdown,
@@ -550,6 +596,7 @@ pub struct AgentOutputFile {
     pub file_name: String,
     pub absolute_path: String,
     pub kind: AgentOutputKind,
+    pub document_kind: AgentOutputDocumentKind,
     pub modified_at_ms: i64,
     pub size_bytes: u64,
 }
@@ -612,6 +659,7 @@ pub fn list_agent_output_files(workspace_root: &Path, agent_id: &str) -> Vec<Age
             file_name: file_name.to_string(),
             absolute_path: path.to_string_lossy().into_owned(),
             kind: classify_output_extension(extension),
+            document_kind: classify_output_document(file_name),
             modified_at_ms,
             size_bytes: metadata.len(),
         });
@@ -1038,7 +1086,10 @@ mod tests {
     }
 
     fn outputs_dir(root: &Path, agent_id: &str) -> PathBuf {
-        root.join(".gtoffice").join("agents").join(agent_id).join("outputs")
+        root.join(".gtoffice")
+            .join("agents")
+            .join(agent_id)
+            .join("outputs")
     }
 
     #[test]
@@ -1062,6 +1113,26 @@ mod tests {
         assert_eq!(kind_of("report.md"), AgentOutputKind::Markdown);
         assert_eq!(kind_of("page.html"), AgentOutputKind::Webpage);
         assert_eq!(kind_of("data.csv"), AgentOutputKind::Other);
+    }
+
+    #[test]
+    fn classifies_managed_document_roles_without_treating_other_markdown_as_log() {
+        assert_eq!(
+            classify_output_document("tool-create-engineer-20260902-143025-log.md"),
+            AgentOutputDocumentKind::Log
+        );
+        assert_eq!(
+            classify_output_document("tool-create-engineer-handoff.md"),
+            AgentOutputDocumentKind::Handoff
+        );
+        assert_eq!(
+            classify_output_document("requested-report.md"),
+            AgentOutputDocumentKind::Artifact
+        );
+        assert_eq!(
+            classify_output_document("report.html"),
+            AgentOutputDocumentKind::Artifact
+        );
     }
 
     #[test]
@@ -1105,7 +1176,10 @@ mod tests {
 
         let found = list_agent_output_files(temp.path(), "agent-a");
         assert_eq!(
-            found.iter().map(|f| f.file_name.as_str()).collect::<Vec<_>>(),
+            found
+                .iter()
+                .map(|f| f.file_name.as_str())
+                .collect::<Vec<_>>(),
             vec!["newer.md", "older.md"]
         );
     }
@@ -1131,13 +1205,19 @@ mod tests {
     fn rejects_parent_traversal_in_file_name() {
         let temp = tempfile::tempdir().unwrap();
         assert!(resolve_agent_output_file_path(temp.path(), "agent-a", "../secrets.md").is_err());
-        assert!(resolve_agent_output_file_path(temp.path(), "agent-a", "nested/report.md").is_err());
+        assert!(
+            resolve_agent_output_file_path(temp.path(), "agent-a", "nested/report.md").is_err()
+        );
     }
 
     #[test]
     fn rejects_absolute_path_as_file_name() {
         let temp = tempfile::tempdir().unwrap();
-        let absolute = if cfg!(windows) { "C:\\secrets.md" } else { "/secrets.md" };
+        let absolute = if cfg!(windows) {
+            "C:\\secrets.md"
+        } else {
+            "/secrets.md"
+        };
         assert!(resolve_agent_output_file_path(temp.path(), "agent-a", absolute).is_err());
     }
 }

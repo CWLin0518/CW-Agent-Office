@@ -189,6 +189,17 @@ const SESSION_HANDOFF_PATH_PATTERN = /^(.*?)\/?\.claude\/session-handoff\/[^/]+-
 // reacts to `action="new_session"` and opens a separate card) — this one
 // restarts the same station's session in place, so it must never fire both.
 const SESSION_BOUNDARY_RESTART_SIGNAL_PATTERN = /<SESSION_CONTROL\s+action=["']restart_in_place["']\s*\/>/
+// The reconciliation scan below is a backstop for handoff signals the live
+// watcher missed. A single scan is not enough: if it runs before a newly
+// created station's `.claude/session-handoff` directory exists yet (the
+// common case right after adding an agent), it finds nothing and — since
+// nothing else re-triggers it until the station list changes again — the
+// agent's first handoff write can go unnoticed indefinitely. Polling keeps
+// retrying so that gap closes on its own within one interval. 5s: short
+// enough that the gap this backstops closes quickly, long enough that it
+// stays a backstop — the live filesystem watch is still the fast path for
+// every handoff after a station's first one.
+const SESSION_BOUNDARY_RECONCILIATION_POLL_MS = 5000
 
 function isTerminalSessionBindingInvalid(detail: string): boolean {
   return (
@@ -5067,14 +5078,18 @@ export function useShellTerminalController({
   const handleSessionBoundaryRestartSignal = useCallback(
     async (stationId: string) => {
       if (sessionBoundaryRestartInFlightRef.current.has(stationId)) {
+        console.debug('[session-boundary] restart skipped, already in flight', { stationId })
         return
       }
       sessionBoundaryRestartInFlightRef.current.add(stationId)
+      console.debug('[session-boundary] restart starting', { stationId })
       try {
         appendStationTerminalOutput(stationId, t(locale, 'system.sessionBoundaryRestarting'))
         await forceCloseStationTerminalById(stationId, 'session-boundary-auto-restart')
         await launchStationCliAgentRef.current?.(stationId)
+        console.debug('[session-boundary] restart completed', { stationId })
       } catch (error) {
+        console.warn('[session-boundary] restart failed', { stationId, error })
         appendStationTerminalOutput(
           stationId,
           t(locale, 'system.sessionBoundaryRestartFailed', { detail: describeError(error) }),
@@ -5101,6 +5116,7 @@ export function useShellTerminalController({
   const consumeSessionBoundaryHandoffIfSignaled = useCallback(
     async (workspaceId: string, path: string, stationIds: string[]) => {
       if (sessionBoundaryHandledPathsRef.current.has(path)) {
+        console.debug('[session-boundary] path already handled, skipping', { path })
         return
       }
       try {
@@ -5108,14 +5124,27 @@ export function useShellTerminalController({
         // guidance instructs the agent to put the signal on the first
         // line, and handoff files are short, so the preview always covers it.
         const response = await desktopApi.fsReadFile(workspaceId, path)
+        const signalMatched = SESSION_BOUNDARY_RESTART_SIGNAL_PATTERN.test(response.content)
         if (
           sessionBoundaryHandledPathsRef.current.has(path) ||
           response.workspaceId !== activeWorkspaceIdRef.current ||
-          !SESSION_BOUNDARY_RESTART_SIGNAL_PATTERN.test(response.content)
+          !signalMatched
         ) {
+          console.debug('[session-boundary] handoff read but not consumed', {
+            path,
+            stationIds,
+            alreadyHandled: sessionBoundaryHandledPathsRef.current.has(path),
+            responseWorkspaceId: response.workspaceId,
+            activeWorkspaceId: activeWorkspaceIdRef.current,
+            signalMatched,
+          })
           return
         }
         sessionBoundaryHandledPathsRef.current.add(path)
+        console.debug('[session-boundary] signal matched, restarting stations', {
+          path,
+          stationIds,
+        })
         try {
           // Rename (not delete) so the handoff stays on disk for debugging
           // but its ".md" suffix no longer matches the watch/scan pattern —
@@ -5123,18 +5152,23 @@ export function useShellTerminalController({
           // restart loop, whether from the fresh session's own filesystem
           // activity churning the watcher or from a later reconciliation pass.
           await desktopApi.fsMove(workspaceId, path, `${path.slice(0, -3)}.consumed.md`)
-        } catch {
+        } catch (renameError) {
           // Non-fatal: sessionBoundaryHandledPathsRef + the in-flight guard
           // in handleSessionBoundaryRestartSignal still prevent a duplicate
           // restart from this same signal.
+          console.warn('[session-boundary] failed to rename consumed handoff file', {
+            path,
+            renameError,
+          })
         }
         for (const stationId of stationIds) {
           void handleSessionBoundaryRestartSignal(stationId)
         }
-      } catch {
+      } catch (error) {
         // Likely a transient/partial write (live-watch path) or a file
         // already consumed by a concurrent pass (reconciliation path); a
         // later "modified" event or the next reconciliation pass retries.
+        console.debug('[session-boundary] consume attempt failed (will retry)', { path, error })
       }
     },
     [handleSessionBoundaryRestartSignal],
@@ -5162,6 +5196,10 @@ export function useShellTerminalController({
           return
         }
         if (payload.workspaceId !== activeWorkspaceIdRef.current) {
+          console.debug('[session-boundary] fs event ignored, workspace not active', {
+            eventWorkspaceId: payload.workspaceId,
+            activeWorkspaceId: activeWorkspaceIdRef.current,
+          })
           return
         }
         const workspaceId = payload.workspaceId
@@ -5170,7 +5208,18 @@ export function useShellTerminalController({
           if (!match) {
             continue
           }
-          const stationIds = findEligibleStationIds(match[1] ?? '')
+          const ownerDir = match[1] ?? ''
+          const stationIds = findEligibleStationIds(ownerDir)
+          console.debug('[session-boundary] handoff-shaped path seen', {
+            path,
+            ownerDir,
+            stationIds,
+            allStations: stationsRef.current.map((entry) => ({
+              id: entry.id,
+              agentWorkdirRel: entry.agentWorkdirRel,
+              sessionBoundaryAutoSplitEnabled: entry.sessionBoundaryAutoSplitEnabled,
+            })),
+          })
           if (stationIds.length === 0) {
             continue
           }
@@ -5182,6 +5231,7 @@ export function useShellTerminalController({
           unlisten()
           return
         }
+        console.debug('[session-boundary] live filesystem watch subscribed')
         cleanup = unlisten
       })
 
@@ -5205,43 +5255,103 @@ export function useShellTerminalController({
   // `stations` changes — initial load landing, an agent being added/edited,
   // a workspace switch — closes that gap without coupling the live watcher's
   // subscribe/unsubscribe lifecycle to how often the station list changes.
+  // On top of that, it polls (see SESSION_BOUNDARY_RECONCILIATION_POLL_MS)
+  // so a scan that finds no handoff directory yet — the station was just
+  // created and its agent hasn't run far enough to create one — keeps
+  // retrying instead of only firing once per station-list change; reads
+  // `stationsRef.current` on each tick so a poll started before this effect
+  // last re-ran still sees any station added or edited since. `stations`
+  // stays in the dependency array purely to make the *first* scan react to
+  // a station being added/edited/loaded without waiting out a poll interval
+  // — polling alone still finds it eventually, so dropping this dep would
+  // add latency, not reintroduce the original miss-it-forever bug.
   useEffect(() => {
     if (!desktopApi.isTauriRuntime()) {
       return
     }
     let disposed = false
+    let scanInFlight = false
     const workspaceId = activeWorkspaceId
     if (!workspaceId) {
       return
     }
-    void (async () => {
-      const eligibleStations = stations.filter((entry) => entry.sessionBoundaryAutoSplitEnabled)
-      await Promise.all(
-        eligibleStations.map(async (station) => {
-          const handoffDir =
-            station.agentWorkdirRel === '.'
-              ? '.claude/session-handoff'
-              : `${station.agentWorkdirRel}/.claude/session-handoff`
-          try {
-            const response = await desktopApi.fsListDir(workspaceId, handoffDir, 1)
-            for (const entry of response.entries) {
-              if (disposed) {
-                return
+    // `isPolledTick` mutes the routine "starting" / "found no dir" lines on
+    // interval ticks — with the feature enabled and no boundary reached yet,
+    // that's the steady-state outcome, and logging it every
+    // SESSION_BOUNDARY_RECONCILIATION_POLL_MS forever would bury the
+    // actually-interesting events. The immediate, dependency-triggered run
+    // still logs them, and a found directory's entries always log either way.
+    const runScan = async (isPolledTick: boolean) => {
+      if (scanInFlight) {
+        return
+      }
+      scanInFlight = true
+      try {
+        const eligibleStations = stationsRef.current.filter((entry) => entry.sessionBoundaryAutoSplitEnabled)
+        if (!isPolledTick) {
+          console.debug('[session-boundary] reconciliation scan starting', {
+            workspaceId,
+            eligibleStations: eligibleStations.map((entry) => ({
+              id: entry.id,
+              agentWorkdirRel: entry.agentWorkdirRel,
+            })),
+          })
+        }
+        await Promise.all(
+          eligibleStations.map(async (station) => {
+            const handoffDir =
+              station.agentWorkdirRel === '.'
+                ? '.claude/session-handoff'
+                : `${station.agentWorkdirRel}/.claude/session-handoff`
+            try {
+              const response = await desktopApi.fsListDir(workspaceId, handoffDir, 1)
+              // Consumed handoffs are renamed to `*.consumed.md` in place,
+              // never deleted, so this directory stays non-empty forever
+              // after a station's first boundary — filter to unconsumed
+              // `-handoff.md` entries before logging, or this line floods
+              // the console every poll tick for any station that's ever
+              // had one, same as the "found no dir" line did before it was
+              // gated behind isPolledTick.
+              const unconsumedEntries = response.entries.filter(
+                (entry) => entry.kind === 'file' && entry.name.endsWith('-handoff.md'),
+              )
+              if (unconsumedEntries.length > 0) {
+                console.debug('[session-boundary] reconciliation scan found dir', {
+                  stationId: station.id,
+                  handoffDir,
+                  entries: unconsumedEntries.map((entry) => entry.name),
+                })
               }
-              if (entry.kind !== 'file' || !entry.name.endsWith('-handoff.md')) {
-                continue
+              for (const entry of unconsumedEntries) {
+                if (disposed) {
+                  return
+                }
+                await consumeSessionBoundaryHandoffIfSignaled(workspaceId, entry.path, [station.id])
               }
-              await consumeSessionBoundaryHandoffIfSignaled(workspaceId, entry.path, [station.id])
+            } catch (error) {
+              // No .claude/session-handoff directory yet for this station —
+              // nothing to reconcile.
+              if (!isPolledTick) {
+                console.debug('[session-boundary] reconciliation scan found no dir', {
+                  stationId: station.id,
+                  handoffDir,
+                  error,
+                })
+              }
             }
-          } catch {
-            // No .claude/session-handoff directory yet for this station —
-            // nothing to reconcile.
-          }
-        }),
-      )
-    })()
+          }),
+        )
+      } finally {
+        scanInFlight = false
+      }
+    }
+    void runScan(false)
+    const intervalId = window.setInterval(() => {
+      void runScan(true)
+    }, SESSION_BOUNDARY_RECONCILIATION_POLL_MS)
     return () => {
       disposed = true
+      window.clearInterval(intervalId)
     }
   }, [activeWorkspaceId, stations, consumeSessionBoundaryHandoffIfSignaled])
 

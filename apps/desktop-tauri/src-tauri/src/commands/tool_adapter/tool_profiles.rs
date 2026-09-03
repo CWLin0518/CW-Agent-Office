@@ -640,23 +640,15 @@ pub fn tool_launch(
         SqliteStorage::new(app_data_dir.join("gtoffice.db")).map_err(|error| error.to_string())?,
     );
     repo.ensure_schema().map_err(|error| error.to_string())?;
-    let output_collection_enabled = repo
+    let output_agent = repo
         .list_agents(&workspace_id)
         .map_err(|error| error.to_string())?
         .into_iter()
-        .find(|agent| agent.id == agent_id)
-        .is_some_and(|agent| agent.output_collection_enabled);
-    if output_collection_enabled {
-        let output_dir = workspace_root
-            .join(".gtoffice")
-            .join("agents")
-            .join(&agent_id)
-            .join("outputs");
-        std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
-        env.insert(
-            "GTO_OUTPUT_DIR".to_string(),
-            output_dir.to_string_lossy().into_owned(),
-        );
+        .find(|agent| agent.id == agent_id);
+    if let Some(agent) = output_agent.filter(|agent| agent.output_collection_enabled) {
+        let contract =
+            gt_agent::create_agent_output_contract(&workspace_root, &agent_id, &agent.name)?;
+        env.extend(contract.env());
     }
 
     let request = TerminalCreateRequest {
@@ -734,10 +726,18 @@ pub fn tool_launch(
         "stationId": station_id,
         "resolvedCwd": session.resolved_cwd,
         "shell": shell_name,
+        "cwdMode": cwd_mode_label(&cwd_mode),
         "submitSequence": submit_sequence,
         "launchCommand": launch_command,
         "initialPrompt": initial_prompt,
     }))
+}
+
+fn cwd_mode_label(mode: &TerminalCwdMode) -> &'static str {
+    match mode {
+        TerminalCwdMode::WorkspaceRoot => "workspace_root",
+        TerminalCwdMode::Custom => "custom",
+    }
 }
 
 #[tauri::command]

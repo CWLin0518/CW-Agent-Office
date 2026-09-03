@@ -2,7 +2,7 @@
 
 > 需求原話：「若 agent 執行的結果會產出 md 檔或網頁等說明用的文件，請在 agent canvas 的 agent 節點 output 自動接上一個清單節點，選擇清單上的某一檔案可以直接閱覽內容，若是網頁則是直接打開瀏覽器。」
 >
-> 狀態（2026-08-26）：P1-P3 已完成；P4 已改版為執行層機制。Add/Edit Agent 的 `outputCollectionEnabled` 獨立持久化，不再把輸出條件寫入 CLAUDE.md/AGENTS.md。GT Office 啟動 Codex/Claude 時注入 `GTO_OUTPUT_DIR`，派發任務時依目標 Agent 設定加入單次輸出指示；既有受管理 Prompt 區塊會在下一次 Edit Agent 保存時移除。
+> 狀態（2026-09-02）：P1-P3 已完成；P4 已改版為執行層機制，並補上標準化紀錄契約。Add/Edit Agent 的 `outputCollectionEnabled` 獨立持久化，不再把輸出條件寫入 CLAUDE.md/AGENTS.md。GT Office 啟動 Codex/Claude 時注入 `GTO_OUTPUT_DIR`、`GTO_LOG_FILE`、`GTO_HANDOFF_FILE`、`GTO_ARTIFACT_DIR`；每個 session 建立唯一 `<agent-name>-YYYYMMDD-HHmmss-log.md`，每個 Agent 固定保留 `<agent-name>-handoff.md`。`.claude/session-handoff/` 完全不讀、不搬、不刪。Canvas 維持每個 Agent 一個 Output 節點，展開後以原本下拉清單列出 Log、Handoff 與 Artifact。
 
 ## 1. 現況地基（本次調查結果）
 

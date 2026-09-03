@@ -173,11 +173,18 @@ pub fn task_dispatch_batch(
     let repo = crate::commands::agent::resolve_agent_repository(&app)?;
     repo.ensure_schema().map_err(|error| error.to_string())?;
     let mut output_directories = HashMap::new();
+    let mut session_boundary_agents = std::collections::HashSet::new();
     for agent in repo
         .list_agents(&request.workspace_id)
         .map_err(|error| error.to_string())?
     {
-        if agent.output_collection_enabled && request.targets.contains(&agent.id) {
+        if !request.targets.contains(&agent.id) {
+            continue;
+        }
+        if agent.session_boundary_auto_split_enabled {
+            session_boundary_agents.insert(agent.id.clone());
+        }
+        if agent.output_collection_enabled {
             let output_dir = workspace_root
                 .join(".gtoffice")
                 .join("agents")
@@ -192,6 +199,7 @@ pub fn task_dispatch_batch(
         &request,
         &workspace_root,
         &output_directories,
+        &session_boundary_agents,
         |session_id, command, submit_sequence| {
             write_terminal_with_submit(state.inner(), session_id, command, submit_sequence)
         },

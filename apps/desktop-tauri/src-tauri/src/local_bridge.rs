@@ -32,6 +32,7 @@ use crate::commands::agent::{
 };
 use crate::commands::settings::ai_config::augment_terminal_env_for_agent;
 use crate::commands::task_center::write_terminal_with_submit;
+use crate::commands::tool_adapter::tool_profiles::tool_launch;
 
 const BRIDGE_HOST: &str = "127.0.0.1";
 const BRIDGE_RUNTIME_RELATIVE_PATH: &str = ".gtoffice/mcp/runtime.json";
@@ -140,6 +141,26 @@ struct DevBootstrapAgentsRequest {
 #[serde(rename_all = "camelCase")]
 struct DirectoryGetRequest {
     workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolLaunchBridgeRequest {
+    // Either identifies the target workspace. `workspaceId` takes priority
+    // when both are present: a caller that already knows the id (e.g. it's
+    // running inside one of that workspace's own agent terminals, via the
+    // `GTO_WORKSPACE_ID` env var those terminals get) can skip re-deriving it
+    // from a filesystem path — which matters because a subdirectory *inside*
+    // a workspace (an agent's own `.gtoffice/<agent-id>` workdir, say) is not
+    // the same canonical root as the workspace itself, so resolving from that
+    // subdirectory's path would silently open/create a *different* workspace.
+    #[serde(default)]
+    workspace_path: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    profile_id: String,
+    #[serde(default)]
+    context: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +372,7 @@ async fn handle_request(
         "agent.update" => bridge_agent_update(app, state, request.params.clone()),
         "agent.delete" => bridge_agent_delete(app, state, request.params.clone()),
         "agent.prompt_read" => bridge_agent_prompt_read(app, state, request.params.clone()),
+        "tool.launch" => bridge_tool_launch(app, state, request.params.clone()),
         "dev.bootstrap_agents" => dev_bootstrap_agents(app, state, request.params.clone()),
         "task.dispatch_batch" => dispatch_batch(app, state, request.params.clone()),
         "task.list_threads" => list_task_threads(state, request.params.clone()),
@@ -448,6 +470,97 @@ fn bridge_agent_prompt_read(
 
     let state_guard = app.state::<AppState>();
     agent_prompt_read(request, state_guard, app.clone()).map_err(map_command_error)
+}
+
+/// Lets an external process (e.g. a Claude Code hook running outside the app)
+/// open a new in-app agent CLI session, the same way the dock UI does via
+/// `tool_launch`. Accepts either identifier for the target workspace:
+/// `workspaceId` when the caller already knows it (e.g. a hook running
+/// inside one of that workspace's own agent terminals picks it up from the
+/// `GTO_WORKSPACE_ID` env var those terminals get — passing that straight
+/// through, together with `GTO_AGENT_ID`/`GTO_STATION_ID` in `context`, makes
+/// this *relaunch the same already-visible station card* instead of creating
+/// an anonymous one), or `workspacePath` when it only has a filesystem path
+/// (resolved/opened the same way `dev_bootstrap_agents` below does). Either
+/// way, this grants asset scope the same way `workspace_open` does.
+///
+/// Known gap vs. `workspace_open`: this does not bind any webview `Window` to
+/// the workspace or emit `workspace/updated` / `workspace/active_changed`,
+/// because a bridge caller has no window of its own to bind. If the target
+/// workspace isn't already open in some window, the new session/runtime is
+/// still created and registered correctly, but it may not visibly appear
+/// until the user opens that workspace through the normal UI themselves.
+fn bridge_tool_launch(
+    app: &AppHandle,
+    _state: &AppState,
+    params: Value,
+) -> Result<Value, BridgeError> {
+    let request: ToolLaunchBridgeRequest = serde_json::from_value(params).map_err(|error| {
+        BridgeError::new(
+            "LOCAL_BRIDGE_INVALID_PARAMS",
+            format!("tool.launch params invalid: {error}"),
+        )
+    })?;
+
+    if request.profile_id.trim().is_empty() {
+        return Err(BridgeError::new(
+            "LOCAL_BRIDGE_INVALID_PARAMS",
+            "profileId is required",
+        ));
+    }
+
+    let state_guard = app.state::<AppState>();
+    let workspace_id_string = request
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let workspace_path = request
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let workspace_id = match (workspace_id_string, workspace_path) {
+        (Some(workspace_id), _) => {
+            let root = state_guard
+                .workspace_root_path(workspace_id)
+                .map_err(|error| BridgeError::new("LOCAL_BRIDGE_WORKSPACE_INVALID", error))?;
+            // Mirrors the ordering in the UI-driven `workspace_open` command:
+            // grant asset-protocol access to the workspace root, so any
+            // `asset://` reads the new session's output triggers (e.g. Agent
+            // Canvas output nodes) don't silently fail.
+            crate::commands::workspace::allow_workspace_asset_scope(app, &root)
+                .map_err(|error| BridgeError::new("LOCAL_BRIDGE_WORKSPACE_INVALID", error))?;
+            workspace_id.to_string()
+        }
+        (None, Some(workspace_path)) => {
+            crate::commands::workspace::allow_workspace_asset_scope(app, Path::new(workspace_path))
+                .map_err(|error| BridgeError::new("LOCAL_BRIDGE_WORKSPACE_INVALID", error))?;
+            let workspace = state_guard
+                .workspace_service
+                .open(Path::new(workspace_path))
+                .map_err(|error| {
+                    BridgeError::new("LOCAL_BRIDGE_WORKSPACE_INVALID", error.to_string())
+                })?;
+            workspace.workspace_id.to_string()
+        }
+        (None, None) => {
+            return Err(BridgeError::new(
+                "LOCAL_BRIDGE_INVALID_PARAMS",
+                "workspaceId or workspacePath is required",
+            ));
+        }
+    };
+
+    tool_launch(
+        workspace_id,
+        request.profile_id,
+        request.context,
+        state_guard,
+        app.clone(),
+    )
+    .map_err(map_command_error)
 }
 
 fn count_directory_snapshots(state: &AppState) -> usize {
@@ -733,11 +846,18 @@ fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Va
     repo.ensure_schema()
         .map_err(|error| BridgeError::new("LOCAL_BRIDGE_STORAGE_INVALID", error.to_string()))?;
     let mut output_directories = std::collections::HashMap::new();
+    let mut session_boundary_agents = std::collections::HashSet::new();
     for agent in repo
         .list_agents(&request.workspace_id)
         .map_err(|error| BridgeError::new("LOCAL_BRIDGE_STORAGE_INVALID", error.to_string()))?
     {
-        if agent.output_collection_enabled && request.targets.contains(&agent.id) {
+        if !request.targets.contains(&agent.id) {
+            continue;
+        }
+        if agent.session_boundary_auto_split_enabled {
+            session_boundary_agents.insert(agent.id.clone());
+        }
+        if agent.output_collection_enabled {
             let output_dir = workspace_root
                 .join(".gtoffice")
                 .join("agents")
@@ -757,6 +877,7 @@ fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Va
         &request,
         &workspace_root,
         &output_directories,
+        &session_boundary_agents,
         |session_id, command, submit_sequence| {
             write_terminal_with_submit(state, session_id, command, submit_sequence)
         },
@@ -941,28 +1062,19 @@ fn dev_bootstrap_agents(
 
         let mut terminal_env =
             build_agent_terminal_env(workspace.workspace_id.as_str(), &agent_id, &agent_id);
-        let output_collection_enabled = repo
+        let output_agent = repo
             .list_agents(workspace.workspace_id.as_str())
             .map_err(|error| BridgeError::new("LOCAL_BRIDGE_STORAGE_INVALID", error.to_string()))?
             .into_iter()
-            .find(|agent| agent.id == agent_id)
-            .is_some_and(|agent| agent.output_collection_enabled);
-        if output_collection_enabled {
-            let output_dir = Path::new(&workspace.root)
-                .join(".gtoffice")
-                .join("agents")
-                .join(&agent_id)
-                .join("outputs");
-            fs::create_dir_all(&output_dir).map_err(|error| {
-                BridgeError::new(
-                    "LOCAL_BRIDGE_OUTPUT_DIR_INVALID",
-                    format!("failed to create agent output directory: {error}"),
-                )
-            })?;
-            terminal_env.insert(
-                "GTO_OUTPUT_DIR".to_string(),
-                output_dir.to_string_lossy().into_owned(),
-            );
+            .find(|agent| agent.id == agent_id);
+        if let Some(agent) = output_agent.filter(|agent| agent.output_collection_enabled) {
+            let contract = gt_agent::create_agent_output_contract(
+                Path::new(&workspace.root),
+                &agent_id,
+                &agent.name,
+            )
+            .map_err(|error| BridgeError::new("LOCAL_BRIDGE_OUTPUT_DIR_INVALID", error))?;
+            terminal_env.extend(contract.env());
         }
         let terminal_env = augment_terminal_env_for_agent(
             app,

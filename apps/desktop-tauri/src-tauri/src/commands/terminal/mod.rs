@@ -271,25 +271,18 @@ pub fn terminal_create(
     if let Some(agent_id) = env.get("GTO_AGENT_ID").cloned() {
         let repo = crate::commands::agent::resolve_agent_repository(&app)?;
         repo.ensure_schema().map_err(|error| error.to_string())?;
-        let output_enabled = repo
+        let output_agent = repo
             .list_agents(&workspace_id)
             .map_err(|error| error.to_string())?
             .into_iter()
-            .find(|agent| agent.id == agent_id)
-            .is_some_and(|agent| agent.output_collection_enabled);
-        if output_enabled {
-            let output_dir = state
-                .workspace_root_path(&workspace_id)?
-                .join(".gtoffice")
-                .join("agents")
-                .join(&agent_id)
-                .join("outputs");
-            std::fs::create_dir_all(&output_dir)
-                .map_err(|error| format!("AGENT_OUTPUT_DIR_CREATE_FAILED: {error}"))?;
-            env.insert(
-                "GTO_OUTPUT_DIR".to_string(),
-                output_dir.to_string_lossy().into_owned(),
-            );
+            .find(|agent| agent.id == agent_id);
+        if let Some(agent) = output_agent.filter(|agent| agent.output_collection_enabled) {
+            let contract = gt_agent::create_agent_output_contract(
+                &state.workspace_root_path(&workspace_id)?,
+                &agent_id,
+                &agent.name,
+            )?;
+            env.extend(contract.env());
         }
     }
     let request = TerminalCreateRequest {

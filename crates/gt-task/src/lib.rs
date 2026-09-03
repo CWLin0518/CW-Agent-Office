@@ -1180,6 +1180,7 @@ impl TaskService {
             request,
             workspace_root,
             &HashMap::new(),
+            &HashSet::new(),
             write_terminal,
         )
     }
@@ -1189,6 +1190,7 @@ impl TaskService {
         request: &TaskDispatchBatchRequest,
         _workspace_root: &Path,
         output_directories: &HashMap<String, String>,
+        session_boundary_agents: &HashSet<String>,
         mut write_terminal: F,
     ) -> TaskDispatchBatchOutcome
     where
@@ -1312,6 +1314,7 @@ impl TaskService {
                 request,
                 &task_id,
                 output_directories.get(&target_agent_id),
+                session_boundary_agents.contains(&target_agent_id),
             ));
             if let Err(error) = write_terminal(&runtime.session_id, &command, &submit_sequence) {
                 warn!(
@@ -1820,6 +1823,7 @@ fn enrich_dispatch_markdown(
     request: &TaskDispatchBatchRequest,
     task_id: &str,
     output_directory: Option<&String>,
+    session_boundary_enabled: bool,
 ) -> String {
     let mut sections = Vec::new();
     let body = markdown.trim();
@@ -1830,8 +1834,22 @@ fn enrich_dispatch_markdown(
         sections.push(reply_instruction.trim().to_string());
     }
     if let Some(output_directory) = output_directory {
+        // The `.claude/session-handoff` sentence below must never contradict
+        // the CLAUDE.md/AGENTS.md guidance `session_boundary_guidance_block`
+        // (apps/desktop-tauri/src-tauri/src/commands/agent.rs) writes for an
+        // agent with `session_boundary_auto_split_enabled` on — that guidance
+        // instructs the agent to actively write into `.claude/session-handoff`
+        // when it judges a task boundary reached. A blanket "do not touch"
+        // here previously collided with it (docs/cw/19_輸出收集與SessionBoundary訊息衝突排查.md), leaving
+        // the agent with two simultaneous, opposite instructions about the
+        // same path.
+        let handoff_sentence = if session_boundary_enabled {
+            "`.claude/session-handoff` is reserved for this agent's separate session-boundary auto-restart signal (see your system prompt's own boundary guidance) — do not use it for GT Office output-collection handoffs; use `GTO_HANDOFF_FILE` for those instead."
+        } else {
+            "Do not copy, move, or delete files in `.claude/session-handoff`. These are task-scoped execution paths, not system-prompt rules."
+        };
         sections.push(format!(
-            "## GT Office Output\n\nIf this task produces explanatory files such as Markdown or HTML, write them to the directory in `GTO_OUTPUT_DIR`: `{output_directory}`. This is task-scoped execution guidance, not a system-prompt rule."
+            "## GT Office Output\n\nThe managed output directory is available as `GTO_OUTPUT_DIR` (`{output_directory}`). Maintain this session's work record by appending important progress, decisions, changed files, and verification results to `GTO_LOG_FILE`. When a handoff is needed, replace the file at `GTO_HANDOFF_FILE`; it is the only GT Office handoff retained for this agent. If the user requests an additional deliverable such as Markdown, HTML, or JSON, write it as a separate file in `GTO_ARTIFACT_DIR`. {handoff_sentence}"
         ));
     }
     sections.join("\n\n")
@@ -1857,11 +1875,53 @@ mod output_collection_tests {
             submit_sequences: HashMap::new(),
         };
         let output_dir = "C:/project/.gtoffice/agents/agent-1/outputs".to_string();
-        let enriched =
-            enrich_dispatch_markdown(&request.markdown, &request, "task-1", Some(&output_dir));
+        let enriched = enrich_dispatch_markdown(
+            &request.markdown,
+            &request,
+            "task-1",
+            Some(&output_dir),
+            false,
+        );
         assert!(enriched.contains("GTO_OUTPUT_DIR"));
+        assert!(enriched.contains("GTO_LOG_FILE"));
+        assert!(enriched.contains("GTO_HANDOFF_FILE"));
+        assert!(enriched.contains("GTO_ARTIFACT_DIR"));
+        assert!(enriched.contains(".claude/session-handoff"));
         assert!(enriched.contains(&output_dir));
-        assert!(enriched.contains("task-scoped execution guidance"));
+        assert!(enriched.contains("task-scoped execution paths"));
+    }
+
+    // Regression test for docs/cw/19_輸出收集與SessionBoundary訊息衝突排查.md: when an agent has BOTH
+    // output_collection_enabled and session_boundary_auto_split_enabled on,
+    // the output-collection guidance must not tell it to leave
+    // `.claude/session-handoff` alone — that directly contradicts the
+    // separate CLAUDE.md/AGENTS.md guidance instructing it to actively write
+    // there when it judges a task boundary reached.
+    #[test]
+    fn output_instruction_does_not_contradict_session_boundary_guidance_when_both_enabled() {
+        let request = TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender::default(),
+            targets: vec!["agent-1".to_string()],
+            title: "Report".to_string(),
+            markdown: "Create a report".to_string(),
+            attachments: vec![],
+            submit_sequences: HashMap::new(),
+        };
+        let output_dir = "C:/project/.gtoffice/agents/agent-1/outputs".to_string();
+        let enriched = enrich_dispatch_markdown(
+            &request.markdown,
+            &request,
+            "task-1",
+            Some(&output_dir),
+            true,
+        );
+        assert!(enriched.contains("GTO_HANDOFF_FILE"));
+        assert!(enriched.contains(".claude/session-handoff"));
+        assert!(
+            !enriched.contains("Do not copy, move, or delete files in `.claude/session-handoff`")
+        );
+        assert!(!enriched.contains("task-scoped execution paths"));
     }
 }
 
