@@ -379,6 +379,7 @@ fn agent_delete_removes_agent_record() {
             agent_id: agent_id.clone(),
             cleanup_mode: None,
             replacement_agent_id: None,
+            delete_workdir: false,
         },
         &fixture.state,
         &fixture.repo,

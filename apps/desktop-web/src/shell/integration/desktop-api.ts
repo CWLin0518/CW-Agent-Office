@@ -2020,6 +2020,10 @@ export interface AgentDeleteRequest {
   agentId: string
   cleanupMode?: 'reject' | 'rebind' | 'disable' | 'delete' | null
   replacementAgentId?: string | null
+  /** When true, also removes the agent's dedicated workdir directory from
+   * disk (skipped by the backend for the workspace-root workdir, or if
+   * another remaining agent still points at the same directory). */
+  deleteWorkdir?: boolean
 }
 
 export interface AgentDeleteResponse {
@@ -4758,6 +4762,7 @@ export const desktopApi = {
         agentId: request.agentId,
         cleanupMode: request.cleanupMode ?? null,
         replacementAgentId: request.replacementAgentId ?? null,
+        deleteWorkdir: request.deleteWorkdir ?? false,
       },
     })
   },

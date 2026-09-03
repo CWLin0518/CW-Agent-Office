@@ -310,6 +310,10 @@ export interface ShellTerminalController {
   handleStationDeleteCleanupChange: (patch: Partial<StationDeleteCleanupState>) => void
   handleStationDeleteCleanupClose: () => void
   handleStationDeleteCleanupConfirm: () => Promise<void>
+  // Station delete — "also delete workdir files?" confirmation
+  stationDeleteWorkdirConfirm: { stationId: string; stationName: string; workdirPath: string } | null
+  cancelStationDeleteWorkdirConfirm: () => void
+  confirmStationDeleteWorkdirConfirm: () => void
 
   // Core terminal operations
   bindStationTerminalSink: StationTerminalSinkBindingHandler
@@ -450,8 +454,18 @@ export function useShellTerminalController({
   const [stationDeleteCleanupState, setStationDeleteCleanupState] = useState<StationDeleteCleanupState | null>(null)
   const [stationDeleteCleanupSubmitting, setStationDeleteCleanupSubmitting] = useState(false)
   const [forceCloseConfirmPendingId, setForceCloseConfirmPendingId] = useState<string | null>(null)
+  const [stationDeleteWorkdirConfirm, setStationDeleteWorkdirConfirm] = useState<{
+    stationId: string
+    stationName: string
+    workdirPath: string
+  } | null>(null)
 
   // ── Refs ──────────────────────────────────────────────────────────────
+  // Carries the user's "also delete files?" choice from removeStation's
+  // confirmation dialog through to handleStationDeleteCleanupConfirm, for
+  // the case where the delete is additionally blocked by channel bindings
+  // and resolved via a second, later confirmation step.
+  const pendingDeleteWorkdirRef = useRef(false)
   const stationTerminalsRef = useRef(stationTerminals)
   const stationSessionTabsRef = useRef(stationSessionTabs)
   const sessionStationRef = useRef<Record<string, string>>({})
@@ -4838,8 +4852,9 @@ export function useShellTerminalController({
   )
 
   // ── Remove station ─────────────────────────────────────────────────────
-  const removeStation = useCallback(
-    async (stationId: string) => {
+  const performRemoveStation = useCallback(
+    async (stationId: string, deleteWorkdir: boolean) => {
+      pendingDeleteWorkdirRef.current = deleteWorkdir
       const workspaceId = activeWorkspaceIdRef.current
       recordStationLifecycleDiagnostic(
         stationId,
@@ -4853,6 +4868,7 @@ export function useShellTerminalController({
           const response = await desktopApi.agentDelete({
             workspaceId,
             agentId: stationId,
+            deleteWorkdir,
           })
           if (!response.deleted) {
             if (
@@ -4897,6 +4913,39 @@ export function useShellTerminalController({
     },
     [cleanupRemovedStationRuntimeState, recordStationLifecycleDiagnostic],
   )
+
+  // Public entry point: agents with a dedicated (non-root) workdir pause for
+  // an explicit "also delete the files?" confirmation before anything is
+  // deleted — see stationDeleteWorkdirConfirm/StationDeleteWorkdirConfirmDialog.
+  // Agents still on the workspace-root workdir have no dedicated directory to
+  // offer deleting, so they skip straight to performRemoveStation as before.
+  const removeStation = useCallback(
+    async (stationId: string) => {
+      const station = stationsRef.current.find((candidate) => candidate.id === stationId)
+      if (station?.customWorkdir && station.agentWorkdirRel) {
+        setStationDeleteWorkdirConfirm({
+          stationId,
+          stationName: station.name,
+          workdirPath: station.agentWorkdirRel,
+        })
+        return
+      }
+      await performRemoveStation(stationId, false)
+    },
+    [performRemoveStation],
+  )
+
+  const cancelStationDeleteWorkdirConfirm = useCallback(() => {
+    setStationDeleteWorkdirConfirm(null)
+  }, [])
+
+  const confirmStationDeleteWorkdirConfirm = useCallback(() => {
+    const pending = stationDeleteWorkdirConfirm
+    setStationDeleteWorkdirConfirm(null)
+    if (pending) {
+      void performRemoveStation(pending.stationId, true)
+    }
+  }, [performRemoveStation, stationDeleteWorkdirConfirm])
 
   // ── Force close station terminal (two-step: confirm then kill) ───────
   const forceCloseStationTerminal = useCallback((stationId: string) => {
@@ -5410,6 +5459,7 @@ export function useShellTerminalController({
       const response = await desktopApi.agentDelete({
         workspaceId,
         agentId: stationDeleteCleanupTargetId,
+        deleteWorkdir: pendingDeleteWorkdirRef.current,
         ...buildStationDeleteCleanupRequest(stationDeleteCleanupState),
       })
       if (!response.deleted) {
@@ -5770,6 +5820,9 @@ export function useShellTerminalController({
     handleStationDeleteCleanupChange,
     handleStationDeleteCleanupClose,
     handleStationDeleteCleanupConfirm,
+    stationDeleteWorkdirConfirm,
+    cancelStationDeleteWorkdirConfirm,
+    confirmStationDeleteWorkdirConfirm,
 
     // Core terminal operations
     bindStationTerminalSink,

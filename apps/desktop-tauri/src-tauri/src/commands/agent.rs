@@ -822,6 +822,12 @@ pub struct AgentDeleteRequest {
     pub cleanup_mode: Option<String>,
     #[serde(default)]
     pub replacement_agent_id: Option<String>,
+    /// When true, also removes the deleted agent's dedicated workdir
+    /// directory from disk (see `delete_agent_workdir`). Never set for the
+    /// workspace-root workdir, and skipped by `delete_agent_workdir` itself
+    /// if another remaining agent still points at the same directory.
+    #[serde(default)]
+    pub delete_workdir: bool,
 }
 
 pub(crate) fn agent_delete_with_repo<F>(
@@ -894,6 +900,45 @@ where
     }))
 }
 
+/// Recursively removes a just-deleted agent's dedicated workdir from disk.
+/// Never touches the workspace root ("." — the default workdir), and skips
+/// deletion entirely if any remaining agent in the workspace still points at
+/// the same normalized workdir (e.g. a subagent sharing its parent's
+/// directory), so this can never destroy another agent's files.
+fn delete_agent_workdir(
+    workspace_root: &Path,
+    repo: &SqliteAgentRepository,
+    workspace_id: &str,
+    workdir: &str,
+) -> Result<(), String> {
+    let Some(normalized) = normalize_relative_workdir(workdir) else {
+        return Ok(());
+    };
+    if normalized == "." {
+        return Ok(());
+    }
+    let still_in_use = repo
+        .list_agents(workspace_id)
+        .map_err(to_command_error)?
+        .into_iter()
+        .any(|agent| {
+            let agent_workdir = agent
+                .workdir
+                .clone()
+                .unwrap_or_else(|| default_agent_workdir(&agent.name));
+            normalize_relative_workdir(&agent_workdir).as_deref() == Some(normalized.as_str())
+        });
+    if still_in_use {
+        return Ok(());
+    }
+    let absolute_path = ensure_path_within_workspace(workspace_root, &normalized)?;
+    match std::fs::remove_dir_all(&absolute_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("AGENT_WORKDIR_DELETE_FAILED: {error}")),
+    }
+}
+
 fn agent_delete_with_context<R: tauri::Runtime>(
     request: AgentDeleteRequest,
     state: &AppState,
@@ -903,12 +948,23 @@ fn agent_delete_with_context<R: tauri::Runtime>(
     let repo = resolve_agent_repository(app)?;
     repo.ensure_schema().map_err(to_command_error)?;
     let workspace_id = request.workspace_id.clone();
+    let delete_workdir = request.delete_workdir;
+    let target_workdir = if delete_workdir {
+        find_agent(&repo, &workspace_id, &request.agent_id)
+            .ok()
+            .and_then(|agent| agent.workdir)
+    } else {
+        None
+    };
     let response = agent_delete_with_repo(request, state, &repo, || {
         crate::commands::tool_adapter::persist_route_bindings(app, state)
     })?;
     if response.get("deleted").and_then(Value::as_bool) == Some(true) {
         if let Ok(workspace_root) = get_workspace_root(state, &workspace_id) {
             let _ = resync_agent_gitignore(&workspace_root, &repo, &workspace_id);
+            if let Some(workdir) = target_workdir {
+                let _ = delete_agent_workdir(&workspace_root, &repo, &workspace_id, &workdir);
+            }
         }
     }
     let _ = crate::local_bridge::refresh_directory_snapshot(app, state, &workspace_id);
@@ -1372,5 +1428,133 @@ mod session_boundary_guidance_tests {
     fn strip_leaves_unrelated_content_unchanged() {
         let content = "# My Agent\n\nNo managed block here.";
         assert_eq!(strip_managed_session_boundary_guidance(content), content);
+    }
+}
+
+/// Covers `delete_agent_workdir` — the fix for agents deleted in GT Office
+/// leaving their dedicated `custom_workdir` directory behind on disk.
+#[cfg(test)]
+mod delete_agent_workdir_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct ScratchRepo {
+        _db_path: PathBuf,
+        workspace_root: PathBuf,
+        repo: SqliteAgentRepository,
+    }
+
+    impl Drop for ScratchRepo {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self._db_path.display()));
+            }
+            let _ = std::fs::remove_dir_all(&self.workspace_root);
+        }
+    }
+
+    fn scratch_repo(name: &str) -> ScratchRepo {
+        let unique = format!("{name}-{}", uuid::Uuid::new_v4());
+        let db_path = std::env::temp_dir().join(format!("gt-agent-workdir-test-{unique}.db"));
+        let workspace_root =
+            std::env::temp_dir().join(format!("gt-agent-workdir-test-ws-{unique}"));
+        std::fs::create_dir_all(&workspace_root).expect("create scratch workspace root");
+
+        let storage = SqliteStorage::new(&db_path).expect("open scratch storage");
+        let repo = SqliteAgentRepository::new(storage);
+        repo.ensure_schema().expect("ensure_schema");
+
+        ScratchRepo {
+            _db_path: db_path,
+            workspace_root,
+            repo,
+        }
+    }
+
+    fn create_agent_with_workdir(
+        repo: &SqliteAgentRepository,
+        workspace_id: &str,
+        id: &str,
+        workdir: &str,
+    ) {
+        repo.create_agent(CreateAgentInput {
+            workspace_id: workspace_id.to_string(),
+            agent_id: Some(id.to_string()),
+            name: id.to_string(),
+            tool: "codex".to_string(),
+            workdir: Some(workdir.to_string()),
+            custom_workdir: workdir != ".",
+            scope: AgentScope::Station,
+            employee_no: None,
+            state: AgentState::Ready,
+            launch_command: None,
+            output_collection_enabled: false,
+            session_boundary_auto_split_enabled: false,
+            order_index: None,
+            parent_agent_id: None,
+            external_template_path: None,
+        })
+        .expect("create agent");
+    }
+
+    #[test]
+    fn removes_dedicated_workdir_directory() {
+        let scratch = scratch_repo("removes");
+        create_agent_with_workdir(&scratch.repo, "ws-1", "alpha", ".gtoffice/alpha");
+        let alpha_dir = scratch.workspace_root.join(".gtoffice/alpha");
+        std::fs::create_dir_all(&alpha_dir).expect("create agent workdir");
+        std::fs::write(alpha_dir.join("CLAUDE.md"), "hello").expect("seed prompt file");
+        scratch
+            .repo
+            .delete_agent("ws-1", "alpha")
+            .expect("delete agent record");
+
+        delete_agent_workdir(
+            &scratch.workspace_root,
+            &scratch.repo,
+            "ws-1",
+            ".gtoffice/alpha",
+        )
+        .expect("delete workdir");
+
+        assert!(!alpha_dir.exists());
+    }
+
+    #[test]
+    fn never_deletes_workspace_root() {
+        let scratch = scratch_repo("root-safety");
+        let marker = scratch.workspace_root.join("keep-me.txt");
+        std::fs::write(&marker, "still here").expect("seed marker file");
+
+        delete_agent_workdir(&scratch.workspace_root, &scratch.repo, "ws-1", ".")
+            .expect("no-op delete for root workdir");
+
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn skips_deletion_when_another_agent_still_uses_the_same_workdir() {
+        let scratch = scratch_repo("shared");
+        create_agent_with_workdir(&scratch.repo, "ws-1", "alpha", ".gtoffice/shared");
+        create_agent_with_workdir(&scratch.repo, "ws-1", "beta", ".gtoffice/shared");
+        let shared_dir = scratch.workspace_root.join(".gtoffice/shared");
+        std::fs::create_dir_all(&shared_dir).expect("create shared workdir");
+        scratch
+            .repo
+            .delete_agent("ws-1", "alpha")
+            .expect("delete alpha's record");
+
+        delete_agent_workdir(
+            &scratch.workspace_root,
+            &scratch.repo,
+            "ws-1",
+            ".gtoffice/shared",
+        )
+        .expect("skip delete while beta still uses the directory");
+
+        assert!(
+            shared_dir.exists(),
+            "beta's still-live workdir must survive alpha's deletion"
+        );
     }
 }

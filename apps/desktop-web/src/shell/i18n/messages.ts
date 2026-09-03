@@ -952,6 +952,13 @@ export const messages = {
   },
   'terminal.forceClose.confirmCancel': { 'zh-CN': '取消', 'en-US': 'Cancel' },
   'terminal.forceClose.confirmAction': { 'zh-CN': '强制关闭', 'en-US': 'Force Close' },
+  'station.deleteWorkdir.confirmTitle': { 'zh-CN': '删除「{name}」', 'en-US': 'Delete "{name}"' },
+  'station.deleteWorkdir.confirmMessage': {
+    'zh-CN': '这个 Agent 有独立的工作目录，删除后会一并删除目录下的所有文件，此操作无法撤销。',
+    'en-US': 'This agent has its own dedicated workdir. Deleting it will also delete every file in that directory. This cannot be undone.',
+  },
+  'station.deleteWorkdir.cancel': { 'zh-CN': '取消', 'en-US': 'Cancel' },
+  'station.deleteWorkdir.deleteFiles': { 'zh-CN': '删除 Agent 与文件', 'en-US': 'Delete agent & files' },
   'settingsModal.title': { 'zh-CN': '系统设置', 'en-US': 'System Settings' },
   'settingsModal.subtitle': {
     'zh-CN': '集中管理显示偏好与通道接入配置',

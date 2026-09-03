@@ -345,6 +345,9 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
     confirmForceCloseStationTerminal,
     dismissForceCloseConfirm,
     forceCloseConfirmPendingId,
+    stationDeleteWorkdirConfirm,
+    cancelStationDeleteWorkdirConfirm,
+    confirmStationDeleteWorkdirConfirm,
     reconcileStationRuntimeRegistration,
     removeStation,
     launchStationCliAgent,
@@ -1738,6 +1741,14 @@ export function useShellRootController({ workspaceWindowId }: ShellRootProps = {
       onConfirm: () => {
         void confirmForceCloseStationTerminal()
       },
+    },
+    stationDeleteWorkdirConfirmDialogProps: {
+      open: stationDeleteWorkdirConfirm !== null,
+      locale: uiPreferences.locale,
+      stationName: stationDeleteWorkdirConfirm?.stationName ?? '',
+      workdirPath: stationDeleteWorkdirConfirm?.workdirPath ?? '',
+      onCancel: cancelStationDeleteWorkdirConfirm,
+      onConfirm: confirmStationDeleteWorkdirConfirm,
     },
   }
 }
