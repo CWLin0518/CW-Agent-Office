@@ -1090,6 +1090,7 @@ pub fn business_designer_run_agent_completion(
         markdown,
         attachments,
         submit_sequences: std::collections::HashMap::new(),
+        suppress_output_collection_instructions: false,
     };
     let outcome = state.task_service.dispatch_batch(
         &dispatch_request,
@@ -2643,6 +2644,7 @@ pub(crate) fn preview_coding_handoff_at(
         markdown,
         attachments: attachments.clone(),
         submit_sequences: HashMap::new(),
+        suppress_output_collection_instructions: false,
     };
 
     Ok(DesignerCodingHandoffPreview {

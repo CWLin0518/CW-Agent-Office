@@ -200,6 +200,20 @@ const SESSION_BOUNDARY_RESTART_SIGNAL_PATTERN = /<SESSION_CONTROL\s+action=["']r
 // stays a backstop — the live filesystem watch is still the fast path for
 // every handoff after a station's first one.
 const SESSION_BOUNDARY_RECONCILIATION_POLL_MS = 5000
+// A freshly relaunched CLI has had zero turns — CLAUDE.md's session-boundary
+// guidance only governs how the agent responds to a message, it can't make
+// an idle interactive session act on nothing. Without this, the restarted
+// session just sits at its prompt forever (confirmed empirically: Claude
+// Code's own session-registry file reported "idle" seconds after relaunch,
+// with no further activity). So after relaunch, wait for the CLI's own
+// startup work (provider/MCP checks, etc.) to likely finish, then type an
+// explicit nudge — not a blank keystroke, since nothing guarantees a
+// contentless message reliably cues the system-prompt guidance to fire on
+// a model's very first turn. 2s is a pragmatic guess, not a readiness
+// signal: writing to the PTY always "succeeds" whether or not the target
+// CLI's own prompt loop has attached yet, so there's no accepted/rejected
+// signal here to retry on.
+const SESSION_BOUNDARY_RESTART_NUDGE_DELAY_MS = 2000
 
 function isTerminalSessionBindingInvalid(detail: string): boolean {
   return (
@@ -5087,6 +5101,19 @@ export function useShellTerminalController({
         appendStationTerminalOutput(stationId, t(locale, 'system.sessionBoundaryRestarting'))
         await forceCloseStationTerminalById(stationId, 'session-boundary-auto-restart')
         await launchStationCliAgentRef.current?.(stationId)
+        await new Promise((resolve) => window.setTimeout(resolve, SESSION_BOUNDARY_RESTART_NUDGE_DELAY_MS))
+        console.debug('[session-boundary] sending resume nudge', { stationId })
+        const nudgeSent = await writeStationTerminalWithSubmit(
+          stationId,
+          t(locale, 'system.sessionBoundaryResumePrompt'),
+        )
+        if (!nudgeSent) {
+          // Not thrown by writeStationTerminalWithSubmit (e.g. the relaunch
+          // above silently no-op'd and the terminal runtime isn't live) —
+          // without this, the session sits idle with no first turn and the
+          // unconditional log below would misleadingly read as success.
+          console.warn('[session-boundary] resume nudge not delivered', { stationId })
+        }
         console.debug('[session-boundary] restart completed', { stationId })
       } catch (error) {
         console.warn('[session-boundary] restart failed', { stationId, error })
@@ -5098,7 +5125,7 @@ export function useShellTerminalController({
         sessionBoundaryRestartInFlightRef.current.delete(stationId)
       }
     },
-    [appendStationTerminalOutput, forceCloseStationTerminalById, locale],
+    [appendStationTerminalOutput, forceCloseStationTerminalById, locale, writeStationTerminalWithSubmit],
   )
 
   // Persists across effect re-subscribes (see the useEffect below) so a

@@ -3,10 +3,13 @@ import { createPortal } from 'react-dom'
 import { AppIcon } from '@shell/ui/icons'
 import type { AgentStation } from '@features/workspace-hub'
 import {
+  groupTaskSendPreviewTargets,
+  insertTaskDraftPreviewAtCursor,
   toggleTaskTarget,
   type TaskCenterNotice,
   type TaskDraftState,
   type TaskMarkdownSnippet,
+  type TaskSendPreviewTarget,
 } from './task-center-model'
 import type { Locale } from '@shell/i18n/ui-locale'
 import { t } from '@shell/i18n/ui-locale'
@@ -28,6 +31,9 @@ interface TaskCenterPaneProps {
   mentionCandidates: TaskMentionFileCandidate[]
   mentionLoading: boolean
   mentionError: string | null
+  sendPreviewTargets?: TaskSendPreviewTarget[]
+  suppressOutputCollection?: boolean
+  onSuppressOutputCollectionChange?: (value: boolean) => void
   onDraftChange: (patch: Partial<TaskDraftState>) => void
   onInsertSnippet: (snippet: TaskMarkdownSnippet) => void
   onSendTask: () => void
@@ -214,6 +220,9 @@ function TaskCenterPaneView({
   mentionCandidates,
   mentionLoading,
   mentionError,
+  sendPreviewTargets = [],
+  suppressOutputCollection = false,
+  onSuppressOutputCollectionChange,
   onDraftChange,
   onInsertSnippet: _onInsertSnippet,
   onSendTask,
@@ -257,6 +266,13 @@ function TaskCenterPaneView({
     }
     return t(locale, `${selectedCount} 个 Agent`, `${selectedCount} agents`)
   }, [draft.targetStationIds, locale, selectedCount, stations])
+
+  const sendPreviewGroups = useMemo(
+    () => groupTaskSendPreviewTargets(sendPreviewTargets),
+    [sendPreviewTargets],
+  )
+  const resolveStationLabel = (stationId: string) =>
+    stations.find((station) => station.id === stationId)?.name ?? stationId
 
   const orderedStations = useMemo(() => {
     const keyword = targetFilter.trim().toLowerCase()
@@ -463,6 +479,37 @@ function TaskCenterPaneView({
       textarea.focus()
       textarea.setSelectionRange(cursor, cursor)
     })
+  }
+
+  const hasDraftPreview = Boolean(draft.previewMarkdown.trim())
+
+  const applyDraftPreview = () => {
+    if (!hasDraftPreview) {
+      return
+    }
+    const textarea = textareaRef.current
+    const cursor = textarea?.selectionStart ?? draft.markdown.length
+    const { markdown: nextMarkdown, cursor: nextCursor } = insertTaskDraftPreviewAtCursor(
+      draft.markdown,
+      draft.previewMarkdown,
+      cursor,
+    )
+    onDraftChange({ markdown: nextMarkdown, previewMarkdown: '' })
+    window.requestAnimationFrame(() => {
+      const nextTextarea = textareaRef.current
+      if (!nextTextarea) {
+        return
+      }
+      nextTextarea.focus()
+      nextTextarea.setSelectionRange(nextCursor, nextCursor)
+      if (isOverlay) {
+        syncOverlayTextareaHeight(nextTextarea)
+      }
+    })
+  }
+
+  const dismissDraftPreview = () => {
+    onDraftChange({ previewMarkdown: '' })
   }
 
   const selectStationAsPrimary = (stationId: string) => {
@@ -772,6 +819,12 @@ function TaskCenterPaneView({
               }
             }
 
+            if (event.key === 'Tab' && hasDraftPreview && !mentionVisible) {
+              event.preventDefault()
+              applyDraftPreview()
+              return
+            }
+
             if (event.key !== 'Enter') {
               return
             }
@@ -792,6 +845,75 @@ function TaskCenterPaneView({
           }}
         />
       </div>
+
+      {hasDraftPreview ? (
+        <div className="task-center-preview-card" role="note">
+          <div className="task-center-preview-head">
+            <span className="task-center-preview-label">
+              {t(locale, 'taskCenter.previewLabel')}
+            </span>
+            <span className="task-center-preview-hint">
+              {t(locale, 'taskCenter.previewHint')}
+            </span>
+          </div>
+          <p className="task-center-preview-text">{draft.previewMarkdown}</p>
+          <div className="task-center-preview-actions">
+            <button
+              type="button"
+              className="task-center-preview-apply"
+              onClick={applyDraftPreview}
+            >
+              {t(locale, 'taskCenter.previewApply')}
+            </button>
+            <button
+              type="button"
+              className="task-center-preview-dismiss"
+              onClick={dismissDraftPreview}
+              aria-label={t(locale, 'taskCenter.previewDismiss')}
+              title={t(locale, 'taskCenter.previewDismiss')}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {sendPreviewGroups.length > 0 ? (
+        <div
+          className={`task-center-append-preview ${suppressOutputCollection ? 'is-suppressed' : ''}`}
+          role="note"
+        >
+          <div className="task-center-append-preview-head">
+            <span className="task-center-append-preview-label">
+              {suppressOutputCollection
+                ? t(locale, 'taskCenter.appendPreviewSuppressedLabel')
+                : t(locale, 'taskCenter.appendPreviewLabel')}
+            </span>
+            {onSuppressOutputCollectionChange ? (
+              <label className="task-center-append-preview-suppress">
+                <input
+                  type="checkbox"
+                  checked={suppressOutputCollection}
+                  onChange={(event) => {
+                    onSuppressOutputCollectionChange(event.target.checked)
+                  }}
+                />
+                <span>{t(locale, 'taskCenter.appendPreviewSuppressToggle')}</span>
+              </label>
+            ) : null}
+          </div>
+          {sendPreviewGroups.map((group) => (
+            <div className="task-center-append-preview-group" key={group.appendedText}>
+              {sendPreviewGroups.length > 1 ? (
+                <span className="task-center-append-preview-targets">
+                  {group.targetAgentIds.map(resolveStationLabel).join(', ')}
+                </span>
+              ) : null}
+              <p className="task-center-append-preview-text">{group.appendedText}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className={`task-center-editor-footer ${isOverlay ? 'task-center-editor-footer--overlay' : ''}`}>
         {isOverlay ? targetPicker : null}

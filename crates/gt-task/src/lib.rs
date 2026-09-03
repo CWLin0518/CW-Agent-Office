@@ -50,6 +50,13 @@ pub struct TaskDispatchBatchRequest {
     pub attachments: Vec<TaskAttachment>,
     #[serde(default)]
     pub submit_sequences: HashMap<String, String>,
+    // Per-dispatch override, enforced by `dispatch_appended_sections`: when
+    // true, the output-collection instructions section is never appended for
+    // this call, regardless of any target's `output_collection_enabled`.
+    // Does not touch that per-agent setting itself — it only applies to this
+    // one send.
+    #[serde(default)]
+    pub suppress_output_collection_instructions: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +84,17 @@ pub struct TaskDispatchTargetResult {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDispatchPreviewTarget {
+    pub target_agent_id: String,
+    // Everything dispatch would append after the sender's own markdown for
+    // this target (output-collection instructions, etc.) — empty when this
+    // target's settings add nothing. Never includes the sender's own text,
+    // so a caller can show it as a separate "will also be sent" preview.
+    pub appended_text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1396,6 +1414,46 @@ impl TaskService {
         }
     }
 
+    // Read-only counterpart to `dispatch_batch_with_output_directories`: computes
+    // exactly what that call would silently append after the sender's markdown
+    // for each target, without writing to any terminal or touching the
+    // filesystem. Callers always send as a human here (Task Brief is the only
+    // caller), so the agent-to-agent reply-instruction section never applies —
+    // `dispatch_appended_sections` already encodes that via `sender_type`.
+    pub fn preview_dispatch_appended_sections(
+        &self,
+        workspace_id: &str,
+        targets: &[String],
+        output_directories: &HashMap<String, String>,
+        session_boundary_agents: &HashSet<String>,
+    ) -> Vec<TaskDispatchPreviewTarget> {
+        let synthetic_request = TaskDispatchBatchRequest {
+            workspace_id: workspace_id.to_string(),
+            sender: DispatchSender::default(),
+            targets: targets.to_vec(),
+            title: String::new(),
+            markdown: String::new(),
+            attachments: Vec::new(),
+            submit_sequences: HashMap::new(),
+            suppress_output_collection_instructions: false,
+        };
+        normalize_agent_ids(targets)
+            .into_iter()
+            .map(|target_agent_id| {
+                let sections = dispatch_appended_sections(
+                    &synthetic_request,
+                    "",
+                    output_directories.get(&target_agent_id),
+                    session_boundary_agents.contains(&target_agent_id),
+                );
+                TaskDispatchPreviewTarget {
+                    appended_text: sections.join("\n\n"),
+                    target_agent_id,
+                }
+            })
+            .collect()
+    }
+
     fn runtime_for(&self, workspace_id: &str, agent_id: &str) -> Option<AgentRuntimeRegistration> {
         let guard = self.state.read().ok()?;
         guard
@@ -1818,22 +1876,32 @@ fn build_managed_agent_reply_instruction(
     ))
 }
 
-fn enrich_dispatch_markdown(
-    markdown: &str,
+// Everything dispatch appends after the sender's own markdown — the reply
+// instruction (agent senders only) and the output-collection instructions
+// (targets with `output_collection_enabled`). Split out from
+// `enrich_dispatch_markdown` so a preview can compute exactly this, without
+// duplicating the template text (and risking it drifting from what actually
+// gets sent).
+fn dispatch_appended_sections(
     request: &TaskDispatchBatchRequest,
     task_id: &str,
     output_directory: Option<&String>,
     session_boundary_enabled: bool,
-) -> String {
+) -> Vec<String> {
     let mut sections = Vec::new();
-    let body = markdown.trim();
-    if !body.is_empty() {
-        sections.push(body.to_string());
-    }
     if let Some(reply_instruction) = build_managed_agent_reply_instruction(request, task_id) {
         sections.push(reply_instruction.trim().to_string());
     }
-    if let Some(output_directory) = output_directory {
+    // Self-enforcing regardless of caller: a caller that resolves real
+    // output-collection settings but still sets this flag (or forgets to
+    // special-case it) must not have that data leak into the appended text.
+    // `task_dispatch_batch` also skips resolving those settings in the first
+    // place when suppressed, purely as an optimization (no pointless
+    // `.gtoffice/agents/<id>/outputs` directory creation) — never rely on
+    // that as the actual enforcement point.
+    if let Some(output_directory) =
+        output_directory.filter(|_| !request.suppress_output_collection_instructions)
+    {
         // The `.claude/session-handoff` sentence below must never contradict
         // the CLAUDE.md/AGENTS.md guidance `session_boundary_guidance_block`
         // (apps/desktop-tauri/src-tauri/src/commands/agent.rs) writes for an
@@ -1852,6 +1920,27 @@ fn enrich_dispatch_markdown(
             "## GT Office Output\n\nThe managed output directory is available as `GTO_OUTPUT_DIR` (`{output_directory}`). Maintain this session's work record by appending important progress, decisions, changed files, and verification results to `GTO_LOG_FILE`. When a handoff is needed, replace the file at `GTO_HANDOFF_FILE`; it is the only GT Office handoff retained for this agent. If the user requests an additional deliverable such as Markdown, HTML, or JSON, write it as a separate file in `GTO_ARTIFACT_DIR`. {handoff_sentence}"
         ));
     }
+    sections
+}
+
+fn enrich_dispatch_markdown(
+    markdown: &str,
+    request: &TaskDispatchBatchRequest,
+    task_id: &str,
+    output_directory: Option<&String>,
+    session_boundary_enabled: bool,
+) -> String {
+    let mut sections = Vec::new();
+    let body = markdown.trim();
+    if !body.is_empty() {
+        sections.push(body.to_string());
+    }
+    sections.extend(dispatch_appended_sections(
+        request,
+        task_id,
+        output_directory,
+        session_boundary_enabled,
+    ));
     sections.join("\n\n")
 }
 
@@ -1873,6 +1962,7 @@ mod output_collection_tests {
             markdown: "Create a report".to_string(),
             attachments: vec![],
             submit_sequences: HashMap::new(),
+            suppress_output_collection_instructions: false,
         };
         let output_dir = "C:/project/.gtoffice/agents/agent-1/outputs".to_string();
         let enriched = enrich_dispatch_markdown(
@@ -1891,6 +1981,37 @@ mod output_collection_tests {
         assert!(enriched.contains("task-scoped execution paths"));
     }
 
+    #[test]
+    fn suppress_output_collection_instructions_wins_even_when_the_caller_still_resolves_real_settings(
+    ) {
+        // The Tauri command layer skips resolving output-collection settings
+        // when this flag is set, purely as an optimization — but the flag
+        // must be self-enforcing at this layer too, for any caller (present
+        // or future) that resolves real settings anyway and passes them in
+        // regardless.
+        let request = TaskDispatchBatchRequest {
+            workspace_id: "ws-1".to_string(),
+            sender: DispatchSender::default(),
+            targets: vec!["agent-1".to_string()],
+            title: "Report".to_string(),
+            markdown: "Create a report".to_string(),
+            attachments: vec![],
+            submit_sequences: HashMap::new(),
+            suppress_output_collection_instructions: true,
+        };
+        let output_dir = "C:/project/.gtoffice/agents/agent-1/outputs".to_string();
+        let enriched = enrich_dispatch_markdown(
+            &request.markdown,
+            &request,
+            "task-1",
+            Some(&output_dir),
+            false,
+        );
+        assert_eq!(enriched, "Create a report");
+        assert!(!enriched.contains("GTO_OUTPUT_DIR"));
+        assert!(!enriched.contains(&output_dir));
+    }
+
     // Regression test for docs/cw/19_輸出收集與SessionBoundary訊息衝突排查.md: when an agent has BOTH
     // output_collection_enabled and session_boundary_auto_split_enabled on,
     // the output-collection guidance must not tell it to leave
@@ -1907,6 +2028,7 @@ mod output_collection_tests {
             markdown: "Create a report".to_string(),
             attachments: vec![],
             submit_sequences: HashMap::new(),
+            suppress_output_collection_instructions: false,
         };
         let output_dir = "C:/project/.gtoffice/agents/agent-1/outputs".to_string();
         let enriched = enrich_dispatch_markdown(
@@ -1922,6 +2044,59 @@ mod output_collection_tests {
             !enriched.contains("Do not copy, move, or delete files in `.claude/session-handoff`")
         );
         assert!(!enriched.contains("task-scoped execution paths"));
+    }
+
+    #[test]
+    fn preview_appended_sections_matches_what_dispatch_would_actually_append() {
+        let service = TaskService::default();
+        let output_directories: HashMap<String, String> = [(
+            "agent-1".to_string(),
+            "C:/project/.gtoffice/agents/agent-1/outputs".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let session_boundary_agents: HashSet<String> = HashSet::new();
+
+        let previews = service.preview_dispatch_appended_sections(
+            "ws-1",
+            &["agent-1".to_string(), "agent-2".to_string()],
+            &output_directories,
+            &session_boundary_agents,
+        );
+
+        let agent_1 = previews
+            .iter()
+            .find(|preview| preview.target_agent_id == "agent-1")
+            .expect("agent-1 preview present");
+        assert!(agent_1.appended_text.contains("GTO_OUTPUT_DIR"));
+        // Must never leak the sender's own markdown into the appended text —
+        // a preview is only what dispatch adds on top of it.
+        assert!(!agent_1
+            .appended_text
+            .contains("this markdown must never appear"));
+
+        let agent_2 = previews
+            .iter()
+            .find(|preview| preview.target_agent_id == "agent-2")
+            .expect("agent-2 preview present");
+        assert_eq!(agent_2.appended_text, "");
+    }
+
+    #[test]
+    fn preview_never_includes_the_agent_reply_instruction_since_task_brief_always_sends_as_human() {
+        // preview_dispatch_appended_sections always builds its synthetic
+        // request with the default (Human) sender — this locks that in, since
+        // the reply-instruction block only makes sense for agent-to-agent
+        // dispatch and Task Brief (its only caller) is always human-authored.
+        let service = TaskService::default();
+        let previews = service.preview_dispatch_appended_sections(
+            "ws-1",
+            &["agent-1".to_string()],
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].appended_text, "");
     }
 }
 
@@ -1975,6 +2150,7 @@ mod p3_execution_policy_tests {
             markdown: "do the thing".to_string(),
             attachments: Vec::new(),
             submit_sequences: HashMap::new(),
+            suppress_output_collection_instructions: false,
         };
 
         let outcome = service.dispatch_batch(&request, Path::new("."), |_, _, _| Ok(()));
@@ -2020,6 +2196,7 @@ mod p3_execution_policy_tests {
             markdown: "do the thing".to_string(),
             attachments: Vec::new(),
             submit_sequences: HashMap::new(),
+            suppress_output_collection_instructions: false,
         };
 
         let outcome = service.dispatch_batch(&request, Path::new("."), |_, _, _| Ok(()));
@@ -2080,6 +2257,7 @@ mod p4_agent_canvas_tests {
             markdown: "do the thing".to_string(),
             attachments: Vec::new(),
             submit_sequences: HashMap::new(),
+            suppress_output_collection_instructions: false,
         };
         let outcome = service.dispatch_batch(&request, Path::new("."), |_, _, _| Ok(()));
         assert_eq!(outcome.response.results[0].status, TaskDispatchStatus::Sent);

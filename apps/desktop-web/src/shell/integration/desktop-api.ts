@@ -1850,6 +1850,10 @@ export interface TaskDispatchBatchRequest {
   markdown: string
   attachments: TaskDispatchAttachmentPayload[]
   submitSequences?: Record<string, string>
+  // Per-send override: skip appending output-collection instructions for
+  // this dispatch only. Never touches the target agent's own
+  // outputCollectionEnabled setting.
+  suppressOutputCollectionInstructions?: boolean
 }
 
 export interface TaskDispatchBatchResult {
@@ -1863,6 +1867,23 @@ export interface TaskDispatchBatchResult {
 export interface TaskDispatchBatchResponse {
   batchId: string
   results: TaskDispatchBatchResult[]
+}
+
+export interface TaskDispatchPreviewRequest {
+  workspaceId: string
+  targets: string[]
+}
+
+export interface TaskDispatchPreviewTarget {
+  targetAgentId: string
+  // Everything dispatch would append after the sender's own markdown for
+  // this target (output-collection instructions, etc.) — '' when this
+  // target's settings add nothing.
+  appendedText: string
+}
+
+export interface TaskDispatchPreviewResponse {
+  targets: TaskDispatchPreviewTarget[]
 }
 
 export type AgentState = 'ready' | 'paused' | 'blocked' | 'terminated'
@@ -4362,6 +4383,15 @@ export const desktopApi = {
         markdown: request.markdown,
         attachments: request.attachments,
         submitSequences: request.submitSequences ?? {},
+        suppressOutputCollectionInstructions: request.suppressOutputCollectionInstructions ?? false,
+      },
+    })
+  },
+  taskDispatchPreview(request: TaskDispatchPreviewRequest) {
+    return invokeCommand<TaskDispatchPreviewResponse>('task_dispatch_preview', {
+      request: {
+        workspaceId: request.workspaceId,
+        targets: request.targets,
       },
     })
   },

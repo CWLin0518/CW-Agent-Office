@@ -7,6 +7,7 @@ import {
   createInitialTaskDraft,
   parseTaskCenterWorkspaceSnapshot,
   serializeTaskCenterWorkspaceSnapshot,
+  splitRestoredTaskDraftIntoPreview,
   type TaskCenterNotice,
   type TaskDispatchRecord,
   type TaskDraftState,
@@ -172,7 +173,7 @@ export function useTaskCenterDraftPersistence({
       if (snapshotFromStorage) {
         setTaskDraft(
           applyFollowActiveAgentToDraft(
-            snapshotFromStorage.draft,
+            splitRestoredTaskDraftIntoPreview(snapshotFromStorage.draft),
             stations,
             activeStationIdRef.current,
           ),

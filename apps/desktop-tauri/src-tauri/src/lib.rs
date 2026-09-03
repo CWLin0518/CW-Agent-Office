@@ -281,6 +281,7 @@ pub fn run() {
             tool_adapter::tool_profiles::tool_validate_profile,
             task_center::task_list,
             task_center::task_dispatch_batch,
+            task_center::task_dispatch_preview,
             task_center::task_list_threads,
             task_center::task_get_thread,
             task_center::channel_publish,

@@ -2,12 +2,53 @@ import type { AgentStation } from '@features/workspace-hub'
 
 export interface TaskDraftState {
   markdown: string
+  // A previously unsent draft restored from storage. Kept out of `markdown`
+  // so it never gets silently combined with newly typed text — the editor
+  // only pulls it in when the user explicitly accepts it (Tab), mirroring
+  // the CLI's own ghost-text-suggestion pattern.
+  previewMarkdown: string
   targetStationIds: string[]
 }
 
 export interface TaskCenterNotice {
   kind: 'info' | 'success' | 'error'
   message: string
+}
+
+// Structurally matches desktop-api.ts's TaskDispatchPreviewTarget without
+// importing it, so this model stays free of Tauri-runtime-specific types.
+export interface TaskSendPreviewTarget {
+  targetAgentId: string
+  appendedText: string
+}
+
+export interface TaskSendPreviewGroup {
+  appendedText: string
+  targetAgentIds: string[]
+}
+
+// Groups targets by the exact text dispatch would append after the sender's
+// own markdown, so identically-configured targets render as one preview
+// block instead of one per agent. Targets with nothing appended are dropped.
+export function groupTaskSendPreviewTargets(
+  targets: TaskSendPreviewTarget[],
+): TaskSendPreviewGroup[] {
+  const groups: TaskSendPreviewGroup[] = []
+  const groupIndexByText = new Map<string, number>()
+  targets.forEach(({ targetAgentId, appendedText }) => {
+    const trimmed = appendedText.trim()
+    if (!trimmed) {
+      return
+    }
+    const existingIndex = groupIndexByText.get(trimmed)
+    if (existingIndex !== undefined) {
+      groups[existingIndex].targetAgentIds.push(targetAgentId)
+      return
+    }
+    groupIndexByText.set(trimmed, groups.length)
+    groups.push({ appendedText: trimmed, targetAgentIds: [targetAgentId] })
+  })
+  return groups
 }
 
 export type TaskDispatchStatus = 'sending' | 'sent' | 'failed'
@@ -68,7 +109,43 @@ export function createInitialTaskDraft(
   const fallback = stations[0]?.id ?? ''
   return {
     markdown: '',
+    previewMarkdown: '',
     targetStationIds: hasActive ? [activeStationId] : fallback ? [fallback] : [],
+  }
+}
+
+const TASK_DRAFT_PREVIEW_MERGE_SEPARATOR = '\n\n---\n\n'
+
+// Splits a restored draft into a fresh empty editor plus a recallable preview,
+// so a stale/unsent draft from a previous session never re-merges into new
+// typing unnoticed. Merges the restored `markdown` (most recent unsent
+// content) with any previously-restored, never-consumed preview — neither is
+// dropped silently, since a user may have left the last session with both an
+// in-progress edit and an untouched preview still sitting around.
+export function splitRestoredTaskDraftIntoPreview(draft: TaskDraftState): TaskDraftState {
+  const parts = [draft.previewMarkdown, draft.markdown]
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+  return {
+    ...draft,
+    markdown: '',
+    previewMarkdown: parts.join(TASK_DRAFT_PREVIEW_MERGE_SEPARATOR),
+  }
+}
+
+// Inserts the preview text at the given cursor position in the current
+// markdown, returning the new value and the cursor position just after the
+// inserted text (so the caller can restore selection/focus).
+export function insertTaskDraftPreviewAtCursor(
+  markdown: string,
+  previewMarkdown: string,
+  cursor: number,
+): { markdown: string; cursor: number } {
+  const safeCursor = Math.max(0, Math.min(cursor, markdown.length))
+  const nextMarkdown = markdown.slice(0, safeCursor) + previewMarkdown + markdown.slice(safeCursor)
+  return {
+    markdown: nextMarkdown,
+    cursor: safeCursor + previewMarkdown.length,
   }
 }
 
@@ -232,6 +309,7 @@ export function buildTaskCenterWorkspaceSnapshot(input: {
     updatedAtMs: input.updatedAtMs,
     draft: {
       markdown: input.draft.markdown,
+      previewMarkdown: input.draft.previewMarkdown,
       targetStationIds: dedupeStationIds(input.draft.targetStationIds),
     },
     dispatchHistory: [...input.dispatchHistory],
@@ -279,6 +357,8 @@ export function parseTaskCenterWorkspaceSnapshot(
           ? `# ${draft.title.trim()}\n\n`
           : ''
 
+    const previewMarkdown = typeof draft.previewMarkdown === 'string' ? draft.previewMarkdown : ''
+
     const dispatchHistory = dispatchHistoryRaw.map((item) => ({
       ...item,
       batchId: typeof item.batchId === 'string' ? item.batchId : item.taskId,
@@ -292,6 +372,7 @@ export function parseTaskCenterWorkspaceSnapshot(
         typeof record.updatedAtMs === 'number' ? record.updatedAtMs : Date.now(),
       draft: {
         markdown,
+        previewMarkdown,
         targetStationIds: dedupeStationIds(targetStationIdsRaw),
       },
       dispatchHistory: dispatchHistory.slice(0, 40),

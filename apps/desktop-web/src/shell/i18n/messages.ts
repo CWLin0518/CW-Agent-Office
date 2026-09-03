@@ -679,6 +679,25 @@ export const messages = {
     'zh-CN': '可直接输入 Markdown，支持 @文件名 快速引用',
     'en-US': 'Use Markdown directly. Type @ to reference files quickly.',
   },
+  'taskCenter.previewLabel': { 'zh-CN': '上次未发送的草稿', 'en-US': 'Last unsent draft' },
+  'taskCenter.previewHint': {
+    'zh-CN': '按 Tab 带入，不会自动加入发送内容',
+    'en-US': 'Press Tab to bring in — never sent automatically',
+  },
+  'taskCenter.previewApply': { 'zh-CN': '带入', 'en-US': 'Insert' },
+  'taskCenter.previewDismiss': { 'zh-CN': '丢弃草稿', 'en-US': 'Discard draft' },
+  'taskCenter.appendPreviewLabel': {
+    'zh-CN': '送出时会自动附加（只读，来自目标 Agent 设定）',
+    'en-US': 'Auto-attached on send (read-only, from target agent settings)',
+  },
+  'taskCenter.appendPreviewSuppressedLabel': {
+    'zh-CN': '本次送出将略过下列内容',
+    'en-US': 'This send will skip the following',
+  },
+  'taskCenter.appendPreviewSuppressToggle': {
+    'zh-CN': '这次不附加',
+    'en-US': "Don't attach this time",
+  },
   'taskCenter.template.heading': { 'zh-CN': '标题模板', 'en-US': 'Heading Template' },
   'taskCenter.template.code': { 'zh-CN': '代码块模板', 'en-US': 'Code Template' },
   'taskCenter.template.checklist': { 'zh-CN': '清单模板', 'en-US': 'Checklist Template' },
@@ -1577,6 +1596,11 @@ export const messages = {
   'system.sessionBoundaryRestartFailed': {
     'zh-CN': '[系统] 自动重启失败: {detail}\n',
     'en-US': '[system] automatic restart failed: {detail}\n',
+  },
+  'system.sessionBoundaryResumePrompt': {
+    'zh-CN': 'Session 已由 GT Office 自动重启。请依照系统提示词中「任务边界自动重启」的规则，检查 .claude/session-handoff/ 目录，接续前一阶段的工作。',
+    'en-US':
+      'This session was auto-restarted by GT Office. Follow your system prompt\'s session-boundary auto-restart guidance: check .claude/session-handoff/ and continue from the previous phase.',
   },
   'system.killSkippedNoRuntime': {
     'zh-CN': '[系统] 当前为 Web 预览，未执行会话终止: {sessionId}\n',

@@ -2789,6 +2789,7 @@ Approve this identity in Channel settings or switch policy to open."
         markdown: message.text.clone(),
         attachments: Vec::new(),
         submit_sequences: std::collections::HashMap::new(),
+        suppress_output_collection_instructions: false,
     };
     let outcome = state.task_service.dispatch_batch(
         &dispatch_request,

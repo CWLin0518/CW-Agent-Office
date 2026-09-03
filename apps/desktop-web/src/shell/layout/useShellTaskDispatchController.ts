@@ -13,6 +13,7 @@ import {
   type TaskCenterNotice,
   type TaskDispatchRecord,
   type TaskDraftState,
+  type TaskSendPreviewTarget,
 } from '@features/task-center'
 import type { AgentStation } from '@features/workspace-hub'
 import type { Locale } from '../i18n/ui-locale'
@@ -53,6 +54,9 @@ export interface ShellTaskDispatchController {
   taskRetryingTaskId: string | null
   taskDraftSavedAtMs: number | null
   taskNotice: TaskCenterNotice | null
+  taskSendPreviewTargets: TaskSendPreviewTarget[]
+  taskSuppressOutputCollection: boolean
+  setTaskSuppressOutputCollection: React.Dispatch<React.SetStateAction<boolean>>
   setTaskDraft: React.Dispatch<React.SetStateAction<TaskDraftState>>
   setTaskDispatchHistory: React.Dispatch<React.SetStateAction<TaskDispatchRecord[]>>
   setTaskSending: React.Dispatch<React.SetStateAction<boolean>>
@@ -90,6 +94,12 @@ export function useShellTaskDispatchController({
   const [taskRetryingTaskId, setTaskRetryingTaskId] = useState<string | null>(null)
   const [taskDraftSavedAtMs, setTaskDraftSavedAtMs] = useState<number | null>(null)
   const [taskNotice, setTaskNotice] = useState<TaskCenterNotice | null>(null)
+  const [taskSendPreviewTargets, setTaskSendPreviewTargets] = useState<TaskSendPreviewTarget[]>([])
+  // Per-send override for the "will also be sent" preview card — resets each
+  // session (not persisted with the draft) since it's a one-off choice, not a
+  // lasting preference. The target's own outputCollectionEnabled setting is
+  // untouched; this only affects the next dispatch.
+  const [taskSuppressOutputCollection, setTaskSuppressOutputCollection] = useState(false)
 
   // --- Derived ---
   const taskCenterDraftFilePath = useMemo(() => buildTaskCenterDraftFilePath(), [])
@@ -143,6 +153,38 @@ export function useShellTaskDispatchController({
       }
     })
   }, [activeStationId, setTaskDraft, stationsRef])
+
+  // Live preview of what dispatch would silently append after the sender's
+  // own markdown (output-collection instructions, etc. — see
+  // crates/gt-task's `dispatch_appended_sections`), so Task Brief can show it
+  // before send instead of it only showing up in the terminal afterward.
+  // Depends only on the target selection, never on `taskDraft.markdown` —
+  // the appended text is derived purely from each target's own settings.
+  useEffect(() => {
+    let cancelled = false
+    const targets = taskDraft.targetStationIds
+    // Route the "nothing to fetch" case through the same promise chain as the
+    // real fetch, so every `setTaskSendPreviewTargets` call happens inside a
+    // `.then`/`.catch` callback rather than synchronously in the effect body.
+    const fetchPreview =
+      tauriRuntime && activeWorkspaceId && targets.length > 0
+        ? desktopApi.taskDispatchPreview({ workspaceId: activeWorkspaceId, targets })
+        : Promise.resolve<{ targets: TaskSendPreviewTarget[] }>({ targets: [] })
+    void fetchPreview
+      .then((response) => {
+        if (!cancelled) {
+          setTaskSendPreviewTargets(response.targets)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTaskSendPreviewTargets([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [tauriRuntime, activeWorkspaceId, taskDraft.targetStationIds])
 
   // --- Callbacks ---
 
@@ -277,6 +319,7 @@ export function useShellTaskDispatchController({
         title: input.title,
         markdown: input.markdown,
         attachments: [],
+        suppressOutputCollectionInstructions: taskSuppressOutputCollection,
       })
       const postSubmitResults = await Promise.all(
         response.results.map(async (result) => {
@@ -299,7 +342,7 @@ export function useShellTaskDispatchController({
         results: postSubmitResults,
       }
     },
-    [submitStationTerminal],
+    [submitStationTerminal, taskSuppressOutputCollection],
   )
 
   const {
@@ -344,6 +387,9 @@ export function useShellTaskDispatchController({
     taskRetryingTaskId,
     taskDraftSavedAtMs,
     taskNotice,
+    taskSendPreviewTargets,
+    taskSuppressOutputCollection,
+    setTaskSuppressOutputCollection,
     setTaskDraft,
     setTaskDispatchHistory,
     setTaskSending,

@@ -153,6 +153,50 @@ pub fn task_list(scope: Option<String>) -> Result<Value, String> {
     Ok(json!({ "scope": scope.unwrap_or_else(|| "global".to_string()), "tasks": [] }))
 }
 
+// Shared by `task_dispatch_batch` and `task_dispatch_preview` so the two
+// commands can never disagree about which targets get output-collection /
+// session-boundary treatment — that would silently reintroduce the exact
+// preview-vs-reality drift `task_dispatch_preview` exists to prevent.
+// `create_output_dirs` is false for the preview path: a preview must not
+// have filesystem side effects.
+fn resolve_dispatch_target_settings(
+    app: &AppHandle,
+    workspace_root: &std::path::Path,
+    workspace_id: &str,
+    targets: &[String],
+    create_output_dirs: bool,
+) -> Result<(HashMap<String, String>, std::collections::HashSet<String>), String> {
+    let repo = crate::commands::agent::resolve_agent_repository(app)?;
+    repo.ensure_schema().map_err(|error| error.to_string())?;
+    let target_ids: std::collections::HashSet<&String> = targets.iter().collect();
+    let mut output_directories = HashMap::new();
+    let mut session_boundary_agents = std::collections::HashSet::new();
+    for agent in repo
+        .list_agents(workspace_id)
+        .map_err(|error| error.to_string())?
+    {
+        if !target_ids.contains(&agent.id) {
+            continue;
+        }
+        if agent.session_boundary_auto_split_enabled {
+            session_boundary_agents.insert(agent.id.clone());
+        }
+        if agent.output_collection_enabled {
+            let output_dir = workspace_root
+                .join(".gtoffice")
+                .join("agents")
+                .join(&agent.id)
+                .join("outputs");
+            if create_output_dirs {
+                std::fs::create_dir_all(&output_dir)
+                    .map_err(|error| format!("AGENT_OUTPUT_DIR_CREATE_FAILED: {error}"))?;
+            }
+            output_directories.insert(agent.id, output_dir.to_string_lossy().into_owned());
+        }
+    }
+    Ok((output_directories, session_boundary_agents))
+}
+
 #[tauri::command]
 pub fn task_dispatch_batch(
     request: TaskDispatchBatchRequest,
@@ -170,31 +214,26 @@ pub fn task_dispatch_batch(
     }
 
     let workspace_root = state.workspace_root_path(&request.workspace_id)?;
-    let repo = crate::commands::agent::resolve_agent_repository(&app)?;
-    repo.ensure_schema().map_err(|error| error.to_string())?;
-    let mut output_directories = HashMap::new();
-    let mut session_boundary_agents = std::collections::HashSet::new();
-    for agent in repo
-        .list_agents(&request.workspace_id)
-        .map_err(|error| error.to_string())?
-    {
-        if !request.targets.contains(&agent.id) {
-            continue;
-        }
-        if agent.session_boundary_auto_split_enabled {
-            session_boundary_agents.insert(agent.id.clone());
-        }
-        if agent.output_collection_enabled {
-            let output_dir = workspace_root
-                .join(".gtoffice")
-                .join("agents")
-                .join(&agent.id)
-                .join("outputs");
-            std::fs::create_dir_all(&output_dir)
-                .map_err(|error| format!("AGENT_OUTPUT_DIR_CREATE_FAILED: {error}"))?;
-            output_directories.insert(agent.id, output_dir.to_string_lossy().into_owned());
-        }
-    }
+    // `suppress_output_collection_instructions` is a per-send override from
+    // Task Brief's checkbox — it must never touch the target's own
+    // `output_collection_enabled` setting. `dispatch_appended_sections`
+    // (crates/gt-task) is the actual enforcement point and honors this flag
+    // on its own regardless of what's passed here; skipping the resolve call
+    // below is purely an optimization when we already know the result will
+    // be discarded — it avoids an unnecessary agent-repo query and
+    // `.gtoffice/agents/<id>/outputs` directory creation, nothing more.
+    let (output_directories, session_boundary_agents) =
+        if request.suppress_output_collection_instructions {
+            (HashMap::new(), std::collections::HashSet::new())
+        } else {
+            resolve_dispatch_target_settings(
+                &app,
+                &workspace_root,
+                &request.workspace_id,
+                &request.targets,
+                true,
+            )?
+        };
     let outcome = state.task_service.dispatch_batch_with_output_directories(
         &request,
         &workspace_root,
@@ -214,6 +253,50 @@ pub fn task_dispatch_batch(
     );
 
     serde_json::to_value(outcome.response).map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDispatchPreviewRequest {
+    pub workspace_id: String,
+    pub targets: Vec<String>,
+}
+
+// Read-only counterpart to `task_dispatch_batch`: same target-settings lookup
+// (via `resolve_dispatch_target_settings`, `create_output_dirs: false`), but
+// no terminal write and no directory creation. Lets the UI show exactly what
+// dispatch would silently append after the sender's own markdown, before
+// it's sent.
+#[tauri::command]
+pub fn task_dispatch_preview(
+    request: TaskDispatchPreviewRequest,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    if request.workspace_id.trim().is_empty() {
+        return Err("TASK_DISPATCH_PREVIEW_INVALID: workspaceId is required".to_string());
+    }
+    if request.targets.is_empty() {
+        return Ok(json!({ "targets": [] }));
+    }
+
+    let workspace_root = state.workspace_root_path(&request.workspace_id)?;
+    let (output_directories, session_boundary_agents) = resolve_dispatch_target_settings(
+        &app,
+        &workspace_root,
+        &request.workspace_id,
+        &request.targets,
+        false,
+    )?;
+
+    let targets = state.task_service.preview_dispatch_appended_sections(
+        &request.workspace_id,
+        &request.targets,
+        &output_directories,
+        &session_boundary_agents,
+    );
+
+    Ok(json!({ "targets": targets }))
 }
 
 #[tauri::command]

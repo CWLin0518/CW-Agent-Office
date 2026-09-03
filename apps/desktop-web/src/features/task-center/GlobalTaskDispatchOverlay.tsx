@@ -8,6 +8,7 @@ import type {
   TaskCenterNotice,
   TaskDraftState,
   TaskMarkdownSnippet,
+  TaskSendPreviewTarget,
 } from './task-center-model'
 import type { TaskMentionFileCandidate } from './TaskCenterPane'
 import { TaskCenterPane } from './TaskCenterPane'
@@ -75,6 +76,9 @@ interface GlobalTaskDispatchOverlayProps {
   mentionCandidates: TaskMentionFileCandidate[]
   mentionLoading: boolean
   mentionError: string | null
+  sendPreviewTargets?: TaskSendPreviewTarget[]
+  suppressOutputCollection?: boolean
+  onSuppressOutputCollectionChange?: (value: boolean) => void
   shortcutLabel: string
   opacity: number
   onClose: () => void
@@ -99,6 +103,9 @@ function GlobalTaskDispatchOverlayView({
   mentionCandidates,
   mentionLoading,
   mentionError,
+  sendPreviewTargets,
+  suppressOutputCollection,
+  onSuppressOutputCollectionChange,
   shortcutLabel,
   opacity,
   onClose,
@@ -610,6 +617,9 @@ function GlobalTaskDispatchOverlayView({
             mentionCandidates={mentionCandidates}
             mentionLoading={mentionLoading}
             mentionError={mentionError}
+            sendPreviewTargets={sendPreviewTargets}
+            suppressOutputCollection={suppressOutputCollection}
+            onSuppressOutputCollectionChange={onSuppressOutputCollectionChange}
             onDraftChange={onDraftChange}
             onInsertSnippet={onInsertSnippet}
             onSendTask={onSendTask}
