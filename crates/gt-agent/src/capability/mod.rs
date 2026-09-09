@@ -15,7 +15,7 @@ pub use materialize::*;
 /// rather than normalized tables because the shape of these three things
 /// tracks upstream Claude Code / Codex CLI churn (especially hook event
 /// types) faster than a migration-per-field would be worth.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCapabilitySnapshot {
     #[serde(default)]
@@ -24,6 +24,37 @@ pub struct AgentCapabilitySnapshot {
     pub skills: Vec<SkillCapability>,
     #[serde(default)]
     pub hooks: Vec<HookCapability>,
+    /// Whether this agent inherits the user's real global Claude Code
+    /// config (global `~/.claude/settings.json` hooks/permissions/env and
+    /// global `~/.claude/skills/*`) in addition to whatever's mounted here.
+    /// Defaults to `true` (today's behavior, unchanged) both via `#[serde(default = ...)]`
+    /// (old stored snapshots missing this key) and via the hand-written
+    /// `Default` impl below (a brand-new agent that has never saved a
+    /// capability snapshot gets `AgentCapabilitySnapshot::default()` from
+    /// `SqliteAgentRepository::get_agent_capability` — deriving `Default`
+    /// here would silently give new agents `false`, the opposite of intent).
+    /// `false` means `apply_capability_overlay` (crates/gt-agent-session/src/resume.rs)
+    /// appends `--setting-sources project,local` to the Claude launch
+    /// command, so only what's explicitly mounted below (plus
+    /// project/local settings files) applies — see
+    /// docs/cw/21_全域Hook_Skill開關設計.md.
+    #[serde(default = "default_global_capabilities_enabled")]
+    pub global_capabilities_enabled: bool,
+}
+
+fn default_global_capabilities_enabled() -> bool {
+    true
+}
+
+impl Default for AgentCapabilitySnapshot {
+    fn default() -> Self {
+        Self {
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            hooks: Vec::new(),
+            global_capabilities_enabled: default_global_capabilities_enabled(),
+        }
+    }
 }
 
 impl AgentCapabilitySnapshot {

@@ -2158,10 +2158,17 @@ export interface AgentCapabilitySnapshot {
   mcpServers: McpServerCapability[]
   skills: SkillCapability[]
   hooks: HookCapability[]
+  /** Whether this agent inherits the user's real global Claude Code config
+   * (global `~/.claude/settings.json` hooks/permissions/env and global
+   * `~/.claude/skills/*`) in addition to what's mounted here. Defaults to
+   * `true` (today's behavior). `false` excludes the user's global settings
+   * source at launch — only project/local settings and whatever's
+   * explicitly mounted above still apply. */
+  globalCapabilitiesEnabled: boolean
 }
 
 export function createDefaultAgentCapability(): AgentCapabilitySnapshot {
-  return { mcpServers: [], skills: [], hooks: [] }
+  return { mcpServers: [], skills: [], hooks: [], globalCapabilitiesEnabled: true }
 }
 
 export interface AgentCapabilityReadRequest {

@@ -51,7 +51,17 @@ pub(crate) fn materialize_capability_for_launch(
             return None;
         }
     };
-    if snapshot.mcp_servers.is_empty() && snapshot.skills.is_empty() && snapshot.hooks.is_empty() {
+    // `global_capabilities_enabled` must NOT be folded into this
+    // short-circuit on its own — an agent with everything else empty but
+    // this flag off still needs `materialize_claude_capability` to run so
+    // `apply_capability_overlay` (crates/gt-agent-session/src/resume.rs)
+    // gets a `MaterializedPaths` to read `--setting-sources project,local`
+    // off of (docs/cw/21_全域Hook_Skill開關設計.md).
+    if snapshot.mcp_servers.is_empty()
+        && snapshot.skills.is_empty()
+        && snapshot.hooks.is_empty()
+        && snapshot.global_capabilities_enabled
+    {
         return None;
     }
 

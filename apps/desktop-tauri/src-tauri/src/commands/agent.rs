@@ -367,6 +367,14 @@ const SESSION_BOUNDARY_GUIDANCE_END: &str = "<!-- gtoffice:session-boundary-guid
 /// `new_session` — so it can't collide with the user's global
 /// `session-boundary-trigger` PostToolUse hook, which only reacts to
 /// `new_session` and opens a separate card instead of restarting this one.
+///
+/// `SESSION_BOUNDARY_GUIDANCE_START` also doubles as the enablement signal
+/// for the user's global `~/.claude/hooks/session-boundary-checklist.js`
+/// Stop hook (docs/cw/20_SessionBoundary自動判斷Stop_Hook設計.md — outside
+/// this repo, not checked in): that hook only forces a boundary re-check
+/// when this marker is present in the station's CLAUDE.md/AGENTS.md. If you
+/// change the wording of the boundary rules below, check whether that
+/// hook's own copy of the checklist needs the same update.
 fn session_boundary_guidance_block() -> String {
     format!(
         "{SESSION_BOUNDARY_GUIDANCE_START}\n\
@@ -379,11 +387,38 @@ Session 啟動時，先用 `ls -la .claude/session-handoff/` 檢查你目前的�
 進來的，直接讀取內容、依裡面的下一階段目標接續執行，不需要等待使用者重新\n\
 下達指令；目錄不存在、是空的、或最近的檔案時間對不上，就正常等待使用者輸入。\n\
 \n\
-在多步驟工作中主動判斷任務邊界。符合以下任一條件即代表到達邊界：下一階段\n\
-目標不同、上一階段已達穩定檢查點、不需要延續目前階段的詳細推理過程、進入\n\
-code review 階段、設計轉為實作、實作轉為獨立驗證、目前累積的上下文對下一\n\
-階段幾乎沒有價值、跨越主要子系統邊界。單純除錯同一個問題、實作緊密耦合的\n\
-檔案、或需要目前階段的詳細暫時上下文時，不算到達邊界。\n\
+在多步驟工作中主動判斷任務邊界，不要只看抽象敘述，逐條核對是否符合具體\n\
+情境。\n\
+\n\
+第一步：這一輪你剛完成的，是不是下列任一種「已完成、且達到穩定狀態」的\n\
+產出？只要符合其中一項，就代表已經完成了一個可以交接的獨立段落——不需要\n\
+等到整個任務全部做完才算數，多階段任務裡每完成一個獨立階段/子項目都要\n\
+重新走一次這個檢查：(a) 完成多步驟計畫、TODO 或使用者交辦清單裡的其中\n\
+一項，且產出已經穩定（可執行、測試通過、文件寫完），不論清單上還有沒有\n\
+其他項目未做、也不論下一項是不是這個大任務裡「理所當然的下一步」——這點\n\
+本身不構成不檢查的理由；(b) 完成一段有明確目的的程式碼變更，處於可編譯/\n\
+可執行/可通過既有測試的狀態，即使還沒進到下一個功能；即使改動很小、\n\
+耗時很短，只要已達可驗證的穩定狀態也算完整段落，不要因為「事情很小」\n\
+跳過檢查；(c) 這一輪回覆的\n\
+內容是在處理由另一個 Agent 或終端機透過任務派發指派給你的工作（不是使用\n\
+者本人直接輸入的指示），且已完成、手上沒有對方交代的下一步；(d) 從一個\n\
+階段換到另一個階段：規劃/設計轉寫程式、寫程式轉測試或 review、除錯完\n\
+回頭做原本被中斷的功能；(e) 接下來要做的事跟目前累積的推理過程/上下文\n\
+幾乎沒有關聯，一個全新 session 只讀交接檔就能無縫接手。一項都不符合就\n\
+還沒到邊界，回覆一句「尚未到達任務邊界，繼續執行」即可。\n\
+\n\
+第二步：符合第一步任一項時，預設視為到達邊界，只有以下明確定義的例外才\n\
+不算——你現在正在改的是同一個函式/同一個 bug 還沒寫完的半成品，中斷會\n\
+留下編譯不過或邏輯不完整的狀態，下一個 session 光看交接檔無法還原這個\n\
+未完成的中間狀態，一定要接續你腦中還記得的細節才能收尾。「這是大任務裡\n\
+邏輯上的下一步」不算例外，即使技術上\n\
+相關——例如五步驟重構做完第 2 步，只要第 2 步本身已是可編譯、可獨立驗證\n\
+的穩定狀態，第 3 步即使是順理成章的下一步，仍要當作邊界處理。使用者或\n\
+派工者已明確要求「這批做完直接接著做下一批、不用交接」時，例外才成立。\n\
+情境 (c) 幾乎不該落入這個例外——你完成的工作只存在於你自己這個 session\n\
+裡，派工你的 Agent/終端機不會自動知道你做完了，除非你寫出交接訊號讓\n\
+GT Office 重啟這個 session，對方會一直以為你還在做，除非派工訊息明講\n\
+「完成後留著、不用交接、我會接著丟下一批給你」。\n\
 \n\
 判定已到達邊界、且目前階段的工作已經穩定完成時，用 Write 工具把交接內容\n\
 寫到**你目前的工作目錄**（這個 session 啟動時所在的資料夾，不是整個專案／\n\

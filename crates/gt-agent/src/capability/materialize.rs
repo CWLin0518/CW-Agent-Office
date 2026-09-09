@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use gt_tools::agent_installer::ProviderCapabilitySupport;
 use serde_json::{json, Value};
 
-use super::{AgentCapabilitySnapshot, HookCapability, McpServerCapability, McpTransport};
+use super::{
+    default_global_capabilities_enabled, AgentCapabilitySnapshot, HookCapability,
+    McpServerCapability, McpTransport,
+};
 
 /// Where materialize() wrote things, for `resume.rs` (docs/cw/08_MCP_Hook_Skill掛載設計.md
 /// §2.4) to fold into the launch command. `None` on a field means "this
@@ -30,6 +33,11 @@ pub struct MaterializedPaths {
     /// enabled. `None` when nothing needed copying, including when a
     /// skills-dir flag existed and was used instead (no copy happened).
     pub skills_copied_to: Option<PathBuf>,
+    /// Mirrors `AgentCapabilitySnapshot::global_capabilities_enabled` for
+    /// whichever snapshot produced this. `false` tells `resume.rs`'s
+    /// `apply_capability_overlay` to append `--setting-sources
+    /// project,local` to the Claude launch command (docs/cw/21_全域Hook_Skill開關設計.md).
+    pub global_capabilities_enabled: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,7 +111,20 @@ pub fn materialize_claude_capability(
     if let Some(cached) =
         read_cached_paths_if_hash_matches(&runtime_dir, agent_workdir, &content_hash)
     {
-        return Ok(cached);
+        // Defensive, not load-bearing: `compute_content_hash` hashes
+        // `snapshot.to_json()`, and `AgentCapabilitySnapshot` derives
+        // `Serialize` for every field including this one (no
+        // `#[serde(skip)]`), so a changed `global_capabilities_enabled`
+        // already changes `content_hash` and this cache-hit branch is
+        // never reached in that case — the value below is always identical
+        // to what's already sitting in `cached`. Kept anyway so this
+        // function doesn't silently start depending on that hashing detail
+        // if `compute_content_hash`/the snapshot's `Serialize` impl ever
+        // changes to hash something narrower than the full JSON.
+        return Ok(MaterializedPaths {
+            global_capabilities_enabled: snapshot.global_capabilities_enabled,
+            ..cached
+        });
     }
 
     std::fs::create_dir_all(&runtime_dir).map_err(|error| io_err(&runtime_dir, error))?;
@@ -166,6 +187,7 @@ pub fn materialize_claude_capability(
         mcp_config_path,
         settings_path,
         skills_copied_to,
+        global_capabilities_enabled: snapshot.global_capabilities_enabled,
     })
 }
 
@@ -234,6 +256,10 @@ fn read_cached_paths_if_hash_matches(
         mcp_config_path: mcp_config_path.is_file().then_some(mcp_config_path),
         settings_path: settings_path.is_file().then_some(settings_path),
         skills_copied_to: skills_copy_dir.is_dir().then_some(skills_copy_dir),
+        // Placeholder — every caller of this function immediately overwrites
+        // this field from the live snapshot via struct-update syntax (it's
+        // never derived from cached/on-disk state, see the call site).
+        global_capabilities_enabled: default_global_capabilities_enabled(),
     })
 }
 

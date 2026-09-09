@@ -78,14 +78,14 @@ export function toggleDiscoveredSkill(
   )
 }
 
-/** Bulk on/off across every scanned skill (workspace + global) plus any
- * already-mounted "unmatched" entries (source file not found) — the "select
- * all" counterpart to `toggleDiscoveredSkill`'s per-row checkbox. Mounts a
- * fresh entry for each discovered skill when turning everything on; leaves
- * an unmounted discovered skill alone when turning everything off (nothing
- * to disable). Unmatched entries only ever get their `enabled` flag flipped,
- * never removed — same "off means unmounted, not forgotten" semantics as the
- * single-row toggle. */
+/** Bulk on/off across every given discovered skill — the "select all"
+ * counterpart to `toggleDiscoveredSkill`'s per-row checkbox. Only ever
+ * touches checklist-sourced rows (same scoping as `setAllHooksEnabled`);
+ * manually-added skills and skills that only match a *global*-scoped
+ * discovered entry (rendered read-only, so not part of any `discovered`
+ * list passed in by a caller — see docs/cw/21_全域Hook_Skill開關設計.md §9)
+ * are left as-is, managed individually via their own checkbox in the
+ * "Manually Added / Other Mounted" section instead. */
 export function setAllSkillsEnabled(
   skills: SkillCapability[],
   discovered: DiscoveredSkill[],
@@ -95,19 +95,25 @@ export function setAllSkillsEnabled(
   for (const item of discovered) {
     next = toggleDiscoveredSkill(next, item, enabled)
   }
-  const discoveredPaths = new Set(discovered.map((item) => item.sourcePath))
-  return next.map((skill) => (discoveredPaths.has(skill.sourcePath) ? skill : { ...skill, enabled }))
+  return next
 }
 
-/** Mounted skills that don't match any scanned `SKILL.md` — e.g. one added
- * before this checklist existed, or whose source file has since moved/been
- * deleted. Surfaced in a separate "unmatched" section rather than silently
- * dropped so a save doesn't quietly un-mount something the user still wants. */
+/** Mounted skills that don't match any scanned **workspace-scoped**
+ * `SKILL.md` — e.g. one added before this checklist existed, whose source
+ * file has since moved/been deleted, or one that happens to match a
+ * *global*-scoped discovered skill. Global entries are deliberately excluded
+ * from the "matched" set here (unlike workspace ones): the global checklist
+ * group is view-only (see docs/cw/21_全域Hook_Skill開關設計.md) — an already
+ * individually-mounted skill that content-matches a global entry would
+ * otherwise render there with no way to unmount it, since that group has no
+ * checkbox. Surfacing it here instead keeps it manageable. */
 export function unmatchedSkillEntries(
   skills: SkillCapability[],
   discovered: DiscoveredSkill[],
 ): SkillCapability[] {
-  const discoveredPaths = new Set(discovered.map((skill) => skill.sourcePath))
+  const discoveredPaths = new Set(
+    discovered.filter((skill) => skill.scope === 'workspace').map((skill) => skill.sourcePath),
+  )
   return skills.filter((skill) => !discoveredPaths.has(skill.sourcePath))
 }
 
@@ -230,13 +236,22 @@ export function updateMountedHookNote(
   )
 }
 
-/** Mounted hooks that don't match any scanned `.claude/settings.json` rule —
- * hand-typed custom hooks (still an explicitly supported path, decision 3 of
- * docs/cw/08_MCP_Hook_Skill掛載設計.md) plus anything whose source rule has
- * since changed on disk. Rendered in the manual editor below the checklist. */
+/** Mounted hooks that don't match any scanned **workspace-scoped**
+ * `.claude/settings.json` rule — hand-typed custom hooks (still an
+ * explicitly supported path, decision 3 of
+ * docs/cw/08_MCP_Hook_Skill掛載設計.md), anything whose source rule has
+ * since changed on disk, or one that happens to content-match a
+ * *global*-scoped discovered hook. Global entries are excluded from the
+ * "matched" set (unlike workspace ones) for the same reason as
+ * `unmatchedSkillEntries`: the global checklist group is view-only, so a
+ * previously individually-mounted hook that matches a global entry needs to
+ * surface here to stay removable. Rendered in the manual editor below the
+ * checklist. */
 export function unmatchedHookEntries(hooks: HookCapability[], discovered: DiscoveredHook[]): HookCapability[] {
   const discoveredKeys = new Set(
-    discovered.map((hook) => hookContentKey(hook.event, hook.matcher, hook.command)),
+    discovered
+      .filter((hook) => hook.scope === 'workspace')
+      .map((hook) => hookContentKey(hook.event, hook.matcher, hook.command)),
   )
   return hooks.filter((hook) => !discoveredKeys.has(hookContentKey(hook.event, hook.matcher, hook.command)))
 }
@@ -348,6 +363,7 @@ export function buildSavableCapabilitySnapshot(
       command: hook.command.trim(),
       note: hook.note?.trim() || null,
     })),
+    globalCapabilitiesEnabled: draft.globalCapabilitiesEnabled,
   }
 }
 

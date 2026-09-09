@@ -174,7 +174,11 @@ impl ResumeService {
 
 /// Appends `--mcp-config`/`--settings` flags for a Claude launch command when
 /// materialize (docs/cw/08_MCP_Hook_Skill掛載設計.md §2.3/§2.4 決策1) wrote
-/// something to overlay. A no-op for `Provider::Codex` and for `None`.
+/// something to overlay. Also appends `--setting-sources project,local` when
+/// `MaterializedPaths::global_capabilities_enabled` is `false`, so the
+/// user's real global `~/.claude/settings.json`/`~/.claude/skills/*` stop
+/// auto-loading for this agent — see `apply_capability_overlay` below and
+/// docs/cw/21_全域Hook_Skill開關設計.md. A no-op for `Provider::Codex` and for `None`.
 ///
 /// This keeps returning a single typed-into-the-terminal shell command line
 /// (not a `program + args` tuple, unlike §2.4's literal suggestion) because
@@ -234,6 +238,9 @@ fn apply_capability_overlay(
                 "materialized settings path contains a double quote; skipping overlay flag"
             ),
         }
+    }
+    if !materialized.global_capabilities_enabled {
+        command.push_str(" --setting-sources project,local");
     }
     command
 }
@@ -383,6 +390,7 @@ mod tests {
                 "/ws/.gtoffice/agents/a1/runtime/settings.json",
             )),
             skills_copied_to: None,
+            global_capabilities_enabled: true,
         });
         let command = ResumeService::build_resume_launch_command(&session, Some(&materialized))
             .expect("command");
@@ -402,6 +410,7 @@ mod tests {
             mcp_config_path: None,
             settings_path: None,
             skills_copied_to: None,
+            global_capabilities_enabled: true,
         });
         assert_eq!(
             ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
@@ -417,6 +426,7 @@ mod tests {
             mcp_config_path: Some(PathBuf::from("/ws/.gtoffice/agents/a1/runtime/mcp.json")),
             settings_path: None,
             skills_copied_to: None,
+            global_capabilities_enabled: true,
         });
         assert_eq!(
             ResumeService::build_resume_launch_command(&session, Some(&materialized)).as_deref(),
@@ -470,6 +480,7 @@ mod tests {
             mcp_config_path: Some(PathBuf::from("/ws/.gtoffice/agents/a1/runtime/mcp.json")),
             settings_path: None,
             skills_copied_to: None,
+            global_capabilities_enabled: true,
         });
         assert_eq!(
             ResumeService::apply_capability_overlay_to_command(
@@ -478,6 +489,65 @@ mod tests {
                 Some(&materialized),
             ),
             "claude --mcp-config \"/ws/.gtoffice/agents/a1/runtime/mcp.json\""
+        );
+    }
+
+    #[test]
+    fn test_first_launch_overlay_appends_setting_sources_flag_when_global_capabilities_disabled() {
+        let materialized = MaterializedCapability::Claude(MaterializedPaths {
+            runtime_dir: PathBuf::from("/ws/.gtoffice/agents/a1/runtime"),
+            mcp_config_path: None,
+            settings_path: None,
+            skills_copied_to: None,
+            global_capabilities_enabled: false,
+        });
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "claude".to_string(),
+                Provider::Claude,
+                Some(&materialized),
+            ),
+            "claude --setting-sources project,local"
+        );
+    }
+
+    #[test]
+    fn test_first_launch_overlay_omits_setting_sources_flag_when_global_capabilities_enabled() {
+        let materialized = MaterializedCapability::Claude(MaterializedPaths {
+            runtime_dir: PathBuf::from("/ws/.gtoffice/agents/a1/runtime"),
+            mcp_config_path: None,
+            settings_path: None,
+            skills_copied_to: None,
+            global_capabilities_enabled: true,
+        });
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "claude".to_string(),
+                Provider::Claude,
+                Some(&materialized),
+            ),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn test_setting_sources_flag_is_never_appended_for_codex() {
+        let materialized = MaterializedCapability::Codex(MaterializedCodexProfile {
+            profile_name: "gtoffice-agent-a".to_string(),
+            profile_path: PathBuf::from("/home/user/.codex/gtoffice-agent-a.config.toml"),
+        });
+        // A Claude-only flag must never leak onto a Codex launch command,
+        // even in the degenerate case where materialize somehow produced a
+        // Codex-shaped value — codex_profile_flag/apply_capability_overlay
+        // both gate on `provider`, not on which `MaterializedCapability`
+        // variant is present.
+        assert_eq!(
+            ResumeService::apply_capability_overlay_to_command(
+                "codex".to_string(),
+                Provider::Codex,
+                Some(&materialized),
+            ),
+            "codex -p gtoffice-agent-a"
         );
     }
 

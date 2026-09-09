@@ -234,6 +234,34 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
 
     return (
       <section className="station-form-grid station-capabilities-tab">
+        {skillsHooksSupported && (
+          <div className="station-form-field station-form-span-2">
+            <div className="station-form-surface">
+              <label className="station-form-checkbox">
+                <input
+                  type="checkbox"
+                  checked={draft.globalCapabilitiesEnabled}
+                  disabled={saving}
+                  onChange={(event) => {
+                    const checked = event.target.checked
+                    setDraft((previous) => ({ ...previous, globalCapabilitiesEnabled: checked }))
+                  }}
+                />
+                <span>
+                  {locale === 'zh-CN'
+                    ? '使用全域 Hook / Skill / 权限设定'
+                    : 'Use global Hook/Skill/permission settings'}
+                </span>
+              </label>
+              <p>
+                {locale === 'zh-CN'
+                  ? '关闭后，此 agent 不再自动套用你在 ~/.claude/settings.json 与 ~/.claude/skills/ 累积的全域设定（含权限允许清单）。下方全域清单仅供检视，无法逐项勾选或取消——要单独调整某一条全域 Hook/Skill，请改用下方「手动新增 / 其他已挂载」区块。'
+                  : 'When off, this agent stops automatically inheriting your accumulated global ~/.claude/settings.json / ~/.claude/skills/ config (including the permission allowlist). The global list below is view-only and cannot be checked/unchecked item by item — to control one specific global Hook/Skill, use the "Manually Added / Other Mounted" section below instead.'}
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="station-form-segmented station-form-span-2">
           {(['mcp', 'skills', 'hooks'] as CapabilitySubTab[]).map((tab) => {
             const disabled = tab !== 'mcp' && !skillsHooksSupported
@@ -288,6 +316,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
                 workspaceId={workspaceId}
                 skills={draft.skills}
                 disabled={saving}
+                globalCapabilitiesEnabled={draft.globalCapabilitiesEnabled}
                 onChange={(skills) => setDraft((previous) => ({ ...previous, skills }))}
               />
             )}
@@ -304,6 +333,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
                 workspaceId={workspaceId}
                 hooks={draft.hooks}
                 disabled={saving}
+                globalCapabilitiesEnabled={draft.globalCapabilitiesEnabled}
                 onChange={(hooks) => setDraft((previous) => ({ ...previous, hooks }))}
               />
             )}
@@ -569,44 +599,36 @@ function SkillsEditor({
   workspaceId,
   skills,
   disabled,
+  globalCapabilitiesEnabled,
   onChange,
 }: {
   locale: Locale
   workspaceId: string
   skills: SkillCapability[]
   disabled: boolean
+  /** Whether the agent-level "use global capabilities" master switch is on.
+   * The global-scope checklist below is always view-only regardless of this
+   * value — it only changes the badge each row shows (applied vs. not). */
+  globalCapabilitiesEnabled: boolean
   onChange: (skills: SkillCapability[]) => void
 }) {
-  const [available, setAvailable] = useState<DiscoveredSkill[] | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [searchQuery, setSearchQuery] = useState('')
+  const [available, setAvailable] = useState<DiscoveredSkill[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Guards against a stale response from a previous `workspaceId` landing
-    // after this effect has already moved on to a new one (e.g. the modal
-    // is reused for a different agent/workspace before the first scan
-    // finishes) — without this, `setAvailable` could overwrite the current
-    // workspace's checklist with a different workspace's `sourcePath`s.
     let cancelled = false
     desktopApi
       .agentCapabilityListAvailableSkills({ workspaceId })
       .then((response) => {
-        if (cancelled) {
-          return
-        }
+        if (cancelled) return
         setAvailable(response.skills)
         setLoadError(null)
       })
       .catch((error) => {
-        if (cancelled) {
-          return
-        }
+        if (cancelled) return
         setLoadError(error instanceof Error ? error.message : String(error))
-        // Fall back to "no scanned skills" (rather than leaving `available`
-        // `null` forever) so the "Other mounted" fallback section below
-        // still renders — a scan failure must not hide already-mounted
-        // skills from view.
         setAvailable((previous) => previous ?? [])
       })
     return () => {
@@ -655,7 +677,7 @@ function SkillsEditor({
               type="button"
               className="station-form-inline-action"
               disabled={disabled}
-              onClick={() => onChange(setAllSkillsEnabled(skills, available, true))}
+              onClick={() => onChange(setAllSkillsEnabled(skills, workspaceSkillsAll, true))}
             >
               {locale === 'zh-CN' ? '全選開啟' : 'Enable All'}
             </button>
@@ -663,7 +685,7 @@ function SkillsEditor({
               type="button"
               className="station-form-inline-action"
               disabled={disabled}
-              onClick={() => onChange(setAllSkillsEnabled(skills, available, false))}
+              onClick={() => onChange(setAllSkillsEnabled(skills, workspaceSkillsAll, false))}
             >
               {locale === 'zh-CN' ? '全選關閉' : 'Disable All'}
             </button>
@@ -701,7 +723,9 @@ function SkillsEditor({
           />
           <SkillChecklistGroup
             locale={locale}
-            title={locale === 'zh-CN' ? '全域安装技能' : 'Globally Installed Skills'}
+            title={
+              locale === 'zh-CN' ? '全域安装技能（仅供检视）' : 'Globally Installed Skills (view-only)'
+            }
             emptyLabel={
               hasQuery && globalSkillsAll.length > 0
                 ? noSearchMatchLabel
@@ -712,6 +736,8 @@ function SkillsEditor({
             items={globalSkills}
             skills={skills}
             disabled={disabled}
+            viewOnly
+            viewOnlyActive={globalCapabilitiesEnabled}
             expanded={expanded}
             onToggleExpanded={toggleExpanded}
             onChange={onChange}
@@ -719,7 +745,7 @@ function SkillsEditor({
           {unmatched.length > 0 && (
             <div className="station-capabilities-skill-group">
               <h4>
-                {locale === 'zh-CN' ? '其他已挂载（找不到来源文件）' : 'Other mounted (source not found)'}
+                {locale === 'zh-CN' ? '手动新增 / 其他已挂载' : 'Manually Added / Other Mounted'}
               </h4>
               {unmatched.map((skill) => (
                 <div key={skill.sourcePath} className="station-form-surface station-capabilities-skill-row">
@@ -769,6 +795,8 @@ function SkillChecklistGroup({
   items,
   skills,
   disabled,
+  viewOnly,
+  viewOnlyActive,
   expanded,
   onToggleExpanded,
   onChange,
@@ -779,6 +807,15 @@ function SkillChecklistGroup({
   items: DiscoveredSkill[]
   skills: SkillCapability[]
   disabled: boolean
+  /** When true, this group renders as a plain read-only list — no checkbox,
+   * no per-row on/off control — since every row here shares one fate
+   * decided entirely by the agent-level "use global capabilities" master
+   * switch (see docs/cw/21_全域Hook_Skill開關設計.md): there is no
+   * meaningful "check just this one" action to offer. */
+  viewOnly?: boolean
+  /** Only meaningful when `viewOnly` is true — whether the master switch is
+   * currently on, shown as a status badge per row instead of a checkbox. */
+  viewOnlyActive?: boolean
   expanded: Set<string>
   onToggleExpanded: (key: string) => void
   onChange: (skills: SkillCapability[]) => void
@@ -797,15 +834,34 @@ function SkillChecklistGroup({
           return (
             <div key={key} className="station-form-surface station-capabilities-skill-row">
               <div className="station-capabilities-row-header">
-                <label className="station-form-checkbox station-capabilities-skill-checkbox">
-                  <input
-                    type="checkbox"
-                    disabled={disabled}
-                    checked={checked}
-                    onChange={(event) => onChange(toggleDiscoveredSkill(skills, item, event.target.checked))}
-                  />
-                  <span>{item.name}</span>
-                </label>
+                {viewOnly ? (
+                  <div className="station-form-checkbox station-capabilities-skill-checkbox">
+                    <span>{item.name}</span>
+                  </div>
+                ) : (
+                  <label className="station-form-checkbox station-capabilities-skill-checkbox">
+                    <input
+                      type="checkbox"
+                      disabled={disabled}
+                      checked={checked}
+                      onChange={(event) => onChange(toggleDiscoveredSkill(skills, item, event.target.checked))}
+                    />
+                    <span>{item.name}</span>
+                  </label>
+                )}
+                {viewOnly && (
+                  <span
+                    className={`station-hook-preview-badge${viewOnlyActive ? ' station-hook-preview-badge--new' : ''}`}
+                  >
+                    {viewOnlyActive
+                      ? locale === 'zh-CN'
+                        ? '套用中'
+                        : 'Applied'
+                      : locale === 'zh-CN'
+                        ? '未套用'
+                        : 'Not applied'}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="station-capabilities-skill-info-toggle"
@@ -838,41 +894,34 @@ function HooksEditor({
   workspaceId,
   hooks,
   disabled,
+  globalCapabilitiesEnabled,
   onChange,
 }: {
   locale: Locale
   workspaceId: string
   hooks: HookCapability[]
   disabled: boolean
+  /** See the analogous prop on `SkillsEditor`. */
+  globalCapabilitiesEnabled: boolean
   onChange: (hooks: HookCapability[]) => void
 }) {
-  const [available, setAvailable] = useState<DiscoveredHook[] | null>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [searchQuery, setSearchQuery] = useState('')
+  const [available, setAvailable] = useState<DiscoveredHook[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Same stale-response guard as `SkillsEditor` — a scan started for a
-    // previous `workspaceId` must not overwrite the checklist once the
-    // modal has already moved on to a different agent/workspace.
     let cancelled = false
     desktopApi
       .agentCapabilityListAvailableHooks({ workspaceId })
       .then((response) => {
-        if (cancelled) {
-          return
-        }
+        if (cancelled) return
         setAvailable(response.hooks)
         setLoadError(null)
       })
       .catch((error) => {
-        if (cancelled) {
-          return
-        }
+        if (cancelled) return
         setLoadError(error instanceof Error ? error.message : String(error))
-        // Fall back to "no scanned hooks" rather than leaving `available`
-        // `null` forever, so hand-typed/unmatched hooks below still render
-        // even when the scan itself failed.
         setAvailable((previous) => previous ?? [])
       })
     return () => {
@@ -937,7 +986,7 @@ function HooksEditor({
               type="button"
               className="station-form-inline-action"
               disabled={disabled}
-              onClick={() => onChange(setAllHooksEnabled(hooks, available, true))}
+              onClick={() => onChange(setAllHooksEnabled(hooks, workspaceHooksAll, true))}
             >
               {locale === 'zh-CN' ? '全選開啟' : 'Enable All'}
             </button>
@@ -945,7 +994,7 @@ function HooksEditor({
               type="button"
               className="station-form-inline-action"
               disabled={disabled}
-              onClick={() => onChange(setAllHooksEnabled(hooks, available, false))}
+              onClick={() => onChange(setAllHooksEnabled(hooks, workspaceHooksAll, false))}
             >
               {locale === 'zh-CN' ? '全選關閉' : 'Disable All'}
             </button>
@@ -983,7 +1032,9 @@ function HooksEditor({
           />
           <HookChecklistGroup
             locale={locale}
-            title={locale === 'zh-CN' ? '全域已设定的 Hook' : 'Globally Configured Hooks'}
+            title={
+              locale === 'zh-CN' ? '全域已设定的 Hook（仅供检视）' : 'Globally Configured Hooks (view-only)'
+            }
             emptyLabel={
               hasQuery && globalHooksAll.length > 0
                 ? noSearchMatchLabel
@@ -994,6 +1045,8 @@ function HooksEditor({
             items={globalHooks}
             hooks={hooks}
             disabled={disabled}
+            viewOnly
+            viewOnlyActive={globalCapabilitiesEnabled}
             expanded={expanded}
             onToggleExpanded={toggleExpanded}
             onChange={onChange}
@@ -1002,7 +1055,7 @@ function HooksEditor({
       )}
 
       <div className="station-capabilities-skill-group">
-        <h4>{locale === 'zh-CN' ? '手动新增的 Hook' : 'Manually Added Hooks'}</h4>
+        <h4>{locale === 'zh-CN' ? '手动新增 / 其他已挂载的 Hook' : 'Manually Added / Other Mounted Hooks'}</h4>
         {manualHooks.length === 0 && !hasQuery && (
           <p className="station-capabilities-skill-empty">
             {locale === 'zh-CN'
@@ -1095,6 +1148,8 @@ function HookChecklistGroup({
   items,
   hooks,
   disabled,
+  viewOnly,
+  viewOnlyActive,
   expanded,
   onToggleExpanded,
   onChange,
@@ -1105,6 +1160,10 @@ function HookChecklistGroup({
   items: DiscoveredHook[]
   hooks: HookCapability[]
   disabled: boolean
+  /** See the identical prop on `SkillChecklistGroup`. */
+  viewOnly?: boolean
+  /** See the identical prop on `SkillChecklistGroup`. */
+  viewOnlyActive?: boolean
   expanded: Set<string>
   onToggleExpanded: (key: string) => void
   onChange: (hooks: HookCapability[]) => void
@@ -1124,15 +1183,34 @@ function HookChecklistGroup({
           return (
             <div key={key} className="station-form-surface station-capabilities-skill-row">
               <div className="station-capabilities-row-header">
-                <label className="station-form-checkbox station-capabilities-skill-checkbox">
-                  <input
-                    type="checkbox"
-                    disabled={disabled}
-                    checked={checked}
-                    onChange={(event) => onChange(toggleDiscoveredHook(hooks, item, event.target.checked))}
-                  />
-                  <span>{label}</span>
-                </label>
+                {viewOnly ? (
+                  <div className="station-form-checkbox station-capabilities-skill-checkbox">
+                    <span>{label}</span>
+                  </div>
+                ) : (
+                  <label className="station-form-checkbox station-capabilities-skill-checkbox">
+                    <input
+                      type="checkbox"
+                      disabled={disabled}
+                      checked={checked}
+                      onChange={(event) => onChange(toggleDiscoveredHook(hooks, item, event.target.checked))}
+                    />
+                    <span>{label}</span>
+                  </label>
+                )}
+                {viewOnly && (
+                  <span
+                    className={`station-hook-preview-badge${viewOnlyActive ? ' station-hook-preview-badge--new' : ''}`}
+                  >
+                    {viewOnlyActive
+                      ? locale === 'zh-CN'
+                        ? '套用中'
+                        : 'Applied'
+                      : locale === 'zh-CN'
+                        ? '未套用'
+                        : 'Not applied'}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="station-capabilities-skill-info-toggle"
@@ -1158,7 +1236,7 @@ function HookChecklistGroup({
                     <code>{item.command}</code>
                   </p>
                   <p className="station-capabilities-skill-path">{item.sourcePath}</p>
-                  {mounted && (
+                  {!viewOnly && mounted && (
                     <label className="station-form-field">
                       <span>{locale === 'zh-CN' ? '备注（触发时机与用途说明）' : 'Note (when it fires and what it does)'}</span>
                       <textarea
