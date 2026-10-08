@@ -315,6 +315,110 @@ mod tests {
     }
 
     #[test]
+    fn codex_update_plan_upgrades_in_place_at_owning_npm_prefix() {
+        let dir = temp_dir("codex-update-prefix");
+        let prefix = dir.join("npm-prefix");
+        let (executable, package_dir) = if cfg!(windows) {
+            (
+                prefix.join("codex.cmd"),
+                prefix.join("node_modules").join("@openai").join("codex"),
+            )
+        } else {
+            (
+                prefix.join("bin").join("codex"),
+                prefix
+                    .join("lib")
+                    .join("node_modules")
+                    .join("@openai")
+                    .join("codex"),
+            )
+        };
+        fs::create_dir_all(&package_dir).expect("create package dir");
+        fs::create_dir_all(executable.parent().expect("bin dir")).expect("create bin dir");
+        fs::write(&executable, "").expect("write shim");
+
+        let plan = AgentInstaller::build_update_plan_with(
+            AgentType::Codex,
+            &[
+                OFFICIAL_NPM_REGISTRY.to_string(),
+                MIRROR_NPM_REGISTRY.to_string(),
+            ],
+            true,
+            Some(&executable),
+        );
+
+        assert_eq!(plan.attempts.len(), 2);
+        let first = &plan.attempts[0];
+        assert_eq!(first.id, "codex-npm-update-official");
+        let command_line = first.args.join(" ");
+        assert!(command_line.contains("@openai/codex@latest"));
+        assert!(command_line.contains(&prefix.display().to_string()));
+        assert!(!command_line.contains("npm uninstall"));
+        assert!(plan.attempts[1]
+            .args
+            .join(" ")
+            .contains(MIRROR_NPM_REGISTRY));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_update_plan_starts_with_self_update() {
+        let plan = AgentInstaller::build_update_plan_with(
+            AgentType::ClaudeCode,
+            &[OFFICIAL_NPM_REGISTRY.to_string()],
+            true,
+            Some(Path::new("/Users/tester/.local/bin/claude")),
+        );
+
+        assert_eq!(plan.attempts[0].id, "claude-self-update");
+        assert!(plan.attempts[0].args.join(" ").contains("update"));
+        assert!(plan.attempts.len() >= 2);
+    }
+
+    #[test]
+    fn prepare_update_removes_stale_npm_staging_dirs() {
+        let dir = temp_dir("codex-staging");
+        let scope = dir.join("node_modules").join("@openai");
+        fs::create_dir_all(scope.join("codex")).expect("create package");
+        fs::create_dir_all(scope.join(".codex-AbC123").join("bin")).expect("create staging");
+        fs::create_dir_all(scope.join("codex-other")).expect("create unrelated");
+
+        AgentInstaller::remove_stale_npm_staging_dirs(&dir.join("node_modules"), AgentType::Codex);
+
+        assert!(scope.join("codex").is_dir());
+        assert!(scope.join("codex-other").is_dir());
+        assert!(!scope.join(".codex-AbC123").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn update_blockers_ignore_codex_processes_outside_the_npm_package() {
+        let node_modules = Path::new(r"C:\Users\tester\AppData\Roaming\npm\node_modules");
+        let listing = "\
+101|C:\\Users\\tester\\AppData\\Local\\Programs\\Codex\\resources\\codex.exe
+202|c:\\users\\tester\\appdata\\roaming\\npm\\node_modules\\@openai\\codex-win32-x64\\vendor\\codex.exe
+303|C:\\Users\\tester\\.vscode\\extensions\\openai.chatgpt\\bin\\codex.exe
+404|
+";
+        let blockers =
+            AgentInstaller::processes_inside_package(listing, node_modules, AgentType::Codex);
+
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].0, 202);
+    }
+
+    #[test]
+    fn classify_install_failure_treats_locked_files_as_permission_denied() {
+        assert_eq!(
+            AgentInstaller::classify_install_failure(
+                "npm ERR! code EBUSY\nnpm ERR! resource busy or locked, rename",
+                false
+            ),
+            AgentInstallDiagnosticCode::PermissionDenied
+        );
+    }
+
+    #[test]
     fn codex_node_dir_install_attempt_uses_active_global_prefix() {
         let attempt = AgentInstaller::npm_install_attempt_with_node_dir(
             AgentType::Codex,
@@ -870,26 +974,40 @@ impl AgentInstaller {
 
     /// Upgrades an already-installed CLI to its latest release. Claude Code
     /// ships its own `claude update` (works for native and npm installs);
-    /// Codex follows how it was installed (Homebrew cask or npm). `npm install
-    /// -g <pkg>` without a version resolves the `latest` dist-tag, so the
-    /// install attempts double as upgrade attempts and as the fallback.
+    /// Codex follows how it was installed (Homebrew or npm). npm installs are
+    /// upgraded in place at the prefix that owns the launched executable, so
+    /// the copy GT Office actually runs is the one that gets updated.
     pub fn build_update_plan(agent: AgentType) -> AgentInstallPlan {
         let profile = Self::probe_install_network(agent);
         let registry_candidates = Self::registry_candidates(&profile);
         let npm_ready = Self::check_npm_env();
-        let executable = Self::launch_executable_hint(agent);
+        let executable = Self::launch_executable_hint(agent).map(PathBuf::from);
+        Self::build_update_plan_with(
+            agent,
+            &registry_candidates,
+            npm_ready,
+            executable.as_deref(),
+        )
+    }
+
+    fn build_update_plan_with(
+        agent: AgentType,
+        registry_candidates: &[String],
+        npm_ready: bool,
+        executable: Option<&Path>,
+    ) -> AgentInstallPlan {
         let mut attempts = Vec::new();
+        let npm_prefix = executable.and_then(|path| Self::npm_prefix_for_executable(agent, path));
 
         match agent {
             AgentType::ClaudeCode => {
-                if let Some(executable) = executable.as_deref() {
+                if let Some(executable) = executable {
                     attempts.push(Self::self_update_attempt(agent, executable));
                 }
             }
             AgentType::Codex => {
-                let is_homebrew = executable.as_deref().is_some_and(|path| {
-                    path.contains("/opt/homebrew/") || path.contains("/.linuxbrew/")
-                });
+                let is_homebrew =
+                    npm_prefix.is_none() && executable.is_some_and(Self::is_homebrew_executable);
                 if is_homebrew && !cfg!(target_os = "windows") {
                     attempts.push(AgentInstallAttempt {
                         id: "codex-brew-upgrade".to_string(),
@@ -909,11 +1027,13 @@ impl AgentInstaller {
         }
         if npm_ready {
             for (index, registry) in registry_candidates.iter().enumerate() {
-                attempts.push(Self::npm_install_attempt(
-                    agent,
-                    registry,
-                    index > 0 || !attempts.is_empty(),
-                ));
+                let is_fallback = index > 0 || !attempts.is_empty();
+                let attempt = if npm_prefix.is_some() || cfg!(target_os = "windows") {
+                    Self::npm_update_attempt(agent, registry, npm_prefix.as_deref(), is_fallback)
+                } else {
+                    Self::npm_install_attempt(agent, registry, is_fallback)
+                };
+                attempts.push(attempt);
             }
         }
         if attempts.is_empty() && agent == AgentType::ClaudeCode {
@@ -922,18 +1042,21 @@ impl AgentInstaller {
         AgentInstallPlan { attempts }
     }
 
-    fn self_update_attempt(agent: AgentType, executable: &str) -> AgentInstallAttempt {
+    fn self_update_attempt(agent: AgentType, executable: &Path) -> AgentInstallAttempt {
+        // On Windows run the executable directly: wrapping a quoted path in
+        // `cmd /C "..."` gets re-escaped as `\"` which cmd.exe cannot parse.
+        // std::process::Command handles `.cmd` shims itself.
         let (program, args) = if cfg!(target_os = "windows") {
-            (
-                "cmd".to_string(),
-                vec!["/C".to_string(), format!("\"{executable}\" update")],
-            )
+            (executable.display().to_string(), vec!["update".to_string()])
         } else {
             (
                 "bash".to_string(),
                 vec![
                     "-lc".to_string(),
-                    format!("'{}' update", executable.replace('\'', "'\\''")),
+                    format!(
+                        "{} update",
+                        Self::shell_quote(&executable.display().to_string())
+                    ),
                 ],
             )
         };
@@ -948,6 +1071,230 @@ impl AgentInstaller {
             // Any self-update failure falls through to the npm attempts.
             retryable_diagnostics: Self::claude_official_retryable_diagnostics(),
         }
+    }
+
+    /// `npm install -g <pkg>@latest` at the given prefix (or npm's default
+    /// global prefix). Arguments are passed as separate tokens so that npm's
+    /// exit code is reported faithfully and paths with spaces survive.
+    fn npm_update_attempt(
+        agent: AgentType,
+        registry: &str,
+        prefix: Option<&Path>,
+        is_fallback: bool,
+    ) -> AgentInstallAttempt {
+        let package = format!("{}@latest", Self::npm_package_name(agent));
+        let registry_id = if registry.contains("npmmirror") {
+            "mirror"
+        } else {
+            "official"
+        };
+        let mut npm_args = vec!["install".to_string(), "-g".to_string()];
+        if let Some(prefix) = prefix {
+            npm_args.push("--prefix".to_string());
+            npm_args.push(prefix.display().to_string());
+        }
+        npm_args.extend([
+            "--no-fund".to_string(),
+            "--no-audit".to_string(),
+            package,
+            format!("--registry={registry}"),
+        ]);
+
+        let (program, args) = if cfg!(target_os = "windows") {
+            let mut args = vec!["/C".to_string(), "npm".to_string()];
+            args.extend(npm_args);
+            ("cmd".to_string(), args)
+        } else {
+            let script = std::iter::once("npm".to_string())
+                .chain(npm_args.iter().map(|arg| Self::shell_quote(arg)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            ("bash".to_string(), vec!["-lc".to_string(), script])
+        };
+
+        AgentInstallAttempt {
+            id: format!("{}-npm-update-{registry_id}", Self::cache_key(agent)),
+            label: if is_fallback {
+                format!("Continuing {} update...", Self::agent_name(agent))
+            } else {
+                format!("Updating {}...", Self::agent_name(agent))
+            },
+            phase: if is_fallback {
+                AgentInstallProgressPhase::Installing
+            } else {
+                AgentInstallProgressPhase::Downloading
+            },
+            program,
+            args,
+            env: Self::npm_install_env(registry),
+            timeout_ms: INSTALL_ATTEMPT_TIMEOUT_MS,
+            retryable_diagnostics: Self::network_retryable_diagnostics(),
+        }
+    }
+
+    fn npm_package_name(agent: AgentType) -> &'static str {
+        match agent {
+            AgentType::ClaudeCode => "@anthropic-ai/claude-code",
+            AgentType::Codex => "@openai/codex",
+        }
+    }
+
+    /// Package directory inside a `node_modules`, e.g. `@openai/codex`.
+    fn npm_package_dir(node_modules: &Path, agent: AgentType) -> PathBuf {
+        Self::npm_package_name(agent)
+            .split('/')
+            .fold(node_modules.to_path_buf(), |dir, part| dir.join(part))
+    }
+
+    /// Resolves the npm global prefix that owns `executable`: Windows shims
+    /// live at `<prefix>\codex.cmd` next to `<prefix>\node_modules`, Unix
+    /// links at `<prefix>/bin/codex` next to `<prefix>/lib/node_modules`.
+    fn npm_prefix_for_executable(agent: AgentType, executable: &Path) -> Option<PathBuf> {
+        let bin_dir = executable.parent()?;
+        if Self::npm_package_dir(&bin_dir.join("node_modules"), agent).is_dir() {
+            return Some(bin_dir.to_path_buf());
+        }
+        if bin_dir.file_name().is_some_and(|name| name == "bin") {
+            let prefix = bin_dir.parent()?;
+            let node_modules = prefix.join("lib").join("node_modules");
+            if Self::npm_package_dir(&node_modules, agent).is_dir() {
+                return Some(prefix.to_path_buf());
+            }
+        }
+        None
+    }
+
+    fn is_homebrew_executable(executable: &Path) -> bool {
+        let resolved =
+            std::fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+        [executable, resolved.as_path()].iter().any(|path| {
+            let text = path.display().to_string();
+            text.contains("/opt/homebrew/")
+                || text.contains("/.linuxbrew/")
+                || text.contains("/Caskroom/")
+                || text.contains("/Cellar/")
+        })
+    }
+
+    /// Removes npm's leftover staging directories (`@openai/.codex-XXXX`)
+    /// from an interrupted earlier upgrade; npm fails every later upgrade of
+    /// the package with `ENOTEMPTY` while they exist.
+    pub fn prepare_update(agent: AgentType) {
+        let Some(executable) = Self::launch_executable_hint(agent).map(PathBuf::from) else {
+            return;
+        };
+        let Some(prefix) = Self::npm_prefix_for_executable(agent, &executable) else {
+            return;
+        };
+        for node_modules in [
+            prefix.join("node_modules"),
+            prefix.join("lib").join("node_modules"),
+        ] {
+            Self::remove_stale_npm_staging_dirs(&node_modules, agent);
+        }
+    }
+
+    fn remove_stale_npm_staging_dirs(node_modules: &Path, agent: AgentType) {
+        let package_dir = Self::npm_package_dir(node_modules, agent);
+        let (Some(scope_dir), Some(name)) = (
+            package_dir.parent(),
+            package_dir.file_name().and_then(|name| name.to_str()),
+        ) else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(scope_dir) else {
+            return;
+        };
+        let staging_prefix = format!(".{name}-");
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if !file_name.to_string_lossy().starts_with(&staging_prefix) {
+                continue;
+            }
+            let path = entry.path();
+            let result = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            match result {
+                Ok(()) => tracing::info!(path = %path.display(), "removed stale npm staging dir"),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "failed to remove stale npm staging dir")
+                }
+            }
+        }
+    }
+
+    /// Running native Codex processes (`pid`, executable path) launched from
+    /// the npm package being updated. On Windows a running `codex.exe` locks
+    /// that package directory, so npm cannot replace it (`EBUSY`/`EPERM`).
+    /// `codex.exe` copies elsewhere (Codex desktop app, editor extensions)
+    /// do not block the update and are ignored. Other platforms can replace
+    /// files in use, and Claude Code's updater installs side by side, so
+    /// this is always empty there.
+    pub fn running_update_blockers(agent: AgentType) -> Vec<(u32, String)> {
+        if !cfg!(target_os = "windows") || agent != AgentType::Codex {
+            return Vec::new();
+        }
+        let Some(prefix) = Self::launch_executable_hint(agent)
+            .and_then(|executable| Self::npm_prefix_for_executable(agent, Path::new(&executable)))
+        else {
+            return Vec::new();
+        };
+        let mut command = Command::new("powershell");
+        configure_background_command(&mut command);
+        let Ok(output) = command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'codex.exe' } | ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ExecutablePath }",
+            ])
+            .output()
+        else {
+            return Vec::new();
+        };
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let blockers =
+            Self::processes_inside_package(&listing, &prefix.join("node_modules"), agent);
+        tracing::info!(
+            listing = %listing.trim(),
+            blockers = blockers.len(),
+            "checked running codex processes before update"
+        );
+        blockers
+    }
+
+    /// Parses `pid|path` lines and keeps processes whose executable lives in
+    /// the agent's npm package (or its platform sub-packages such as
+    /// `@openai/codex-win32-x64`) under `node_modules`.
+    fn processes_inside_package(
+        listing: &str,
+        node_modules: &Path,
+        agent: AgentType,
+    ) -> Vec<(u32, String)> {
+        let package_prefix = Self::npm_package_dir(node_modules, agent)
+            .display()
+            .to_string()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        listing
+            .lines()
+            .filter_map(|line| {
+                let (pid, path) = line.trim().split_once('|')?;
+                let pid = pid.trim().parse::<u32>().ok()?;
+                let path = path.trim();
+                path.replace('/', "\\")
+                    .to_ascii_lowercase()
+                    .starts_with(&package_prefix)
+                    .then(|| (pid, path.to_string()))
+            })
+            .collect()
+    }
+
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 
     pub fn classify_install_failure(output: &str, timed_out: bool) -> AgentInstallDiagnosticCode {
@@ -981,7 +1328,14 @@ impl AgentInstaller {
         }
         if Self::matches_any(
             &text,
-            &["eacces", "eperm", "permission denied", "access is denied"],
+            &[
+                "eacces",
+                "eperm",
+                "ebusy",
+                "resource busy or locked",
+                "permission denied",
+                "access is denied",
+            ],
         ) {
             return AgentInstallDiagnosticCode::PermissionDenied;
         }
