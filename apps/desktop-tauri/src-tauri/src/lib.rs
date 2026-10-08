@@ -56,24 +56,45 @@ pub fn run() {
             // Windows only: switch PTYs to the bundled ConPTY before any terminal
             // is spawned (see gt_terminal::conpty_sideload).
             if cfg!(windows) {
+                // Dev builds also look in the source staging dir, so they don't
+                // depend on tauri-build having copied the resources yet.
+                let mut conpty_dirs = Vec::new();
                 if let Ok(resource_dir) = app.path().resource_dir() {
-                    let conpty_dir = resource_dir.join("resources").join("conpty");
-                    let bundled =
-                        gt_terminal::conpty_sideload::preload_sideloaded_conpty(&conpty_dir);
-                    let _ = terminal_debug::dev_log::append_dev_log(
-                        app.handle(),
-                        terminal_debug::dev_log::TerminalDebugLogKind::SessionLifecycle,
-                        &format!(
-                            "[{}] conpty: {} ({})\n",
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|duration| duration.as_millis())
-                                .unwrap_or_default(),
-                            if bundled { "bundled" } else { "in-box (bundled not loaded)" },
-                            conpty_dir.display()
-                        ),
+                    conpty_dirs.push(resource_dir.join("resources").join("conpty"));
+                }
+                if cfg!(debug_assertions) {
+                    conpty_dirs.push(
+                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("resources")
+                            .join("conpty"),
                     );
                 }
+                let mut attempts = Vec::new();
+                for dir in &conpty_dirs {
+                    match gt_terminal::conpty_sideload::preload_sideloaded_conpty(dir) {
+                        Ok(path) => {
+                            attempts.push(format!("bundled ({})", path.display()));
+                            break;
+                        }
+                        Err(reason) => attempts.push(reason),
+                    }
+                }
+                let status = if attempts.iter().any(|item| item.starts_with("bundled")) {
+                    attempts.last().cloned().unwrap_or_default()
+                } else {
+                    format!("in-box, bundled not used: {}", attempts.join(" | "))
+                };
+                let _ = terminal_debug::dev_log::append_dev_log(
+                    app.handle(),
+                    terminal_debug::dev_log::TerminalDebugLogKind::SessionLifecycle,
+                    &format!(
+                        "[{}] conpty: {status}\n",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_millis())
+                            .unwrap_or_default(),
+                    ),
+                );
             }
             let app_handle = app.handle().clone();
             let state = app.state::<app_state::AppState>();

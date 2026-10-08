@@ -10,31 +10,44 @@
 //! name, without touching the process-wide DLL search path. `conpty.dll`
 //! starts the `OpenConsole.exe` sitting next to it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const CONPTY_DLL: &str = "conpty.dll";
 pub const OPEN_CONSOLE_EXE: &str = "OpenConsole.exe";
 
 /// Pre-loads `dir/conpty.dll` when it and `OpenConsole.exe` are present.
-/// Returns whether the bundled ConPTY is now in use. Must run before the first
-/// PTY is spawned; a no-op (returning `false`) on non-Windows targets.
-pub fn preload_sideloaded_conpty(dir: &Path) -> bool {
+/// `Ok` names the loaded DLL; `Err` says why the in-box ConPTY stays in use
+/// (always `Err` on non-Windows targets). Must run before the first PTY is
+/// spawned.
+pub fn preload_sideloaded_conpty(dir: &Path) -> Result<PathBuf, String> {
+    let dir = strip_verbatim_prefix(dir);
     let dll = dir.join(CONPTY_DLL);
-    if !dll.is_file() || !dir.join(OPEN_CONSOLE_EXE).is_file() {
-        tracing::info!(dir = %dir.display(), "bundled ConPTY not found; using in-box ConPTY");
-        return false;
-    }
-    let loaded = load_library(&dll);
-    if loaded {
-        tracing::info!(path = %dll.display(), "using bundled ConPTY");
+    let result = if !dll.is_file() {
+        Err(format!("missing {}", dll.display()))
+    } else if !dir.join(OPEN_CONSOLE_EXE).is_file() {
+        Err(format!("missing {}", dir.join(OPEN_CONSOLE_EXE).display()))
     } else {
-        tracing::warn!(path = %dll.display(), "failed to load bundled ConPTY; using in-box ConPTY");
+        load_library(&dll).map(|()| dll.clone())
+    };
+    match &result {
+        Ok(path) => tracing::info!(path = %path.display(), "using bundled ConPTY"),
+        Err(reason) => tracing::warn!(reason, "bundled ConPTY not used; using in-box ConPTY"),
     }
-    loaded
+    result
+}
+
+/// Tauri's resource dir comes back as `\\?\C:\...`; plain Win32 path
+/// handling (and the loader's module lookup) is happier without the prefix.
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
 }
 
 #[cfg(windows)]
-fn load_library(path: &Path) -> bool {
+fn load_library(path: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
     #[link(name = "kernel32")]
@@ -51,12 +64,20 @@ fn load_library(path: &Path) -> bool {
     // The module handle is intentionally never freed: it must stay loaded for
     // portable-pty's later bare-name lookup to resolve to it.
     let handle = unsafe { LoadLibraryW(wide.as_ptr()) };
-    !handle.is_null()
+    if handle.is_null() {
+        Err(format!(
+            "LoadLibraryW({}) failed: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
-fn load_library(_path: &Path) -> bool {
-    false
+fn load_library(_path: &Path) -> Result<(), String> {
+    Err("bundled ConPTY is Windows-only".to_string())
 }
 
 #[cfg(test)]
@@ -66,6 +87,19 @@ mod tests {
     #[test]
     fn missing_bundle_is_a_no_op() {
         let dir = std::env::temp_dir().join("gt-terminal-conpty-missing");
-        assert!(!preload_sideloaded_conpty(&dir));
+        let reason = preload_sideloaded_conpty(&dir).expect_err("no bundle");
+        assert!(reason.starts_with("missing"), "{reason}");
+    }
+
+    #[test]
+    fn strips_verbatim_prefix_but_keeps_unc() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\app\resources")),
+            PathBuf::from(r"C:\app\resources")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\?\UNC\server\share")
+        );
     }
 }
