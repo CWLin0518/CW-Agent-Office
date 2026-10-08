@@ -387,10 +387,15 @@ fn update_agent_blocking(window: &tauri::Window, agent: AgentType) -> Result<(),
         None,
     );
 
-    let running = AgentInstaller::running_update_blockers(agent);
-    if running > 0 {
+    let blockers = AgentInstaller::running_update_blockers(agent);
+    if !blockers.is_empty() {
+        let pids = blockers
+            .iter()
+            .map(|(pid, _)| pid.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         let message = format!(
-            "{name} is still running ({running} process(es)), which locks its files on Windows. Exit the {name} sessions in GT Office terminals, then retry the update."
+            "{name} is still running from the installation being updated (PID {pids}), which locks its files on Windows. Exit those {name} sessions, or end the leftover processes in Task Manager, then retry the update."
         );
         emit_progress(
             window,
