@@ -28,6 +28,10 @@ import {
   shouldUseStationTerminalWebglRenderer,
 } from './station-terminal-renderer-policy'
 import {
+  buildStationTerminalWindowsPty,
+  detectStationTerminalWindowsPty,
+} from './station-terminal-windows-pty'
+import {
   installStationTerminalWindowDiagnostics,
   recordStationTerminalFocusDiagnostic,
   resolveStationTerminalPointerDownFocusPlan,
@@ -951,7 +955,11 @@ function StationXtermTerminalView({
         } else {
           hostSurface = createStationTerminalHostSurface(resolveTerminalDocument(host, document))
           host.appendChild(hostSurface)
+          const isWindowsWebView = isWindowsWebViewEnvironment(window.navigator.userAgent)
           terminal = new xtermModule.Terminal({
+            // Start with the conservative ConPTY heuristics (no reflow) and relax them
+            // once the Windows build is known.
+            windowsPty: isWindowsWebView ? buildStationTerminalWindowsPty() : undefined,
             convertEol: false,
             fontFamily: resolveTerminalFontFamily(host),
             fontSize: resolveTerminalFontSize(host),
@@ -977,6 +985,17 @@ function StationXtermTerminalView({
             altClickMovesCursor: true,
             rightClickSelectsWord: true,
           })
+          if (isWindowsWebView) {
+            const createdTerminal = terminal
+            void detectStationTerminalWindowsPty(
+              (window.navigator as Navigator & { userAgentData?: Parameters<typeof detectStationTerminalWindowsPty>[0] })
+                .userAgentData,
+            ).then((windowsPty) => {
+              if (active && terminalRef.current === createdTerminal) {
+                createdTerminal.options.windowsPty = windowsPty
+              }
+            })
+          }
           fitAddon = new fitModule.FitAddon()
           const nextSerializeAddon = new serializeModule.SerializeAddon()
           serializeAddon = nextSerializeAddon
@@ -990,7 +1009,7 @@ function StationXtermTerminalView({
           if (
             shouldUseStationTerminalWebglRenderer({
               isMacOsWebKit: isMacOsWebKitEnvironmentRef.current,
-              isWindowsWebView: isWindowsWebViewEnvironment(window.navigator.userAgent),
+              isWindowsWebView,
             })
           ) {
             try {

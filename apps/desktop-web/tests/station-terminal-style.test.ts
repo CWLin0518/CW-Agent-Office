@@ -56,7 +56,11 @@ test('station terminal gates WebGL by platform plus system monospace and extende
   assert.match(stationTerminalSource, /allowProposedApi:\s*true/)
   assert.match(
     stationTerminalSource,
-    /isMacOsWebKit: isMacOsWebKitEnvironmentRef\.current,\s*isWindowsWebView: isWindowsWebViewEnvironment\(window\.navigator\.userAgent\)/,
+    /isMacOsWebKit: isMacOsWebKitEnvironmentRef\.current,\s*isWindowsWebView,/,
+  )
+  assert.match(
+    stationTerminalSource,
+    /windowsPty: isWindowsWebView \? buildStationTerminalWindowsPty\(\) : undefined/,
   )
   assert.match(stationTerminalSource, /new webglModule\.WebglAddon\(false\)/)
   assert.match(stationTerminalSource, /ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas, monospace/)
