@@ -387,6 +387,24 @@ fn update_agent_blocking(window: &tauri::Window, agent: AgentType) -> Result<(),
         None,
     );
 
+    let running = AgentInstaller::running_update_blockers(agent);
+    if running > 0 {
+        let message = format!(
+            "{name} is still running ({running} process(es)), which locks its files on Windows. Exit the {name} sessions in GT Office terminals, then retry the update."
+        );
+        emit_progress(
+            window,
+            &progress_event,
+            AgentInstallProgressPhase::Failed,
+            message.clone(),
+            None,
+            None,
+            Some(AgentInstallDiagnosticCode::PermissionDenied),
+        );
+        return Err(message);
+    }
+    AgentInstaller::prepare_update(agent);
+
     let plan = AgentInstaller::build_update_plan(agent);
     if plan.attempts.is_empty() {
         return Err(format!(
@@ -408,6 +426,24 @@ fn update_agent_blocking(window: &tauri::Window, agent: AgentType) -> Result<(),
     AgentInstaller::invalidate_install_status_cache(Some(agent));
     AgentInstaller::invalidate_capability_support_cache(Some(agent));
     let version = agent_version::agent_version_info(agent);
+    if version.update_available {
+        let installed = version.installed_version.as_deref().unwrap_or("unknown");
+        let latest = version.latest_version.as_deref().unwrap_or("unknown");
+        tracing::warn!(agent = ?agent, installed, latest, "agent cli update did not take effect");
+        let message = format!(
+            "{name} update finished but the launched command is still {installed} (latest {latest}). Another copy may shadow it on PATH, or files were locked; close running {name} sessions and retry."
+        );
+        emit_progress(
+            window,
+            &progress_event,
+            AgentInstallProgressPhase::Failed,
+            message.clone(),
+            None,
+            None,
+            Some(AgentInstallDiagnosticCode::VerificationFailed),
+        );
+        return Err(message);
+    }
     let message = match version.installed_version.as_deref() {
         Some(installed) => format!("{name} is now {installed}."),
         None => format!("{name} updated."),
