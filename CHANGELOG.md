@@ -1,3 +1,13 @@
+## v0.7.6 (2026-10-09)
+
+Windows release without Authenticode code signing. Windows may display an unknown publisher or SmartScreen warning.
+
+- Align agent communication policies and terminal runtime status.
+- Refresh the bundled Windows agent MCP sidecar.
+- Include current agent workspace, session and capability improvements.
+
+Windows packaging and installation were verified by the maintainer. Release checks: npm run typecheck and cargo check --workspace.
+
 ## v0.7.5 (2026-07-28)
 
 - a851ac1 Enhance quick dispatch rail and fix terminal presentation
