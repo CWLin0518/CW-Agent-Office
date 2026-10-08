@@ -180,6 +180,10 @@ jobs:
 
           echo "Version synced to ${version} in all config files."
 
+      - name: Prepare Windows ConPTY resources
+        if: matrix.platform == 'windows'
+        run: node scripts/ensure-windows-conpty.cjs
+
       - name: Rust check
         run: cargo check --workspace
 

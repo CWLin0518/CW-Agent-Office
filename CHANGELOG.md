@@ -1,3 +1,11 @@
+## v0.7.7 (2026-10-08)
+
+- 7089606 feat(agent): add YOLO launch mode and sync commands on provider switch
+- d413c5d docs: merge remote README updates while retaining feature screenshots
+- 3d5b01d docs: refresh bilingual READMEs and showcase agent canvas
+- a48356a docs: refresh bilingual READMEs for current features
+- 2fd887d chore(release): sync Cargo lockfile to 0.7.6
+
 ## v0.7.6 (2026-10-09)
 
 Windows release without Authenticode code signing. Windows may display an unknown publisher or SmartScreen warning.
