@@ -392,6 +392,22 @@ mod tests {
     }
 
     #[test]
+    fn update_blockers_ignore_codex_processes_outside_the_npm_package() {
+        let node_modules = Path::new(r"C:\Users\tester\AppData\Roaming\npm\node_modules");
+        let listing = "\
+101|C:\\Users\\tester\\AppData\\Local\\Programs\\Codex\\resources\\codex.exe
+202|c:\\users\\tester\\appdata\\roaming\\npm\\node_modules\\@openai\\codex-win32-x64\\vendor\\codex.exe
+303|C:\\Users\\tester\\.vscode\\extensions\\openai.chatgpt\\bin\\codex.exe
+404|
+";
+        let blockers =
+            AgentInstaller::processes_inside_package(listing, node_modules, AgentType::Codex);
+
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].0, 202);
+    }
+
+    #[test]
     fn classify_install_failure_treats_locked_files_as_permission_denied() {
         assert_eq!(
             AgentInstaller::classify_install_failure(
@@ -1210,27 +1226,71 @@ impl AgentInstaller {
         }
     }
 
-    /// Number of running native Codex processes. On Windows a running
-    /// `codex.exe` locks the npm package directory, so npm cannot replace it
-    /// (`EBUSY`/`EPERM`). Other platforms can replace files in use, so this
-    /// always returns 0 there, as it does for Claude Code (its updater
-    /// installs side by side).
-    pub fn running_update_blockers(agent: AgentType) -> usize {
+    /// Running native Codex processes (`pid`, executable path) launched from
+    /// the npm package being updated. On Windows a running `codex.exe` locks
+    /// that package directory, so npm cannot replace it (`EBUSY`/`EPERM`).
+    /// `codex.exe` copies elsewhere (Codex desktop app, editor extensions)
+    /// do not block the update and are ignored. Other platforms can replace
+    /// files in use, and Claude Code's updater installs side by side, so
+    /// this is always empty there.
+    pub fn running_update_blockers(agent: AgentType) -> Vec<(u32, String)> {
         if !cfg!(target_os = "windows") || agent != AgentType::Codex {
-            return 0;
+            return Vec::new();
         }
-        let mut command = Command::new("tasklist");
+        let Some(prefix) = Self::launch_executable_hint(agent)
+            .and_then(|executable| Self::npm_prefix_for_executable(agent, Path::new(&executable)))
+        else {
+            return Vec::new();
+        };
+        let mut command = Command::new("powershell");
         configure_background_command(&mut command);
         let Ok(output) = command
-            .args(["/FO", "CSV", "/NH", "/FI", "IMAGENAME eq codex.exe"])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'codex.exe' } | ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ExecutablePath }",
+            ])
             .output()
         else {
-            return 0;
+            return Vec::new();
         };
-        String::from_utf8_lossy(&output.stdout)
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let blockers =
+            Self::processes_inside_package(&listing, &prefix.join("node_modules"), agent);
+        tracing::info!(
+            listing = %listing.trim(),
+            blockers = blockers.len(),
+            "checked running codex processes before update"
+        );
+        blockers
+    }
+
+    /// Parses `pid|path` lines and keeps processes whose executable lives in
+    /// the agent's npm package (or its platform sub-packages such as
+    /// `@openai/codex-win32-x64`) under `node_modules`.
+    fn processes_inside_package(
+        listing: &str,
+        node_modules: &Path,
+        agent: AgentType,
+    ) -> Vec<(u32, String)> {
+        let package_prefix = Self::npm_package_dir(node_modules, agent)
+            .display()
+            .to_string()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        listing
             .lines()
-            .filter(|line| line.to_ascii_lowercase().starts_with("\"codex.exe\""))
-            .count()
+            .filter_map(|line| {
+                let (pid, path) = line.trim().split_once('|')?;
+                let pid = pid.trim().parse::<u32>().ok()?;
+                let path = path.trim();
+                path.replace('/', "\\")
+                    .to_ascii_lowercase()
+                    .starts_with(&package_prefix)
+                    .then(|| (pid, path.to_string()))
+            })
+            .collect()
     }
 
     fn shell_quote(value: &str) -> String {
