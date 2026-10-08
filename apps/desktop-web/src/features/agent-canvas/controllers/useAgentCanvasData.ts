@@ -19,9 +19,7 @@ import { buildAgentCanvasGraph, type AgentCanvasGraphView, type CanvasNodeInstan
  * the right value here (no per-user identity in this app yet). */
 const CAPABILITY_CONFIRMED_BY = 'System Admin'
 
-/** How often to re-poll links + runtime status while the pane is active.
- * There is no push/event mechanism for either yet (see docs/cw/04_客製化設計.md
- * §1) — this is a pane-lifetime interval, not new background infrastructure. */
+/** Roster/link refresh and recovery from missed terminal activity events. */
 const POLL_INTERVAL_MS = 8000
 
 /** Canvas node placement is deliberately client-only (docs/cw/04_客製化設計.md
@@ -538,6 +536,39 @@ export function useAgentCanvasData(
       // rather than clearing the canvas.
     }
   }, [workspaceId])
+
+  useEffect(() => {
+    if (!active || !workspaceId) return
+    let disposed = false
+    let timer: number | null = null
+    let inFlight = false
+    let unsubscribe: (() => void) | undefined
+    const scheduleStatusRefresh = (payload: { workspaceId: string }) => {
+      if (disposed || payload.workspaceId !== workspaceId || timer !== null || inFlight) return
+      // Coalesce output bursts without re-reading capabilities/output files.
+      timer = window.setTimeout(() => {
+        timer = null
+        inFlight = true
+        void desktopApi.agentCanvasRuntimeStatus(workspaceId)
+          .then((response) => { if (!disposed) setStatuses(response.statuses) })
+          .catch(() => { /* Existing polling retries transient failures. */ })
+          .finally(() => { inFlight = false })
+      }, 200)
+    }
+    void desktopApi.subscribeTerminalEvents({
+      onOutput: scheduleStatusRefresh,
+      onMeta: scheduleStatusRefresh,
+      onStateChanged: scheduleStatusRefresh,
+    }).then((cleanup) => {
+      if (disposed) cleanup()
+      else unsubscribe = cleanup
+    }).catch(() => { /* Polling remains available if subscribing fails. */ })
+    return () => {
+      disposed = true
+      if (timer !== null) window.clearTimeout(timer)
+      unsubscribe?.()
+    }
+  }, [active, workspaceId])
 
   useEffect(() => {
     if (!active || !workspaceId) return

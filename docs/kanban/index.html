@@ -320,7 +320,7 @@
         <!-- 頁面標題與需求總覽 -->
         <header>
             <h1>GT Office 改版規劃看板</h1>
-            <p class="subtitle">基於《04 客製化設計》與《08 Agent 能力掛載設計》文件 | 更新於 2026-08-24：P0～P4.6 已完成並通過 code review（P4.5、P4.6 尚待真人在桌面 App 內做操作驗證）；新增 P3.5-capability 四階段（按 Agent 掛載 MCP／Tool／Hook／Skill），設計已定案、尚未動工</p>
+            <p class="subtitle">更新於 2026-10-08：依 HEAD 1a152cf 核對；能力掛載與 Canvas 已提交，待補完整操作驗收紀錄。<a href="../TODO.md">目前待辦與驗證依據</a>。</p>
             <div class="requirements">
                 <div class="requirement-item">
                     <strong>需求 1:</strong> 節點式 Agent 協作畫布（Grasshopper 風格）
@@ -418,7 +418,7 @@
                         <div class="card-description">
                             新表 `agent_capability_snapshots`（比照 `agent_policy_snapshots` 不可變快照）、`AgentProfile.capability_snapshot_id`（ADD COLUMN）、`crates/gt-tools` 新增 `ProviderCapabilitySupport` 探測邏輯（跑 `--help` 比對 CLI 是否支援 `--mcp-config`/`--settings`/skills 目錄旗標，結果快取於 `.gtoffice/cache/provider-capability.json`）。不接 UI，先求可測試。詳見 <code>docs/cw/08_MCP_Hook_Skill掛載設計.md</code>。
                         </div>
-                        <div class="card-status">待開始</div>
+                        <div class="card-status completed">✓ 已提交；待端到端驗收</div>
                     </div>
                 </div>
 
@@ -428,9 +428,9 @@
                     <div class="card">
                         <div class="card-title">能力掛載：Claude 路徑</div>
                         <div class="card-description">
-                            `crates/gt-agent/src/capability.rs` 的 `materialize()`：MCP／Hooks 用 `--mcp-config`/`--settings` 疊加；Skills 依探測結果決定用旗標或複製進 `.claude/skills/`（只動自己管的檔案）。改 `resume.rs` 的 `build_relaunch_launch_command`/`build_resume_launch_command` 簽名接受 `MaterializedPaths`，回傳型別改成 command+args。含 content-hash 快取與 per-agent 併發鎖，驗證同一 agent 多個畫布節點時不互相覆蓋。
+                            `crates/gt-agent/src/capability/materialize.rs` 的 Claude materialize：MCP／Hooks 用 `--mcp-config`/`--settings` 疊加；Skills 依探測結果決定用旗標或複製進 `.claude/skills/`（只動自己管的檔案）。現行 resume.rs 接收 MaterializedCapability，啟動指令仍回傳字串，未改成 command+args。含 content-hash 快取與 per-agent 併發鎖，驗證同一 agent 多個畫布節點時不互相覆蓋。
                         </div>
-                        <div class="card-status">待開始</div>
+                        <div class="card-status completed">✓ 已提交；待端到端驗收</div>
                     </div>
                 </div>
 
@@ -440,9 +440,9 @@
                     <div class="card">
                         <div class="card-title">能力掛載：Codex 路徑</div>
                         <div class="card-description">
-                            v1 僅支援 MCP。啟動 PTY 時透過既有的 `TerminalCreateRequest::env` 注入 `CODEX_HOME`，指向每個 agent 專屬的隔離目錄；materialize 時讀使用者原本 `~/.codex/config.toml` 的非 `mcp_servers` 內容複製一份，再併入 agent 專屬的 `mcp_servers`。Skills／Hooks 對 Codex agent 明確擋下、UI 標示未支援，避免假掛載。工程風險最高的一段，安排在 Claude 路徑驗證過後再做。
+                            現行採 namespaced profile（codex -p &lt;profile&gt;），已支援 MCP、Skills、Hooks 並有 materialize 測試。待首次啟動、resume/fork 與真實 MCP 呼叫驗收；全域來源排除開關僅適用 Claude，Codex 不顯示該開關。原 CODEX_HOME 隔離方案為歷史設計。
                         </div>
-                        <div class="card-status">待開始</div>
+                        <div class="card-status completed">✓ 已提交；待端到端驗收</div>
                     </div>
                 </div>
 
@@ -454,7 +454,7 @@
                         <div class="card-description">
                             `StationManageModal.tsx` 新增「能力 / Capabilities」分頁，含 MCP servers、Skills、Hooks 三個子分頁。Hook 開放自訂指令，但送出前強制逐條列出「事件／matcher／實際指令」的完整 preview，並比照 04 文件 Provider Descriptor 的 version-lock（content hash + 強制 confirm）；每次 apply 寫入 `gt-ai-config` 既有的 audit_repository。
                         </div>
-                        <div class="card-status">待開始</div>
+                        <div class="card-status completed">✓ 已提交；待端到端驗收</div>
                     </div>
                 </div>
 
@@ -487,7 +487,7 @@
                             使用者後續要求把連線互動改成 Grasshopper 端點拖拉風格，第二輪 code review（僅涵蓋這次的前端互動重寫）抓到 Important：① 拖拉預覽線的起點只在按下當下算一次螢幕座標，拖曳中途縮放（滾輪/Ctrl+±）會讓預覽線跟來源端點脫節——改成每次 pointermove 都用 `event.currentTarget.getBoundingClientRect()`（pointer capture 期間 currentTarget 恆等於來源端點）即時重算。② 三種連線都不小心漏接了引擎原本提供的 `arrowMarkerUrl`，方向箭頭全部消失——已補回 authored/derived 兩種連線的 `markerEnd`（ownership 維持無箭頭，符合原本「非溝通類連線」的視覺語意）。Suggestion 追加修正：Esc 取消拖拉時原本沒有明確 release pointer capture（僅依賴 spec 承諾的隱含釋放），跨平台 WebView（WebView2/WKWebView/WebKitGTK）保險起見已加上明確 release。<br /><br />
                             實測時發現一個執行期錯誤（非 code review 抓到，是真人操作觸發的）：`handlePortPointerMove` 在 `setWireDrag` 的 updater function 裡才讀 `event.currentTarget`，但 React 合成事件的 `currentTarget` 在 handler 同步執行完就會變成 null（符合原生 DOM 事件規範），updater 卻是延後到 state 更新處理時才呼叫——拖曳端點移動滑鼠時就會噴 `Cannot read properties of null (reading 'getBoundingClientRect')`。已修成在 handler 內同步算好座標，updater 只單純合併，不再碰 `event`。<br /><br />
                             使用者後續回報畫布上的藍色虛線（derived 連線）想要能清除，補了兩個功能：① derived 連線右鍵「清除這筆記錄」，呼叫新的 `agent_canvas_delete_derived_link`（`delete_derived_link` 是方向性刪除，不像 authored 是無方向——因為 a→b 和 b→a 是各自獨立的往來事實，不是同一組關係）；之後如果這兩個 Agent 又真的有 gto send，線會自動重新出現，這只是清畫面顯示，不影響 gto send 權限。② 畫布控制列新增顯示/隱藏 derived 連線的切換鈕（純前端渲染過濾，不動資料庫）。<br /><br />
-                            後端 `local_bridge.rs` 的 edge 授權邏輯與 `agent_create_with_repo` 的 parent 政策檢查因既有測試套件（roles/departments 子系統殘留的大量已損壞測試檔，與本階段無關）目前無法整體 `cargo test`，新增測試已個別確認可編譯但無法實際執行；真人操作驗證（端點拖拉建線／Shift 取消連接／端點右鍵取消連接／derived 連線清除與顯示切換／未連線時 gto send 應被拒絕）尚未完整跑過，需要有人在桌面 App 裡再驗一輪。
+                            後端 `local_bridge.rs` 的 edge 授權邏輯與 `agent_create_with_repo` 的 parent 政策檢查因既有測試套件（roles/departments 子系統殘留的大量已損壞測試檔，與本階段無關）目前無法整體 `cargo test`，新增測試已個別確認可編譯但無法實際執行；真人操作驗證（端點拖拉建線／Shift 取消連接／端點右鍵取消連接／derived 連線清除與顯示切換／未連線且未啟用 communicate-with-all 時 gto send／status／handover 應被拒絕）尚未完整跑過，需要有人在桌面 App 裡再驗一輪。
                         </div>
                     </div>
                 </div>
@@ -523,11 +523,11 @@
                 <div class="kanban-column">
                     <div class="column-header">6.1 (可平行)</div>
                     <div class="card">
-                        <div class="card-title">終端機渲染破圖除錯</div>
+                        <div class="card-title">終端機 ConPTY 修復後回歸</div>
                         <div class="card-description">
-                            擴充 `TerminalDebugPanel` 的擷取範圍，記錄診斷資訊。獨立問題，不依賴也不被依賴其他階段。隨時可平行進行。
+                            已提交 ConPTY 設定、bundling、dev 載入與結束原因修復（8411428／1b977e7／9f47d99／19a6974）。待 Windows 10／11 長輸出、scrollback、切換與恢復驗收；不能宣稱破圖已完全解決。
                         </div>
-                        <div class="card-status">待開始</div>
+                        <div class="card-status">已修復；待回歸驗證</div>
                     </div>
                 </div>
 

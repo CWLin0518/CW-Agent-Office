@@ -10,6 +10,39 @@ This document defines the executable contracts between the React frontend and th
 4. **Error codes** are machine-readable and stable. Error messages are human-readable.
 5. **Workspace-scoped commands** must carry `workspace_id`.
 
+## Agent communication and runtime projection (2026-10-08)
+
+`task.dispatch_batch` and `channel.publish`, including their Tauri counterparts,
+share the same authorization gate for declared agent senders. The sender must
+belong to the workspace. `allow_gto_send = false` denies tasks, status reports,
+and handovers. Otherwise every target requires an authored edge, with the
+existing self-message and `communicate_with_all` exceptions. Human-originated
+messages do not use this agent gate. Repository failures deny the operation;
+authorization runs before publishing any message or starting a dispatch.
+
+Publication authorizes the same normalized targets used for delivery. A direct
+channel with no explicit targets uses its channel id as the target. Status and
+handover do not bypass authorization, even if an edge was removed during a task.
+Errors retain `AGENT_POLICY_GTO_SEND_DENIED` / `AGENT_POLICY_EDGE_REQUIRED`;
+missing or unknown agent senders return `AGENT_COMMUNICATION_INVALID_SENDER`.
+Sender identity still comes from the request under the existing bridge trust
+model; this change does not bind identities to individual bridge credentials.
+
+`agent_canvas_runtime_status` retains `{ statuses: AgentRuntimeStatus[] }` and
+the existing `state` values. Presence is a workspace-scoped runtime registration:
+missing entries are `offline` in the roster projection. Execution activity is
+terminal evidence: output, including hidden-terminal metadata with new unread
+bytes, makes the current session `active` for ten seconds; a quiet online
+session is `idle`. Channel messages no longer determine activity. Session
+replacement/unregistration clears activity; exited/killed/failed events remove
+only registrations matching the event's workspace and current session.
+
+The Canvas refreshes status on terminal events with coalescing and retains its
+eight-second polling fallback. This projection reports observed output and
+terminal presence. It does not distinguish quiet thinking from waiting for
+input, or retain a separate failure/attention state; those require reliable
+provider signals before extending the runtime snapshot contract.
+
 ## Unified Response Structure
 
 Every command returns a `ResultEnvelope`:

@@ -123,6 +123,11 @@ pub fn run() {
                 while let Ok(event) = receiver.recv() {
                     match event {
                         TerminalRuntimeEvent::Output(output) => {
+                            if !output.chunk.is_empty() {
+                                relay_state.task_service.observe_terminal_output(
+                                    &output.workspace_id, &output.session_id, output.ts_ms,
+                                );
+                            }
                             tool_adapter::ingest_external_reply_terminal_output(
                                 &relay_state,
                                 &output.session_id,
@@ -141,6 +146,10 @@ pub fn run() {
                             );
                         }
                         TerminalRuntimeEvent::StateChanged(terminal_state) => {
+                            relay_state.task_service.observe_terminal_state(
+                                &terminal_state.workspace_id, &terminal_state.session_id,
+                                &terminal_state.to,
+                            );
                             if terminal_state.to != "running" {
                                 let detail = terminal_state
                                     .detail
@@ -177,6 +186,12 @@ pub fn run() {
                             );
                         }
                         TerminalRuntimeEvent::Meta(meta) => {
+                            // Hidden terminals emit metadata instead of output frames.
+                            if meta.unread_bytes > 0 {
+                                relay_state.task_service.observe_terminal_output(
+                                    &meta.workspace_id, &meta.session_id, meta.ts_ms,
+                                );
+                            }
                             let _ = app_handle.emit(
                                 "terminal/meta",
                                 json!({

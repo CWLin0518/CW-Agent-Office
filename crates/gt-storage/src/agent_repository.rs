@@ -1407,51 +1407,69 @@ mod p3_5_agent_capability_tests {
     }
 
     #[test]
-    fn save_agent_capability_rejects_skills_and_hooks_for_codex_agent() {
-        let scratch = ScratchDb::new("codex-reject");
+    fn save_agent_capability_round_trips_skills_and_hooks_for_codex_agent() {
+        let scratch = ScratchDb::new("codex-capability");
         let repo = repo_with_one_agent(&scratch, "agent-1", "codex");
-
-        let mut with_skill = AgentCapabilitySnapshot::default();
-        with_skill.skills.push(SkillCapability {
+        let mut snapshot = AgentCapabilitySnapshot::default();
+        snapshot.skills.push(SkillCapability {
             id: "reviewer".to_string(),
             source_path: "/tmp/reviewer/SKILL.md".to_string(),
             enabled: true,
         });
-        let skill_result = repo.save_agent_capability("ws-1", "agent-1", &with_skill);
-        assert!(
-            skill_result.is_err(),
-            "codex agents must reject skills in v1"
-        );
-
-        let mut with_hook = AgentCapabilitySnapshot::default();
-        with_hook.hooks.push(HookCapability {
+        snapshot.hooks.push(HookCapability {
             event: "PreToolUse".to_string(),
             matcher: None,
             command: "echo hi".to_string(),
             note: None,
         });
-        let hook_result = repo.save_agent_capability("ws-1", "agent-1", &with_hook);
-        assert!(hook_result.is_err(), "codex agents must reject hooks in v1");
+        let snapshot_id = repo
+            .save_agent_capability("ws-1", "agent-1", &snapshot)
+            .expect("Codex supports skills and command hooks");
+        drop(repo);
+        let reopened =
+            SqliteAgentRepository::new(SqliteStorage::new(&scratch.path).expect("reopen storage"));
+        assert_eq!(
+            reopened
+                .get_agent_capability("ws-1", "agent-1")
+                .expect("read persisted capability"),
+            snapshot
+        );
+        let agent = reopened.list_agents("ws-1").expect("list agents").remove(0);
+        assert_eq!(
+            agent.capability_snapshot_id.as_deref(),
+            Some(snapshot_id.as_str())
+        );
+    }
 
-        // The rejected saves must not have repointed capability_snapshot_id or
-        // left partial rows behind.
-        let agent = repo
-            .list_agents("ws-1")
-            .expect("list agents")
-            .into_iter()
-            .find(|agent| agent.id == "agent-1")
-            .expect("agent-1 present");
-        assert_eq!(agent.capability_snapshot_id, None);
-
-        let conn = repo.connection().expect("connection");
-        let snapshot_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_capability_snapshots WHERE workspace_id = 'ws-1' AND agent_id = 'agent-1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count snapshots");
-        assert_eq!(snapshot_count, 0);
+    #[test]
+    fn global_capability_switch_survives_reopening_storage_without_changing_mounts() {
+        let scratch = ScratchDb::new("global-switch");
+        let mut repo = repo_with_one_agent(&scratch, "agent-1", "claude");
+        assert!(
+            repo.get_agent_capability("ws-1", "agent-1")
+                .expect("read new agent")
+                .global_capabilities_enabled
+        );
+        let mut snapshot = sample_mcp_only_capability();
+        for enabled in [false, true] {
+            snapshot.global_capabilities_enabled = enabled;
+            repo.save_agent_capability("ws-1", "agent-1", &snapshot)
+                .expect("save switch");
+            drop(repo);
+            repo = SqliteAgentRepository::new(
+                SqliteStorage::new(&scratch.path).expect("reopen storage"),
+            );
+            assert_eq!(
+                repo.get_agent_capability("ws-1", "agent-1")
+                    .expect("read switch and mounts"),
+                snapshot
+            );
+        }
+        assert!(repo
+            .get_agent_capability("other-workspace", "agent-1")
+            .expect("read unrelated workspace")
+            .mcp_servers
+            .is_empty());
     }
 
     #[test]

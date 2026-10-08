@@ -2,6 +2,8 @@
 
 Technical documentation for the GT Office project.
 
+- [TODO.md](TODO.md) — Current implementation gaps, pending acceptance checks, and evidence (updated 2026-10-08)
+
 ## Architecture
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture, monorepo layout, and data flow

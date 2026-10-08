@@ -366,8 +366,15 @@ mod tests {
 
     #[test]
     fn test_project_key_encoding() {
-        let key = claude_project_key_for_path(Path::new("/Users/test/my-project"));
-        assert_eq!(key, "-Users-test-my-project");
+        // A root-relative POSIX path is not absolute on Windows: it has no
+        // drive prefix and would exercise canonicalize instead of encoding.
+        #[cfg(windows)]
+        let (path, expected) = (r"C:\Users\test\my-project", "C--Users-test-my-project");
+        #[cfg(not(windows))]
+        let (path, expected) = ("/Users/test/my-project", "-Users-test-my-project");
+
+        assert!(Path::new(path).is_absolute());
+        assert_eq!(claude_project_key_for_path(Path::new(path)), expected);
     }
 
     #[test]

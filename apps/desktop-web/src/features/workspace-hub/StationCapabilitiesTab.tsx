@@ -234,7 +234,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
 
     return (
       <section className="station-form-grid station-capabilities-tab">
-        {skillsHooksSupported && (
+        {toolKind === 'claude' && (
           <div className="station-form-field station-form-span-2">
             <div className="station-form-surface">
               <label className="station-form-checkbox">
@@ -316,7 +316,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
                 workspaceId={workspaceId}
                 skills={draft.skills}
                 disabled={saving}
-                globalCapabilitiesEnabled={draft.globalCapabilitiesEnabled}
+                globalCapabilitiesEnabled={toolKind === 'claude' ? draft.globalCapabilitiesEnabled : undefined}
                 onChange={(skills) => setDraft((previous) => ({ ...previous, skills }))}
               />
             )}
@@ -333,7 +333,7 @@ export const StationCapabilitiesTab = forwardRef<StationCapabilitiesTabHandle, S
                 workspaceId={workspaceId}
                 hooks={draft.hooks}
                 disabled={saving}
-                globalCapabilitiesEnabled={draft.globalCapabilitiesEnabled}
+                globalCapabilitiesEnabled={toolKind === 'claude' ? draft.globalCapabilitiesEnabled : undefined}
                 onChange={(hooks) => setDraft((previous) => ({ ...previous, hooks }))}
               />
             )}
@@ -609,7 +609,7 @@ function SkillsEditor({
   /** Whether the agent-level "use global capabilities" master switch is on.
    * The global-scope checklist below is always view-only regardless of this
    * value — it only changes the badge each row shows (applied vs. not). */
-  globalCapabilitiesEnabled: boolean
+  globalCapabilitiesEnabled?: boolean
   onChange: (skills: SkillCapability[]) => void
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -721,27 +721,29 @@ function SkillsEditor({
             onToggleExpanded={toggleExpanded}
             onChange={onChange}
           />
-          <SkillChecklistGroup
-            locale={locale}
-            title={
-              locale === 'zh-CN' ? '全域安装技能（仅供检视）' : 'Globally Installed Skills (view-only)'
-            }
-            emptyLabel={
-              hasQuery && globalSkillsAll.length > 0
-                ? noSearchMatchLabel
-                : locale === 'zh-CN'
-                  ? '没有找到全域安装的技能。'
-                  : 'No globally installed skills found.'
-            }
-            items={globalSkills}
-            skills={skills}
-            disabled={disabled}
-            viewOnly
-            viewOnlyActive={globalCapabilitiesEnabled}
-            expanded={expanded}
-            onToggleExpanded={toggleExpanded}
-            onChange={onChange}
-          />
+          {globalCapabilitiesEnabled !== undefined && (
+            <SkillChecklistGroup
+              locale={locale}
+              title={
+                locale === 'zh-CN' ? '全域安装技能（仅供检视）' : 'Globally Installed Skills (view-only)'
+              }
+              emptyLabel={
+                hasQuery && globalSkillsAll.length > 0
+                  ? noSearchMatchLabel
+                  : locale === 'zh-CN'
+                    ? '没有找到全域安装的技能。'
+                    : 'No globally installed skills found.'
+              }
+              items={globalSkills}
+              skills={skills}
+              disabled={disabled}
+              viewOnly
+              viewOnlyActive={globalCapabilitiesEnabled}
+              expanded={expanded}
+              onToggleExpanded={toggleExpanded}
+              onChange={onChange}
+            />
+          )}
           {unmatched.length > 0 && (
             <div className="station-capabilities-skill-group">
               <h4>
@@ -902,7 +904,7 @@ function HooksEditor({
   hooks: HookCapability[]
   disabled: boolean
   /** See the analogous prop on `SkillsEditor`. */
-  globalCapabilitiesEnabled: boolean
+  globalCapabilitiesEnabled?: boolean
   onChange: (hooks: HookCapability[]) => void
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -1030,27 +1032,29 @@ function HooksEditor({
             onToggleExpanded={toggleExpanded}
             onChange={onChange}
           />
-          <HookChecklistGroup
-            locale={locale}
-            title={
-              locale === 'zh-CN' ? '全域已设定的 Hook（仅供检视）' : 'Globally Configured Hooks (view-only)'
-            }
-            emptyLabel={
-              hasQuery && globalHooksAll.length > 0
-                ? noSearchMatchLabel
-                : locale === 'zh-CN'
-                  ? '没有找到全域设定的 Hook。'
-                  : 'No globally configured hooks found.'
-            }
-            items={globalHooks}
-            hooks={hooks}
-            disabled={disabled}
-            viewOnly
-            viewOnlyActive={globalCapabilitiesEnabled}
-            expanded={expanded}
-            onToggleExpanded={toggleExpanded}
-            onChange={onChange}
-          />
+          {globalCapabilitiesEnabled !== undefined && (
+            <HookChecklistGroup
+              locale={locale}
+              title={
+                locale === 'zh-CN' ? '全域已设定的 Hook（仅供检视）' : 'Globally Configured Hooks (view-only)'
+              }
+              emptyLabel={
+                hasQuery && globalHooksAll.length > 0
+                  ? noSearchMatchLabel
+                  : locale === 'zh-CN'
+                    ? '没有找到全域设定的 Hook。'
+                    : 'No globally configured hooks found.'
+              }
+              items={globalHooks}
+              hooks={hooks}
+              disabled={disabled}
+              viewOnly
+              viewOnlyActive={globalCapabilitiesEnabled}
+              expanded={expanded}
+              onToggleExpanded={toggleExpanded}
+              onChange={onChange}
+            />
+          )}
         </>
       )}
 

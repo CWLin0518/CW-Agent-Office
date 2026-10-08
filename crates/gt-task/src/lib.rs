@@ -12,6 +12,8 @@ use std::{
 };
 use tracing::{debug, warn};
 
+mod runtime_activity;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DispatchSenderType {
@@ -150,6 +152,14 @@ pub struct ChannelPublishRequest {
     pub payload: Value,
     #[serde(default)]
     pub idempotency_key: Option<String>,
+}
+
+impl ChannelPublishRequest {
+    /// Authorization and delivery must use the same normalized recipients,
+    /// including a direct channel's id when explicit targets are omitted.
+    pub fn resolved_target_agent_ids(&self) -> Vec<String> {
+        resolve_publish_targets(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -455,6 +465,7 @@ pub struct TaskDispatchBatchOutcome {
 #[derive(Default)]
 struct TaskServiceState {
     runtimes: HashMap<String, AgentRuntimeRegistration>,
+    terminal_activity: HashMap<String, u64>,
     channel_seq: HashMap<String, u64>,
     channel_messages: Vec<ChannelMessageEvent>,
     route_bindings: Vec<ChannelRouteBinding>,
@@ -619,6 +630,7 @@ impl TaskService {
         };
         if !registration.online {
             guard.runtimes.remove(&key);
+            guard.terminal_activity.remove(&key);
             purge_agent_messages_locked(
                 &mut guard,
                 registration.workspace_id.as_str(),
@@ -636,6 +648,13 @@ impl TaskService {
             provider_session = ?registration.provider_session,
             "registered agent runtime"
         );
+        if guard
+            .runtimes
+            .get(&key)
+            .is_some_and(|previous| previous.session_id != registration.session_id)
+        {
+            guard.terminal_activity.remove(&key);
+        }
         guard.runtimes.insert(key, registration);
         true
     }
@@ -665,6 +684,7 @@ impl TaskService {
             Err(_) => return false,
         };
         let removed = guard.runtimes.remove(&key).is_some();
+        guard.terminal_activity.remove(&key);
         if removed {
             purge_agent_messages_locked(&mut guard, workspace_id, agent_id);
         }
@@ -682,52 +702,6 @@ impl TaskService {
             runtimes.retain(|runtime| runtime.workspace_id == workspace_id);
         }
         runtimes
-    }
-
-    /// Minimal, canvas-agnostic runtime status projection for agent-canvas
-    /// (docs/cw/05_PRD對齊調研.md "給 P4 的路標"). Deliberately not the full
-    /// Runtime Snapshot / Lifecycle State contract from
-    /// docs/AGENT_RUNTIME_UPGRADE_PRD.md — reuses `runtimes` (registered =
-    /// online; `register_runtime` already removes an entry on `online: false`,
-    /// so a stored entry is always online) plus recent `channel_messages`
-    /// activity, rather than adding a new detection mechanism.
-    ///
-    /// Only returns rows for agents currently registered here — gt-task has no
-    /// concept of the full agent roster (that's `AgentRepository`'s job), so it
-    /// can't tell "known agent that's offline" apart from "id that doesn't
-    /// exist". Callers with the full roster (the agent-canvas command layer)
-    /// should treat any agent id missing from this result as `Offline`.
-    pub fn agent_runtime_status(&self, workspace_id: &str) -> Vec<gt_agent::AgentRuntimeStatus> {
-        const ACTIVE_WINDOW_MS: u64 = 5 * 60 * 1000;
-        let guard = match self.state.read() {
-            Ok(guard) => guard,
-            Err(_) => return Vec::new(),
-        };
-        let now_ms = now_ms();
-        guard
-            .runtimes
-            .values()
-            .filter(|runtime| runtime.workspace_id == workspace_id)
-            .map(|runtime| {
-                let recently_active = guard.channel_messages.iter().any(|message| {
-                    message.workspace_id == workspace_id
-                        && now_ms.saturating_sub(message.ts_ms) <= ACTIVE_WINDOW_MS
-                        && (message.target_agent_id == runtime.agent_id
-                            || message.sender_agent_id.as_deref() == Some(&runtime.agent_id))
-                });
-                let state = if recently_active {
-                    gt_agent::AgentRuntimeState::Active
-                } else {
-                    gt_agent::AgentRuntimeState::Idle
-                };
-                gt_agent::AgentRuntimeStatus {
-                    agent_id: runtime.agent_id.clone(),
-                    workspace_id: workspace_id.to_string(),
-                    state,
-                    updated_at_ms: now_ms as i64,
-                }
-            })
-            .collect()
     }
 
     pub fn upsert_route_binding(&self, binding: ChannelRouteBinding) -> bool {
@@ -2283,8 +2257,8 @@ mod p4_agent_canvas_tests {
         );
         assert_eq!(
             find("agent-active").state,
-            gt_agent::AgentRuntimeState::Active,
-            "dispatch target should be Active right after a successful dispatch"
+            gt_agent::AgentRuntimeState::Idle,
+            "channel messages alone must not mark a terminal as Active"
         );
         assert!(
             !statuses

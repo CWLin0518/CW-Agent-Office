@@ -14,6 +14,7 @@ use crate::app_state::AppState;
 
 pub(crate) mod binding_cleanup;
 pub(crate) mod capability;
+pub(crate) mod communication;
 
 use binding_cleanup::{
     apply_direct_agent_binding_cleanup, collect_direct_agent_binding_dependencies,

@@ -10,9 +10,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(not(target_os = "windows"))]
+use std::thread;
 
 /// Always returns the same fixed policy, regardless of workspace/agent id —
 /// enough to exercise the Phase A file-system/shell enforcement added to
@@ -170,9 +172,10 @@ fn agent_policy_denies_workspace_root_path_matching_denied_prefix() {
     let (_workspace_service, provider, workspace_id) =
         create_provider_with_workspace(&workspace_dir.path);
 
-    let canonical_root = normalize_test_path(&workspace_dir.path.canonicalize().expect("canonical root"))
-        .to_string_lossy()
-        .to_string();
+    let canonical_root =
+        normalize_test_path(&workspace_dir.path.canonicalize().expect("canonical root"))
+            .to_string_lossy()
+            .to_string();
     let mut policy = AgentPolicy::default();
     policy.file_system.denied_path_prefixes.push(canonical_root);
     provider.set_agent_policy_provider(Arc::new(FixedAgentPolicyProvider { policy }));
@@ -205,9 +208,10 @@ fn agent_policy_is_not_consulted_without_an_agent_id() {
     let (_workspace_service, provider, workspace_id) =
         create_provider_with_workspace(&workspace_dir.path);
 
-    let canonical_root = normalize_test_path(&workspace_dir.path.canonicalize().expect("canonical root"))
-        .to_string_lossy()
-        .to_string();
+    let canonical_root =
+        normalize_test_path(&workspace_dir.path.canonicalize().expect("canonical root"))
+            .to_string_lossy()
+            .to_string();
     let mut policy = AgentPolicy::default();
     policy.file_system.denied_path_prefixes.push(canonical_root);
     provider.set_agent_policy_provider(Arc::new(FixedAgentPolicyProvider { policy }));
@@ -305,7 +309,10 @@ fn pty_provider_reports_why_a_session_exited_on_its_own() {
         }
     }
     let detail = detail.expect("exited event");
-    assert!(detail.contains("exit code 7"), "unexpected detail: {detail}");
+    assert!(
+        detail.contains("exit code 7"),
+        "unexpected detail: {detail}"
+    );
 }
 
 #[test]
@@ -323,7 +330,11 @@ fn pty_provider_emits_output_event_after_write() {
     let session = provider
         .create_session(TerminalCreateRequest {
             workspace_id: workspace.workspace_id.clone(),
-            shell: Some("/bin/bash".to_string()),
+            shell: if cfg!(windows) {
+                None
+            } else {
+                Some("/bin/bash".to_string())
+            },
             cwd: None,
             cwd_mode: TerminalCwdMode::WorkspaceRoot,
             env: BTreeMap::new(),
@@ -335,16 +346,23 @@ fn pty_provider_emits_output_event_after_write() {
         .set_session_visibility(&session.session_id, true)
         .expect("set session visible");
 
+    let command = if cfg!(windows) {
+        "Write-Output ('__VB_TERMINAL_' + 'EVENT_TEST__')\r"
+    } else {
+        "printf '%s%s\\n' '__VB_TERMINAL_' 'EVENT_TEST__'\n"
+    };
     provider
-        .write_session(&session.session_id, "echo __VB_TERMINAL_EVENT_TEST__\n")
+        .write_session(&session.session_id, command)
         .expect("write pty command");
 
     let mut observed_output = String::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
-        let event = receiver
-            .recv_timeout(Duration::from_millis(300))
-            .expect("should receive runtime event");
+        let event = match receiver.recv_timeout(Duration::from_millis(300)) {
+            Ok(event) => event,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(error) => panic!("terminal event stream disconnected: {error}"),
+        };
         if let TerminalRuntimeEvent::Output(output) = event {
             observed_output.push_str(&String::from_utf8_lossy(&output.chunk));
             if observed_output.contains("__VB_TERMINAL_EVENT_TEST__") {

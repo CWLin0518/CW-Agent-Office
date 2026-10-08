@@ -702,27 +702,7 @@ fn build_directory_snapshot<R: tauri::Runtime>(
     }))
 }
 
-/// Phase A "Agent" category (docs/cw/04_客製化設計.md §3), upgraded per P4.5
-/// (§1 decision 1) to edge-scoped authorization now that agent-canvas
-/// authored edges exist: `allow_gto_send = false` still denies unconditionally,
-/// but `true` (including the default for agents with no policy on record) now
-/// additionally requires an authored edge (either direction) between the
-/// sender and *every* target — drawing a line on the canvas is what makes two
-/// agents allowed to talk. An agent with `communicate_with_all` on (sender or
-/// target) skips the edge requirement entirely. This is an intentional
-/// behavior change from pre-P4.5
-/// (previously any agent could `gto send` any other with no edge at all); see
-/// §1's decision record for why this isn't re-litigated here. Returns `Ok(())`
-/// for a human sender.
-///
-/// Known scope gap: only `dispatch_batch` (below) calls this. `publish_channel`
-/// (also below) has no equivalent check — it never enforced even the pre-P4.5
-/// `allow_gto_send` switch — and the `gto_handover`/`gto_report_status` MCP
-/// sidecar tools route through it with an agent-supplied sender/targets, so
-/// they currently bypass this edge requirement entirely. Not closed in P4.5
-/// (would mean gating a second, separately-designed RPC path); the in-canvas
-/// notice is worded to describe `gto send` dispatch specifically, not a
-/// blanket "agents can't reach each other" guarantee.
+/// Dispatch and publication share the feature's fail-closed policy gate.
 fn ensure_agent_allowed_to_dispatch(
     app: &AppHandle,
     workspace_id: &str,
@@ -730,75 +710,21 @@ fn ensure_agent_allowed_to_dispatch(
     sender_agent_id: Option<&str>,
     target_agent_ids: &[String],
 ) -> Result<(), BridgeError> {
-    let (DispatchSenderType::Agent, Some(sender_agent_id)) = (sender_type, sender_agent_id) else {
-        return Ok(());
-    };
-    if sender_agent_id.trim().is_empty() {
-        return Ok(());
-    }
-    let Ok(repo) = resolve_agent_repository(app) else {
-        return Ok(());
-    };
-    let policy = repo
-        .get_agent_policy(workspace_id, sender_agent_id)
-        .unwrap_or_default();
-    if !policy.agent.allow_gto_send {
-        return Err(BridgeError::new(
-            "AGENT_POLICY_GTO_SEND_DENIED",
-            format!("agent '{sender_agent_id}' policy denies gto send"),
-        ));
-    }
-    // Agents flagged "communicate with all" (sender or target) need no canvas
-    // edge — the flag is the user's explicit grant to talk to everyone.
-    let broadcast_agent_ids = repo
-        .list_agents(workspace_id)
-        .map(|agents| {
-            agents
-                .into_iter()
-                .filter(|agent| agent.communicate_with_all)
-                .map(|agent| agent.id)
-                .collect::<std::collections::HashSet<_>>()
-        })
-        .unwrap_or_default();
-    let sender_broadcasts = broadcast_agent_ids.contains(sender_agent_id);
-    for target_agent_id in target_agent_ids {
-        if sender_broadcasts || broadcast_agent_ids.contains(target_agent_id) {
-            continue;
-        }
-        // An agent dispatching to itself (e.g. incidentally included in a
-        // multi-target broadcast) isn't a cross-agent communication and has
-        // no canvas edge to draw in the first place — `agent_canvas_create_authored_link`
-        // already refuses self-links (`ensure_distinct_agents_exist`), so
-        // requiring one here would make self-targeting permanently impossible.
-        if target_agent_id == sender_agent_id {
-            continue;
-        }
-        let has_edge = repo
-            .has_authored_edge(workspace_id, sender_agent_id, target_agent_id)
-            .map_err(|error| {
-                BridgeError::new(
-                    "LOCAL_BRIDGE_INTERNAL",
-                    format!("authored edge lookup failed: {error}"),
-                )
-            })?;
-        if !has_edge {
-            return Err(BridgeError::new(
-                "AGENT_POLICY_EDGE_REQUIRED",
-                format!(
-                    "no authored agent-canvas edge between '{sender_agent_id}' and '{target_agent_id}' — draw one on the canvas before sending"
-                ),
-            ));
-        }
-    }
-    Ok(())
+    crate::commands::agent::communication::ensure_agent_allowed_to_send(
+        app,
+        workspace_id,
+        sender_type,
+        sender_agent_id,
+        target_agent_ids,
+    )
+    .map_err(|error| BridgeError::new(error.code, error.message))
 }
 
 /// Writes a `derived` agent_links row (docs/cw/04_客製化設計.md §1) for every
 /// message event that actually has an agent sender — human-originated
 /// dispatches (`sender_agent_id: None`) don't produce a canvas edge. Best-effort:
 /// a failure here must never fail the dispatch/publish call itself, so errors
-/// are swallowed (mirrors `ensure_agent_allowed_to_dispatch`'s
-/// `resolve_agent_repository` fallback below).
+/// are non-authoritative; authorization repository failures deny communication.
 fn record_derived_links(
     app: &AppHandle,
     workspace_id: &str,
@@ -822,13 +748,12 @@ fn record_derived_links(
 }
 
 fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Value, BridgeError> {
-    let request: TaskDispatchBatchRequest =
-        serde_json::from_value(params).map_err(|error| {
-            BridgeError::new(
-                "LOCAL_BRIDGE_INVALID_PARAMS",
-                format!("task.dispatch_batch params invalid: {error}"),
-            )
-        })?;
+    let request: TaskDispatchBatchRequest = serde_json::from_value(params).map_err(|error| {
+        BridgeError::new(
+            "LOCAL_BRIDGE_INVALID_PARAMS",
+            format!("task.dispatch_batch params invalid: {error}"),
+        )
+    })?;
 
     if request.workspace_id.trim().is_empty() {
         return Err(BridgeError::new(
@@ -932,6 +857,19 @@ fn publish_channel(app: &AppHandle, state: &AppState, params: Value) -> Result<V
             "workspaceId is required",
         ));
     }
+
+    let sender_type = if request.sender_agent_id.is_some() {
+        DispatchSenderType::Agent
+    } else {
+        DispatchSenderType::Human
+    };
+    ensure_agent_allowed_to_dispatch(
+        app,
+        &request.workspace_id,
+        &sender_type,
+        request.sender_agent_id.as_deref(),
+        &request.resolved_target_agent_ids(),
+    )?;
 
     let outcome = state.task_service.publish(&request);
     emit_channel_events(app, &outcome.message_events, &outcome.ack_events);

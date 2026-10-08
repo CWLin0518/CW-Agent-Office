@@ -1,8 +1,8 @@
 # 全域 Hook/Skill 開關：讓「取消勾選」對全域項目真的生效
 
 > 日期：2026-09-08
-> 狀態：已實作、已通過 `cargo check --workspace`、`cargo test -p gt-agent -p gt-agent-session`、`cargo clippy -p gt-agent -p gt-agent-session --all-targets -- -D warnings`、`npm run typecheck`、`npx eslint`；尚未真人操作驗收
-> 背景：[08_MCP_Hook_Skill掛載設計.md](../08_MCP_Hook_Skill掛載設計.md)、[11_Skill掛載清單化.md](11_Skill掛載清單化.md)、[12_Hook掛載清單化.md](12_Hook掛載清單化.md)
+> 現況核對（2026-10-08）：原功能已提交，本輪修正尚未提交；現行全域清單永遠唯讀（見第 9 節），舊第 3～8 節為歷史。真人操作尚缺完整驗收紀錄。最初核對有 Windows scanner 路徑測試失敗，已修正；本輪 gt-agent／gt-task／gt-agent-session library 測試全過（84／13／84）。Codex 專用開關顯示已修正為隱藏。完整待辦見 [TODO](../TODO.md)。
+> 背景：[08_MCP_Hook_Skill掛載設計.md](08_MCP_Hook_Skill掛載設計.md)、[11_Skill掛載清單化.md](11_Skill掛載清單化.md)、[12_Hook掛載清單化.md](12_Hook掛載清單化.md)
 
 ## 1. 問題
 
@@ -80,16 +80,16 @@ Claude Code CLI 有 `--setting-sources <user,project,local 的子集合>` 旗標
 
 尚未做：真人在畫面上的操作驗收（這個環境沒有 UI 自動化工具）。
 
-## 7. 建議的驗收清單
+## 7. 目前適用的驗收清單（2026-10-08）
 
-- [ ] 開一個新 agent，確認能力分頁的主開關預設是「開」
-- [ ] 切換主開關為「關」，確認全域 Hook/Skill 清單自動全部勾上，且變成可互動狀態（工作區清單不受影響）
-- [ ] 存檔、重開 modal，確認開關狀態與勾選狀態都有正確持久化
-- [ ] 取消勾選其中一條全域 Hook，存檔後實際啟動這個 agent，確認終端機真正跑出來的指令帶有 `--setting-sources project,local`，且該 Hook 真的不再觸發（可比照本次驗證用的 marker-hook 手法）
-- [ ] 主開關開著的時候，確認全域項目的勾選框是 disabled 狀態，且「全選開啟/關閉」按鈕不會影響到它們
-- [ ] 主開關開著的時候，確認全域項目的勾選框顯示為**已勾選**（因為它們此時確實生效中），而不是照著實際掛載狀態顯示未勾選
-- [ ] 全域 Hook/Skill 掃描尚未完成時，確認主開關本身是 disabled 狀態、無法搶在掃描完成前切換
-- [ ] Codex agent 的能力分頁，確認完全看不到這個新開關
+- [ ] 新 Claude agent 的主開關預設為「開」；全域清單沒有 checkbox，徽章為「套用中」。
+- [ ] 關閉主開關後，全域清單仍唯讀，徽章變為「未套用」，不自動新增掛載項目；工作區與手動項目不被改寫。
+- [ ] 保存、重開 modal，確認開關與手動掛載狀態持久化。
+- [ ] Claude 關閉主開關後首次啟動及 resume，實際命令含 `--setting-sources project,local`；未手動掛載的全域 Hook 不觸發。
+- [ ] 主開關關閉時，手動新增的 Hook/Skill 仍按其 enabled 狀態掛載；舊全域掛載資料可在「手動新增／其他已掛載」中移除。
+- [ ] 全選開啟／關閉只影響工作區項目，不改動手動項目；全域 Hook 詳情不出現可編輯備註。
+- [ ] 掃描未完成時可切換主開關，掃描完成後徽章與狀態仍正確（現行切換不依賴掃描結果）。
+- [ ] Codex Skills/Hooks 分頁仍可使用，但不顯示 Claude 專用主開關與 Claude 全域清單；手動掛載能保存／生成 profile。
 
 ## 8. Code Review 記錄（2026-09-08）
 

@@ -1,5 +1,7 @@
 # Agent Canvas 與終端狀態不同步排查
 
+> 修正（2026-10-08）：Canvas 已改用 workspace/session-scoped 終端輸出與生命週期投影，含隱藏終端 metadata，已移除五分鐘 channel 判斷。十秒內有輸出為 Active，安靜 online session 為 Idle；退出後 Offline。前端訂閱事件並保留八秒輪詢。靜默思考／等待輸入尚無可靠 provider 訊號，未宣稱完整 Runtime Snapshot 已完成。以下為修正前的歷史排查，現行契約見 [API](../API_CONTRACTS.md)。
+
 > 記錄日期：2026-08-26  
 > 本輪範圍：只做靜態、唯讀診斷並記錄問題；未重啟、停止、寫入或派發任何正在運行的 Agent／terminal，也未修改產品程式碼。
 

@@ -151,6 +151,7 @@ struct RawProcessEntry {
     args: String,
 }
 
+#[cfg(not(target_os = "windows"))]
 fn parse_prefixed_u32(input: &str) -> Option<(u32, &str)> {
     let trimmed = input.trim_start();
     let digit_count = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
@@ -180,6 +181,7 @@ fn derive_executable_name(command_line: &str) -> String {
         .to_string()
 }
 
+#[cfg(not(target_os = "windows"))]
 fn parse_unix_process_table_line(line: &str) -> Option<RawProcessEntry> {
     let (pid, tail) = parse_prefixed_u32(line)?;
     let (parent_pid, args_tail) = parse_prefixed_u32(tail)?;

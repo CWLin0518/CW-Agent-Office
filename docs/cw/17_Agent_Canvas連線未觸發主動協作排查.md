@@ -1,7 +1,7 @@
 # Agent Canvas 連線未觸發主動協作排查
 
 > 日期：2026-08-26  
-> 狀態：已完成程式碼層調研，尚未實作  
+> 現況核對（2026-10-08）：初始協作上下文已實作於 `crates/gt-agent/src/collaboration.rs`，並由 `tool_profiles.rs` 啟動路徑注入；本次 3 個 collaboration 測試通過。以下是歷史排查與原設計，不能再將整項視為未實作。仍需確認既有 session 的拓撲更新、resume 路徑與真實委派驗收，見 [TODO](../TODO.md)。
 > 現象：使用者在 Agent Canvas 上連接兩個 Agent 後，若雙方的 system prompt／`CLAUDE.md`／`AGENTS.md` 沒有描述協作方式，Agent 通常不會主動呼叫已連線的另一個 Agent。
 
 ## 1. 結論

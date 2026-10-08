@@ -213,6 +213,15 @@ pub fn task_dispatch_batch(
         return Err("TASK_DISPATCH_INVALID: markdown must not be empty".to_string());
     }
 
+    crate::commands::agent::communication::ensure_agent_allowed_to_send(
+        &app,
+        &request.workspace_id,
+        &request.sender.sender_type,
+        request.sender.agent_id.as_deref(),
+        &request.targets,
+    )
+    .map_err(|error| format!("{}: {}", error.code, error.message))?;
+
     let workspace_root = state.workspace_root_path(&request.workspace_id)?;
     // `suppress_output_collection_instructions` is a per-send override from
     // Task Brief's checkbox — it must never touch the target's own
@@ -350,6 +359,20 @@ pub fn channel_publish(
     if request.workspace_id.trim().is_empty() {
         return Err("CHANNEL_PUBLISH_INVALID: workspaceId is required".to_string());
     }
+
+    let sender_type = if request.sender_agent_id.is_some() {
+        gt_task::DispatchSenderType::Agent
+    } else {
+        gt_task::DispatchSenderType::Human
+    };
+    crate::commands::agent::communication::ensure_agent_allowed_to_send(
+        &app,
+        &request.workspace_id,
+        &sender_type,
+        request.sender_agent_id.as_deref(),
+        &request.resolved_target_agent_ids(),
+    )
+    .map_err(|error| format!("{}: {}", error.code, error.message))?;
 
     let outcome = state.task_service.publish(&request);
     emit_channel_events(&app, &outcome.message_events, &outcome.ack_events);

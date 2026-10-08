@@ -3094,8 +3094,8 @@ export const messages = {
   'agentCanvas.toggleDerived.show': { 'zh-CN': '显示自动连线', 'en-US': 'Show derived connections' },
   'agentCanvas.toggleDerived.hide': { 'zh-CN': '隐藏自动连线', 'en-US': 'Hide derived connections' },
   'agentCanvas.notice.edgeRequired': {
-    'zh-CN': '提醒：Agent 之间透过 gto send 批次派发任务，现在需要先在这里手动拉一条连线；未连线会被拒绝。',
-    'en-US': 'Note: agents now need a hand-drawn connection here before a gto send task dispatch between them is allowed.',
+    'zh-CN': '提醒：Agent 之间派发任务、回报状态及交接都需要手动连线；「与所有 Agent 通讯」和发送给自己除外。权限设为禁止通讯时，仍会拒绝。',
+    'en-US': 'Agent task dispatch, status reports and handovers require a hand-drawn connection. Self-messages and “communicate with all” are exempt, but an explicit communication denial still applies.',
   },
   'agentCanvas.error.linkActionFailed': {
     'zh-CN': '连线操作失败',
