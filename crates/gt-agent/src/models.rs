@@ -86,6 +86,12 @@ pub struct AgentProfile {
     /// pattern). `false` = manual only, the default.
     #[serde(default)]
     pub session_boundary_auto_split_enabled: bool,
+    /// Whether this agent may talk to every other agent in the workspace
+    /// without hand-drawn agent-canvas edges ("broadcast" agent). Either side
+    /// of a `gto send` having this on satisfies the edge requirement, and the
+    /// canvas renders such agents with a glowing outline instead of wires.
+    #[serde(default)]
+    pub communicate_with_all: bool,
     pub order_index: i32,
     /// Points at the `AgentProfile.id` of the agent that created this one via
     /// agent-canvas's "new subagent" action. `None` for top-level agents.

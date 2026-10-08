@@ -799,6 +799,7 @@ export function createStationFromNumber(
     promptFileRelativePath: null,
     outputCollectionEnabled: input?.outputCollectionEnabled ?? false,
     sessionBoundaryAutoSplitEnabled: input?.sessionBoundaryAutoSplitEnabled ?? false,
+    communicateWithAll: input?.communicateWithAll ?? false,
     launchCommand: input?.launchCommand ?? null,
     terminalSessionId: `ts_${String(number).padStart(3, '0')}`,
     state: 'idle',
@@ -818,6 +819,7 @@ export function createStationEditInput(station: AgentStation): UpdateStationInpu
     promptContent: '',
     outputCollectionEnabled: station.outputCollectionEnabled,
     sessionBoundaryAutoSplitEnabled: station.sessionBoundaryAutoSplitEnabled,
+    communicateWithAll: station.communicateWithAll ?? false,
     launchCommand: station.launchCommand,
   }
 }

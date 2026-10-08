@@ -11,6 +11,8 @@ export interface CreateStationInput {
   promptContent: string
   outputCollectionEnabled: boolean
   sessionBoundaryAutoSplitEnabled: boolean
+  /** Lets this agent talk to every other workspace agent without canvas wires. */
+  communicateWithAll?: boolean
   launchCommand?: string | null
   /** Local filesystem path to seed promptContent from at creation time only —
    * see docs/cw/04_客製化設計.md §2. Ignored on update. */
@@ -38,6 +40,7 @@ export interface AgentStation {
   launchCommand?: string | null
   outputCollectionEnabled: boolean
   sessionBoundaryAutoSplitEnabled: boolean
+  communicateWithAll?: boolean
   terminalSessionId: string
   state: 'running' | 'idle' | 'blocked'
   workspaceId: string
@@ -90,6 +93,7 @@ export function mapAgentProfileToStation(
     launchCommand: agent.launchCommand,
     outputCollectionEnabled: agent.outputCollectionEnabled,
     sessionBoundaryAutoSplitEnabled: agent.sessionBoundaryAutoSplitEnabled,
+    communicateWithAll: agent.communicateWithAll ?? false,
     terminalSessionId: '',
     state: agent.state === 'blocked' ? 'blocked' : 'idle',
     workspaceId: agent.workspaceId,

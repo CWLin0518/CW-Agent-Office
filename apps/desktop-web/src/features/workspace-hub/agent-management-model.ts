@@ -102,14 +102,14 @@ export interface AgentModelOption {
   shortLabel: string
 }
 
+/** Fallback options used until the installed CLI reports its own list (see
+ * `useAgentModelOptions`). Claude Code's aliases always resolve to the newest
+ * model of that tier the installed CLI version knows, so they never go stale. */
 const CLAUDE_MODEL_OPTIONS: AgentModelOption[] = [
-  { value: 'claude-opus-5', label: 'Opus 5 (claude-opus-5)', shortLabel: 'Opus 5' },
-  { value: 'claude-sonnet-5', label: 'Sonnet 5 (claude-sonnet-5)', shortLabel: 'Sonnet 5' },
-  {
-    value: 'claude-haiku-4-5-20251001',
-    label: 'Haiku 4.5 (claude-haiku-4-5-20251001)',
-    shortLabel: 'Haiku 4.5',
-  },
+  { value: 'opus', label: 'Opus (latest)', shortLabel: 'Opus' },
+  { value: 'sonnet', label: 'Sonnet (latest)', shortLabel: 'Sonnet' },
+  { value: 'haiku', label: 'Haiku (latest)', shortLabel: 'Haiku' },
+  { value: 'opusplan', label: 'Opus Plan (Opus plans, Sonnet executes)', shortLabel: 'Opus Plan' },
 ]
 
 const CODEX_MODEL_OPTIONS: AgentModelOption[] = [
@@ -120,11 +120,33 @@ const CODEX_MODEL_OPTIONS: AgentModelOption[] = [
   },
   { value: 'gpt-5.1-codex', label: 'GPT-5.1 Codex (gpt-5.1-codex)', shortLabel: 'GPT-5.1 Codex' },
   { value: 'gpt-5.1', label: 'GPT-5.1 (gpt-5.1)', shortLabel: 'GPT-5.1' },
+]
+
+/** Short labels for pinned model ids saved by earlier versions, so existing
+ * agents keep a readable badge. */
+const LEGACY_MODEL_LABELS: AgentModelOption[] = [
+  { value: 'claude-opus-5', label: 'Opus 5 (claude-opus-5)', shortLabel: 'Opus 5' },
+  { value: 'claude-sonnet-5', label: 'Sonnet 5 (claude-sonnet-5)', shortLabel: 'Sonnet 5' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (claude-haiku-4-5-20251001)', shortLabel: 'Haiku 4.5' },
   { value: 'o3', label: 'o3', shortLabel: 'o3' },
 ]
 
-export function resolveModelOptionsForProvider(provider: ManagedAgentProvider): AgentModelOption[] {
-  return provider === 'claude' ? CLAUDE_MODEL_OPTIONS : CODEX_MODEL_OPTIONS
+/**
+ * Model options for `provider`: the list discovered from the installed CLI
+ * when available, else the static fallback. `currentModel` (e.g. an existing
+ * agent's `--model` value) is appended when missing so editing never drops it.
+ */
+export function resolveModelOptionsForProvider(
+  provider: ManagedAgentProvider,
+  discovered?: readonly AgentModelOption[] | null,
+  currentModel?: string,
+): AgentModelOption[] {
+  const base = discovered && discovered.length > 0 ? [...discovered] : provider === 'claude' ? [...CLAUDE_MODEL_OPTIONS] : [...CODEX_MODEL_OPTIONS]
+  if (currentModel && !base.some((option) => option.value === currentModel)) {
+    const legacy = LEGACY_MODEL_LABELS.find((option) => option.value === currentModel)
+    base.push(legacy ?? { value: currentModel, label: currentModel, shortLabel: currentModel })
+  }
+  return base
 }
 
 const LAUNCH_COMMAND_MODEL_FLAG_PATTERN = /\s*(?:--model|-m)(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g
@@ -159,17 +181,14 @@ export function applyModelToLaunchCommand(
   return `${base} --model ${model}`
 }
 
-/** Prefills the model selector from an existing agent's launch command, if it matches a known option. */
+/** Prefills the model selector from an existing agent's launch command.
+ * Unknown ids are kept too — `resolveModelOptionsForProvider` adds them as an
+ * option, since the CLI's model list changes between versions. */
 export function resolveInitialAgentModel(
-  provider: ManagedAgentProvider,
+  _provider: ManagedAgentProvider,
   launchCommand: string | null | undefined,
 ): string {
-  const extracted = extractModelFromLaunchCommand(launchCommand)
-  if (!extracted) {
-    return ''
-  }
-  const isKnown = resolveModelOptionsForProvider(provider).some((option) => option.value === extracted)
-  return isKnown ? extracted : ''
+  return extractModelFromLaunchCommand(launchCommand)
 }
 
 /**
@@ -188,7 +207,9 @@ export function resolveAgentModelDisplayLabel(
     return ''
   }
   const provider = resolveManagedProviderKey(tool)
-  const known = resolveModelOptionsForProvider(provider).find((option) => option.value === value)
+  const known = [...resolveModelOptionsForProvider(provider), ...LEGACY_MODEL_LABELS].find(
+    (option) => option.value === value,
+  )
   return known ? known.shortLabel : value
 }
 

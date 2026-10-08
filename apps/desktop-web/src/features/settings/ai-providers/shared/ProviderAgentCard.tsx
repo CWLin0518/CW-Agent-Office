@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { AiAgentSnapshotCard } from '@shell/integration/desktop-api'
+import type { AgentVersionInfo, AiAgentSnapshotCard } from '@shell/integration/desktop-api'
 import { AppIcon } from '@shell/ui/icons'
 import { t, translateMaybeKey, type Locale } from '@shell/i18n/ui-locale'
 import { resolveEnabledEnhancementCount } from './provider-utils'
@@ -15,6 +15,10 @@ interface ProviderAgentCardProps {
   statusLoading: boolean
   installingCli: boolean
   uninstallingCli: boolean
+  updatingCli?: boolean
+  /** `undefined` while the version check is still running. */
+  versionInfo?: AgentVersionInfo | null
+  onUpdate?: () => void
   onSelect: () => void
   onInstall: () => void
   onUninstall: () => void
@@ -72,6 +76,9 @@ export function ProviderAgentCard({
   statusLoading,
   installingCli,
   uninstallingCli,
+  updatingCli = false,
+  versionInfo,
+  onUpdate,
   onSelect,
   onInstall,
   onUninstall,
@@ -92,6 +99,12 @@ export function ProviderAgentCard({
   const enabledEnhancementCount = resolveEnabledEnhancementCount(agent)
   const hasEnvIssues = !statusLoading && !agent.installStatus.installed && agent.installStatus.requiresNode && (!agent.installStatus.nodeReady || !agent.installStatus.npmReady) && !agent.installStatus.brewReady
   const showManualUninstall = !statusLoading && agent.installStatus.installed && !agent.installStatus.uninstallAvailable
+
+  const updateCliDisabled = statusLoading || updatingCli || uninstallingCli || !onUpdate
+  const updateAvailable = Boolean(versionInfo?.updateAvailable)
+  const updateTitle = updateAvailable && versionInfo?.latestVersion
+    ? t(locale, 'aiConfig.card.updateAvailable', { version: versionInfo.latestVersion })
+    : t(locale, 'aiConfig.card.updateCli')
 
   const hasQuickCommands = agent.agent === 'claude' || agent.agent === 'codex'
 
@@ -166,6 +179,20 @@ export function ProviderAgentCard({
             <div className="pac-status-chip is-warning">
               <AppIcon name="cloud-download" width={11} height={11} />
               <span>{t(locale, 'aiConfig.card.notInstalledState')}</span>
+            </div>
+          )}
+          {!statusLoading && agent.installStatus.installed && versionInfo?.installedVersion && (
+            <div
+              className={`pac-status-chip ${updateAvailable ? 'is-warning' : 'is-success'}`}
+              title={versionInfo.latestVersion
+                ? t(locale, 'aiConfig.card.latestVersion', { version: versionInfo.latestVersion })
+                : undefined}
+            >
+              <span>
+                {updateAvailable && versionInfo.latestVersion
+                  ? `v${versionInfo.installedVersion} → v${versionInfo.latestVersion}`
+                  : `v${versionInfo.installedVersion}`}
+              </span>
             </div>
           )}
           {!statusLoading && enabledEnhancementCount > 0 && (
@@ -249,6 +276,20 @@ export function ProviderAgentCard({
             >
               <AppIcon name="sparkles" width={14} height={14} />
             </button>
+            {agent.installStatus.installed && (
+              <button
+                className={`pac-icon-btn ${updateAvailable ? 'is-highlight' : ''}`}
+                title={updateTitle}
+                aria-label={updatingCli ? t(locale, 'aiConfig.card.updating') : updateTitle}
+                disabled={updateCliDisabled}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (!updateCliDisabled) onUpdate?.()
+                }}
+              >
+                <AppIcon name={updatingCli ? 'activity' : 'refresh'} width={14} height={14} />
+              </button>
+            )}
             {agent.installStatus.installed && (
               <button
                 className={`pac-icon-btn is-danger ${uninstallCliDisabled ? 'is-disabled' : ''}`}

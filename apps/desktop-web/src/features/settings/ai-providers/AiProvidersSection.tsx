@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 
 import {
   desktopApi,
+  type AgentVersionInfo,
   type AiAgentInstallStatus,
   type AiAgentSnapshotCard,
   type AiConfigAgent,
@@ -41,7 +42,7 @@ function mapAgentType(agent: AiConfigAgent): 'ClaudeCode' | 'Codex' {
 
 interface ProgressModalState {
   agentId: AiConfigAgent
-  operation: 'install' | 'uninstall'
+  operation: 'install' | 'uninstall' | 'update'
   promise: Promise<void>
 }
 
@@ -102,6 +103,8 @@ export function AiProvidersSection({ workspaceId, locale }: AiProvidersSectionPr
   const [agentLoading, setAgentLoading] = useState<AgentLoadingMap>(() => toLoadingMap(null))
   const [installingAgent, setInstallingAgent] = useState<AiConfigAgent | null>(null)
   const [uninstallingAgent, setUninstallingAgent] = useState<AiConfigAgent | null>(null)
+  const [updatingAgent, setUpdatingAgent] = useState<AiConfigAgent | null>(null)
+  const [versionInfo, setVersionInfo] = useState<Partial<Record<AiConfigAgent, AgentVersionInfo | null>>>({})
   const [selectedAgentId, setSelectedAgentId] = useState<AiConfigAgent | null>(null)
   const [configAgentId, setConfigAgentId] = useState<AiConfigAgent | null>(null)
   const [serviceAgentId, setServiceAgentId] = useState<AiConfigAgent | null>(null)
@@ -136,6 +139,7 @@ export function AiProvidersSection({ workspaceId, locale }: AiProvidersSectionPr
         return
       }
       setSnapshot(data)
+      void refreshVersionInfo(data)
       setGtoCliStatus(cliStatus)
       setGtoSkillStatus(skillStatus)
       setAgentLoading(toLoadingMap(data))
@@ -152,6 +156,18 @@ export function AiProvidersSection({ workspaceId, locale }: AiProvidersSectionPr
         setIsRefreshing(false)
       }
     }
+  }
+
+  // Installed vs latest CLI version — runs after the snapshot since the
+  // registry lookup can take a few seconds and must not block the cards.
+  const refreshVersionInfo = async (data: AiConfigReadSnapshotResponse) => {
+    const installed = data.snapshot.agents.filter((agent) => agent.installStatus.installed)
+    await Promise.all(
+      installed.map(async (agent) => {
+        const info = await desktopApi.agentVersionInfo(mapAgentType(agent.agent)).catch(() => null)
+        setVersionInfo((current) => ({ ...current, [agent.agent]: info }))
+      }),
+    )
   }
 
   const handleSnapshotUpdate = (effective: AiConfigSnapshot) => {
@@ -259,10 +275,25 @@ export function AiProvidersSection({ workspaceId, locale }: AiProvidersSectionPr
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const handleUpdate = (agent: AiConfigAgent) => {
+    setUpdatingAgent(agent)
+    setActionError(null)
+    const promise = desktopApi.updateAgent(mapAgentType(agent))
+    setProgressModal({ agentId: agent, operation: 'update', promise })
+  }
+
+  const handleUpdateCompleted = useCallback((success: boolean) => {
+    setUpdatingAgent(null)
+    if (success) {
+      void handleReload({ background: true })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleProgressClose = useCallback(() => {
     setProgressModal(null)
     setInstallingAgent(null)
     setUninstallingAgent(null)
+    setUpdatingAgent(null)
     void handleReload({ background: true })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -345,6 +376,9 @@ export function AiProvidersSection({ workspaceId, locale }: AiProvidersSectionPr
             uninstallingCli={uninstallingAgent === agent.agent}
             onInstall={() => void handleInstall(agent.agent)}
             onUninstall={() => requestUninstall(agent.agent)}
+            updatingCli={updatingAgent === agent.agent}
+            versionInfo={versionInfo[agent.agent]}
+            onUpdate={() => handleUpdate(agent.agent)}
             onOpenEnhancements={() => {
               if (!workspaceId) {
                 setActionError(
@@ -412,14 +446,25 @@ export function AiProvidersSection({ workspaceId, locale }: AiProvidersSectionPr
           operation={progressModal.operation}
           operationPromise={progressModal.promise}
           onClose={handleProgressClose}
-          onCompleted={progressModal.operation === 'install' ? handleInstallCompleted : handleUninstallCompleted}
+          onCompleted={
+            progressModal.operation === 'install'
+              ? handleInstallCompleted
+              : progressModal.operation === 'update'
+                ? handleUpdateCompleted
+                : handleUninstallCompleted
+          }
           onRetry={
             progressModal.operation === 'install'
               ? () => {
                 setProgressModal(null)
                 handleInstall(progressModal.agentId)
               }
-              : undefined
+              : progressModal.operation === 'update'
+                ? () => {
+                  setProgressModal(null)
+                  handleUpdate(progressModal.agentId)
+                }
+                : undefined
           }
         />,
         document.body,

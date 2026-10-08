@@ -259,6 +259,13 @@
     color: var(--vb-accent);
   }
 
+  // Update button when a newer CLI release is available.
+  &.is-highlight {
+    border-color: var(--vb-accent);
+    color: var(--vb-accent);
+    background: color-mix(in srgb, var(--vb-accent) 10%, transparent);
+  }
+
   &.is-danger {
     &:hover:not(:disabled):not(.is-disabled) {
       border-color: #d94444;

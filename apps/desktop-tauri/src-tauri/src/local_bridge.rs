@@ -662,6 +662,7 @@ fn build_directory_snapshot<R: tauri::Runtime>(
                 "agentId": agent.id,
                 "name": agent.name,
                 "state": agent.state,
+                "communicateWithAll": agent.communicate_with_all,
                 "online": runtime.is_some_and(|item| item.online),
                 "sessionId": runtime.map(|item| item.session_id.clone()),
                 "toolKind": runtime.map(|item| item.tool_kind),
@@ -707,7 +708,9 @@ fn build_directory_snapshot<R: tauri::Runtime>(
 /// but `true` (including the default for agents with no policy on record) now
 /// additionally requires an authored edge (either direction) between the
 /// sender and *every* target — drawing a line on the canvas is what makes two
-/// agents allowed to talk. This is an intentional behavior change from pre-P4.5
+/// agents allowed to talk. An agent with `communicate_with_all` on (sender or
+/// target) skips the edge requirement entirely. This is an intentional
+/// behavior change from pre-P4.5
 /// (previously any agent could `gto send` any other with no edge at all); see
 /// §1's decision record for why this isn't re-litigated here. Returns `Ok(())`
 /// for a human sender.
@@ -745,7 +748,23 @@ fn ensure_agent_allowed_to_dispatch(
             format!("agent '{sender_agent_id}' policy denies gto send"),
         ));
     }
+    // Agents flagged "communicate with all" (sender or target) need no canvas
+    // edge — the flag is the user's explicit grant to talk to everyone.
+    let broadcast_agent_ids = repo
+        .list_agents(workspace_id)
+        .map(|agents| {
+            agents
+                .into_iter()
+                .filter(|agent| agent.communicate_with_all)
+                .map(|agent| agent.id)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let sender_broadcasts = broadcast_agent_ids.contains(sender_agent_id);
     for target_agent_id in target_agent_ids {
+        if sender_broadcasts || broadcast_agent_ids.contains(target_agent_id) {
+            continue;
+        }
         // An agent dispatching to itself (e.g. incidentally included in a
         // multi-target broadcast) isn't a cross-agent communication and has
         // no canvas edge to draw in the first place — `agent_canvas_create_authored_link`

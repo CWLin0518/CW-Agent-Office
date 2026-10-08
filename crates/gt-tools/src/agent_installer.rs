@@ -868,6 +868,88 @@ impl AgentInstaller {
         Self::build_install_plan_with_profile(agent, &profile)
     }
 
+    /// Upgrades an already-installed CLI to its latest release. Claude Code
+    /// ships its own `claude update` (works for native and npm installs);
+    /// Codex follows how it was installed (Homebrew cask or npm). `npm install
+    /// -g <pkg>` without a version resolves the `latest` dist-tag, so the
+    /// install attempts double as upgrade attempts and as the fallback.
+    pub fn build_update_plan(agent: AgentType) -> AgentInstallPlan {
+        let profile = Self::probe_install_network(agent);
+        let registry_candidates = Self::registry_candidates(&profile);
+        let npm_ready = Self::check_npm_env();
+        let executable = Self::launch_executable_hint(agent);
+        let mut attempts = Vec::new();
+
+        match agent {
+            AgentType::ClaudeCode => {
+                if let Some(executable) = executable.as_deref() {
+                    attempts.push(Self::self_update_attempt(agent, executable));
+                }
+            }
+            AgentType::Codex => {
+                let is_homebrew = executable.as_deref().is_some_and(|path| {
+                    path.contains("/opt/homebrew/") || path.contains("/.linuxbrew/")
+                });
+                if is_homebrew && !cfg!(target_os = "windows") {
+                    attempts.push(AgentInstallAttempt {
+                        id: "codex-brew-upgrade".to_string(),
+                        label: "Updating Codex CLI via Homebrew...".to_string(),
+                        phase: AgentInstallProgressPhase::Downloading,
+                        program: "bash".to_string(),
+                        args: vec![
+                            "-lc".to_string(),
+                            "brew upgrade --cask codex || brew upgrade codex".to_string(),
+                        ],
+                        env: BTreeMap::new(),
+                        timeout_ms: INSTALL_ATTEMPT_TIMEOUT_MS,
+                        retryable_diagnostics: Self::claude_official_retryable_diagnostics(),
+                    });
+                }
+            }
+        }
+        if npm_ready {
+            for (index, registry) in registry_candidates.iter().enumerate() {
+                attempts.push(Self::npm_install_attempt(
+                    agent,
+                    registry,
+                    index > 0 || !attempts.is_empty(),
+                ));
+            }
+        }
+        if attempts.is_empty() && agent == AgentType::ClaudeCode {
+            attempts.push(Self::claude_official_install_attempt());
+        }
+        AgentInstallPlan { attempts }
+    }
+
+    fn self_update_attempt(agent: AgentType, executable: &str) -> AgentInstallAttempt {
+        let (program, args) = if cfg!(target_os = "windows") {
+            (
+                "cmd".to_string(),
+                vec!["/C".to_string(), format!("\"{executable}\" update")],
+            )
+        } else {
+            (
+                "bash".to_string(),
+                vec![
+                    "-lc".to_string(),
+                    format!("'{}' update", executable.replace('\'', "'\\''")),
+                ],
+            )
+        };
+        AgentInstallAttempt {
+            id: format!("{}-self-update", Self::cache_key(agent)),
+            label: format!("Updating {}...", Self::agent_name(agent)),
+            phase: AgentInstallProgressPhase::Downloading,
+            program,
+            args,
+            env: BTreeMap::new(),
+            timeout_ms: INSTALL_ATTEMPT_TIMEOUT_MS,
+            // Any self-update failure falls through to the npm attempts.
+            retryable_diagnostics: Self::claude_official_retryable_diagnostics(),
+        }
+    }
+
     pub fn classify_install_failure(output: &str, timed_out: bool) -> AgentInstallDiagnosticCode {
         if timed_out {
             return AgentInstallDiagnosticCode::Timeout;

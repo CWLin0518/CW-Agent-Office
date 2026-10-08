@@ -249,11 +249,15 @@ export function AgentCanvasNodeCard({
   const title = agent.name || agent.id
   const isSubagent = Boolean(agent.parentAgentId)
   const modelLabel = resolveAgentModelDisplayLabel(agent.tool, agent.launchCommand)
+  const communicatesWithAll = Boolean(agent.communicateWithAll)
 
   return (
     <>
       <div
-        className={`agent-canvas-node${isSubagent ? ' agent-canvas-node--subagent' : ''}`}
+        className={`agent-canvas-node${isSubagent ? ' agent-canvas-node--subagent' : ''}${
+          communicatesWithAll ? ' agent-canvas-node--broadcast' : ''
+        }`}
+        title={communicatesWithAll ? t(locale, 'agentCanvas.node.communicateWithAll') : undefined}
         style={agent.color ? ({ '--agent-canvas-node-color': agent.color } as CSSProperties) : undefined}
       >
         {onRequestEdit && (
@@ -279,6 +283,9 @@ export function AgentCanvasNodeCard({
             aria-hidden="true"
           />
           <span className="agent-canvas-node-title">{title}</span>
+          {communicatesWithAll && (
+            <span className="agent-canvas-node-broadcast-badge">{t(locale, 'agentCanvas.node.allBadge')}</span>
+          )}
         </div>
         {!isSubagent && (
           <div className="agent-canvas-node-meta">

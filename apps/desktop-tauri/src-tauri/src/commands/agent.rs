@@ -555,6 +555,8 @@ pub struct AgentCreateRequest {
     pub output_collection_enabled: Option<bool>,
     #[serde(default)]
     pub session_boundary_auto_split_enabled: Option<bool>,
+    #[serde(default)]
+    pub communicate_with_all: Option<bool>,
     pub launch_command: Option<String>,
     #[serde(default)]
     pub external_template_path: Option<String>,
@@ -647,6 +649,7 @@ pub(crate) fn agent_create_with_repo(
         launch_command: request.launch_command,
         output_collection_enabled,
         session_boundary_auto_split_enabled,
+        communicate_with_all: request.communicate_with_all.unwrap_or(false),
         order_index: None,
         parent_agent_id,
         external_template_path,
@@ -730,6 +733,8 @@ pub struct AgentUpdateRequest {
     pub output_collection_enabled: Option<bool>,
     #[serde(default)]
     pub session_boundary_auto_split_enabled: Option<bool>,
+    #[serde(default)]
+    pub communicate_with_all: Option<bool>,
     pub launch_command: Option<String>,
 }
 
@@ -787,6 +792,9 @@ pub(crate) fn agent_update_with_repo(
             .output_collection_enabled
             .unwrap_or(existing_agent.output_collection_enabled),
         session_boundary_auto_split_enabled,
+        communicate_with_all: request
+            .communicate_with_all
+            .unwrap_or(existing_agent.communicate_with_all),
     };
 
     let agent = repo.update_agent(input).map_err(to_command_error)?;
@@ -1321,6 +1329,7 @@ mod subagent_creation_tests {
                 launch_command: None,
                 output_collection_enabled: false,
                 session_boundary_auto_split_enabled: false,
+                communicate_with_all: false,
                 order_index: None,
                 parent_agent_id: None,
                 external_template_path: None,
@@ -1354,6 +1363,7 @@ mod subagent_creation_tests {
             prompt_content: None,
             output_collection_enabled: None,
             session_boundary_auto_split_enabled: None,
+            communicate_with_all: None,
             launch_command: None,
             external_template_path: None,
             parent_agent_id: Some(parent_agent_id.to_string()),
@@ -1525,6 +1535,7 @@ mod delete_agent_workdir_tests {
             launch_command: None,
             output_collection_enabled: false,
             session_boundary_auto_split_enabled: false,
+            communicate_with_all: false,
             order_index: None,
             parent_agent_id: None,
             external_template_path: None,
