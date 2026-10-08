@@ -1,5 +1,6 @@
 use gt_agent_session::{
-    run_discovery, DiscoveryCache, Provider, ProviderScanner, ResumeService, SessionRelaunchMode,
+    derive_session_title_from_task, run_discovery, DiscoveryCache, Provider, ProviderScanner,
+    ResumeService, SessionRelaunchMode,
 };
 use gt_changefeed::{GitStatusSnapshot, SessionActivityEvent};
 use gt_task::AgentToolKind;
@@ -191,6 +192,7 @@ pub fn session_end(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn session_launch(
     workspace_id: String,
     station_id: String,
@@ -199,6 +201,7 @@ pub fn session_launch(
     cwd: String,
     terminal_session_id: Option<String>,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Value, String> {
     let provider = Provider::from_str_opt(&provider)
         .ok_or_else(|| format!("unsupported provider: {provider}"))?;
@@ -214,6 +217,13 @@ pub fn session_launch(
             terminal_session_id.as_deref(),
         )
         .map_err(|e| e.to_string())?;
+    emit_session_updated(
+        &app,
+        &workspace_id,
+        &gto_session_id,
+        terminal_session_id.as_deref(),
+        None,
+    );
     Ok(json!({ "gtoSessionId": gto_session_id }))
 }
 
@@ -225,6 +235,7 @@ pub fn session_resume_bind(
     station_id: String,
     agent_id: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Value, String> {
     let rebound = state
         .session_registry
@@ -239,6 +250,19 @@ pub fn session_resume_bind(
     if !rebound {
         return Err("SESSION_RESUME_BIND_NOT_FOUND".to_string());
     }
+    let title = state
+        .session_registry
+        .get_for_workspace(&workspace_id, &gto_session_id)
+        .ok()
+        .flatten()
+        .and_then(|session| session.title);
+    emit_session_updated(
+        &app,
+        &workspace_id,
+        &gto_session_id,
+        Some(&terminal_session_id),
+        title.as_deref(),
+    );
     Ok(json!({ "ok": true }))
 }
 
@@ -339,7 +363,12 @@ pub fn session_update_title(
     gto_session_id: String,
     title: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Value, String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("SESSION_UPDATE_TITLE_INVALID: title must not be empty".to_string());
+    }
     let updated = state
         .session_registry
         .update_title_for_workspace(&workspace_id, &gto_session_id, &title)
@@ -347,7 +376,100 @@ pub fn session_update_title(
     if !updated {
         return Err("SESSION_UPDATE_TITLE_NOT_FOUND".to_string());
     }
+    emit_session_updated(&app, &workspace_id, &gto_session_id, None, Some(&title));
     Ok(json!({ "ok": true }))
+}
+
+/// The live session behind a station's terminal, for the pane's session card.
+#[tauri::command]
+pub fn session_current_for_terminal(
+    workspace_id: String,
+    terminal_session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let current = state
+        .session_registry
+        .live_session_for_terminal(&workspace_id, &terminal_session_id)
+        .map_err(|e| e.to_string())?;
+    Ok(match current {
+        Some((gto_session_id, title)) => json!({ "gtoSessionId": gto_session_id, "title": title }),
+        None => Value::Null,
+    })
+}
+
+/// Names the terminal's live session after the first prompt typed into it
+/// (dispatched tasks are named from their task title server-side).
+#[tauri::command]
+pub fn session_name_from_task(
+    workspace_id: String,
+    terminal_session_id: String,
+    task: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<Value, String> {
+    let named = name_session_from_first_task(
+        &app,
+        state.inner(),
+        &workspace_id,
+        &terminal_session_id,
+        &task,
+    );
+    Ok(json!({ "named": named }))
+}
+
+/// Gives the live session on `terminal_session_id` a title derived from its
+/// first task, unless it already has one. Best-effort: naming must never fail
+/// the dispatch or input that triggered it. Returns whether a title was set.
+pub(crate) fn name_session_from_first_task(
+    app: &AppHandle,
+    state: &AppState,
+    workspace_id: &str,
+    terminal_session_id: &str,
+    task: &str,
+) -> bool {
+    let Some(title) = derive_session_title_from_task(task) else {
+        return false;
+    };
+    match state.session_registry.name_live_session_if_untitled(
+        workspace_id,
+        terminal_session_id,
+        &title,
+    ) {
+        Ok(Some(gto_session_id)) => {
+            tracing::info!(%gto_session_id, %title, "named session from first task");
+            emit_session_updated(
+                app,
+                workspace_id,
+                &gto_session_id,
+                Some(terminal_session_id),
+                Some(&title),
+            );
+            true
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(%error, "failed to name session from first task");
+            false
+        }
+    }
+}
+
+fn emit_session_updated(
+    app: &AppHandle,
+    workspace_id: &str,
+    gto_session_id: &str,
+    terminal_session_id: Option<&str>,
+    title: Option<&str>,
+) {
+    let _ = app.emit(
+        "session/updated",
+        json!({
+            "workspaceId": workspace_id,
+            "gtoSessionId": gto_session_id,
+            "terminalSessionId": terminal_session_id,
+            "title": title,
+        }),
+    );
 }
 
 #[tauri::command]

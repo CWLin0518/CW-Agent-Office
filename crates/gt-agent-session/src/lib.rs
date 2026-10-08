@@ -13,7 +13,9 @@ pub use git_diff::{build_handover_text, GitSessionDiff};
 pub use registry::SessionRegistry;
 pub use resume::{resolve_provider_session_id, ResumeService};
 pub use scanner::ProviderScanner;
-pub use summary::{extract_first_user_message, extract_session_title};
+pub use summary::{
+    derive_session_title_from_task, extract_first_user_message, extract_session_title,
+};
 pub use types::{SessionRelaunchMode, *};
 
 pub fn module_name() -> &'static str {

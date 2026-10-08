@@ -898,7 +898,15 @@ fn dispatch_batch(app: &AppHandle, state: &AppState, params: Value) -> Result<Va
         &output_directories,
         &session_boundary_agents,
         |session_id, command, submit_sequence| {
-            write_terminal_with_submit(state, session_id, command, submit_sequence)
+            write_terminal_with_submit(state, session_id, command, submit_sequence)?;
+            crate::commands::session::name_session_from_first_task(
+                app,
+                state,
+                &request.workspace_id,
+                session_id,
+                &request.title,
+            );
+            Ok(())
         },
     );
 

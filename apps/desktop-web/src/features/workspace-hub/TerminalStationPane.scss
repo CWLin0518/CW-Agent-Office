@@ -109,6 +109,12 @@
   }
 }
 
+// With a session card beside it, the name shrinks to its content so the card
+// sits right next to it (the card itself takes the remaining space).
+.terminal-station-pane-title:has(+ .session-title-card) {
+  flex: 0 1 auto;
+}
+
 .terminal-station-pane-chip {
   display: inline-flex;
   align-items: center;
