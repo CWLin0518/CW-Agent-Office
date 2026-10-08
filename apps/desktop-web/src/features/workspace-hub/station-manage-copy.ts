@@ -9,6 +9,8 @@ export interface StationManageModalCopy {
   namePlaceholder: string
   communicateWithAllLabel: string
   communicateWithAllHint: string
+  yoloModeLabel: string
+  yoloModeHint: string
 }
 
 export function resolveStationManageModalCopy(
@@ -16,6 +18,12 @@ export function resolveStationManageModalCopy(
   isEdit: boolean,
 ): StationManageModalCopy {
   return {
+    yoloModeLabel: t(locale, 'YOLO MODE（跳过权限确认）', 'YOLO MODE (skip permission prompts)'),
+    yoloModeHint: t(
+      locale,
+      '下次启动时生效。Claude 跳过权限确认；Codex 同时关闭沙盒限制。',
+      'Applies on the next launch. Claude skips permission prompts; Codex also disables sandbox restrictions.',
+    ),
     title: isEdit ? t(locale, '编辑agent', 'Edit Agent') : t(locale, '新增agent', 'Add Agent'),
     subtitle: isEdit
       ? t(

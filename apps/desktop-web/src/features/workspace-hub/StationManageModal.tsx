@@ -12,6 +12,9 @@ import { createStationTerminalFrameFlushScheduler } from '../terminal/station-te
 import { normalizeStationToolKind, type CreateStationInput, type UpdateStationInput } from './station-model'
 import {
   applyModelToLaunchCommand,
+  applyProviderToLaunchCommand,
+  applyYoloToLaunchCommand,
+  isYoloLaunchCommand,
   buildDefaultAgentWorkdir,
   buildSuggestedAgentWorkdir,
   isWorkspaceRootAgentWorkdir,
@@ -567,7 +570,7 @@ export function StationManageModal({
                   const nextProvider = event.target.value as ManagedAgentProvider
                   setProvider(nextProvider)
                   setModel('')
-                  setLaunchCommand((current) => applyModelToLaunchCommand(current, nextProvider, ''))
+                  setLaunchCommand((current) => applyProviderToLaunchCommand(current, provider, nextProvider))
                 }}
               >
                 {providerOptions.map((item) => (
@@ -649,6 +652,23 @@ export function StationManageModal({
                   ))}
                 </div>
               )}
+            </div>
+
+            <div className="station-form-field station-form-surface">
+              <label className="station-form-checkbox">
+                <input
+                  type="checkbox"
+                  checked={isYoloLaunchCommand(launchCommand, provider)}
+                  disabled={saving || deleting}
+                  aria-describedby="station-yolo-mode-hint"
+                  onChange={(event) => {
+                    const enabled = event.target.checked
+                    setLaunchCommand((current) => applyYoloToLaunchCommand(current, provider, enabled))
+                  }}
+                />
+                <span>{copy.yoloModeLabel}</span>
+              </label>
+              <p id="station-yolo-mode-hint">{copy.yoloModeHint}</p>
             </div>
 
             <div className="station-form-field station-form-surface">

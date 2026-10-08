@@ -161,6 +161,59 @@ export function extractModelFromLaunchCommand(launchCommand: string | null | und
   return match[1].replace(/^["']|["']$/g, '')
 }
 
+/** Provider-specific flags and custom commands cannot safely cross CLI boundaries.
+ * An empty command uses the selected provider's default executable. */
+export function applyProviderToLaunchCommand(
+  launchCommand: string,
+  currentProvider: ManagedAgentProvider,
+  nextProvider: ManagedAgentProvider,
+): string {
+  return currentProvider === nextProvider
+    ? launchCommand
+    : applyYoloToLaunchCommand('', nextProvider, isYoloLaunchCommand(launchCommand, currentProvider))
+}
+
+const YOLO_FLAGS: Record<ManagedAgentProvider, string> = {
+  codex: '--dangerously-bypass-approvals-and-sandbox',
+  claude: '--dangerously-skip-permissions',
+}
+
+function launchCommandTokens(command: string | null | undefined): string[] {
+  return (command ?? '').match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s"']+(?:"(?:\\.|[^"\\])*"|'[^']*')*/g) ?? []
+}
+
+export function isYoloLaunchCommand(
+  command: string | null | undefined,
+  provider: ManagedAgentProvider,
+): boolean {
+  const tokens = launchCommandTokens(command)
+  return tokens.includes(YOLO_FLAGS[provider])
+    || (provider === 'codex' && tokens.includes('--yolo'))
+    || (provider === 'claude' && tokens.some((token, index) =>
+      token === '--permission-mode=bypassPermissions'
+      || (token === '--permission-mode' && tokens[index + 1] === 'bypassPermissions')))
+}
+
+/** Store the toggle in the existing launch command so every normal launch uses it. */
+export function applyYoloToLaunchCommand(
+  command: string | null | undefined,
+  provider: ManagedAgentProvider,
+  enabled: boolean,
+): string {
+  const tokens = launchCommandTokens(command)
+  const stripped = tokens.filter((token, index) => {
+    if (token === YOLO_FLAGS.codex || token === YOLO_FLAGS.claude || token === '--yolo') return false
+    if (provider === 'claude') {
+      if (token === '--permission-mode=bypassPermissions') return false
+      if (token === '--permission-mode' && tokens[index + 1] === 'bypassPermissions') return false
+      if (token === 'bypassPermissions' && tokens[index - 1] === '--permission-mode') return false
+    }
+    return true
+  }).join(' ')
+  if (!enabled) return stripped === provider ? '' : stripped
+  return `${stripped || provider} ${YOLO_FLAGS[provider]}`
+}
+
 /**
  * Rewrites a raw launch command so its `--model` flag matches `model`
  * (removing the flag entirely when `model` is empty). Falls back to the bare
