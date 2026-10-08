@@ -305,6 +305,56 @@ impl SessionRegistry {
         Ok(changed > 0)
     }
 
+    /// The live session currently bound to `terminal_session_id`, as
+    /// `(gto_session_id, title)`. Terminal ids restart per app run, so only
+    /// `live` rows count and the most recently started one wins.
+    pub fn live_session_for_terminal(
+        &self,
+        workspace_id: &str,
+        terminal_session_id: &str,
+    ) -> SessionResult<Option<(String, Option<String>)>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| SessionError::Storage(e.to_string()))?;
+        let row = conn
+            .query_row(
+                "SELECT gto_session_id, title FROM gto_sessions WHERE workspace_id = ?1 AND terminal_session_id = ?2 AND lifecycle = 'live' ORDER BY started_at_ms DESC LIMIT 1",
+                params![workspace_id, terminal_session_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Names the live session on `terminal_session_id` after its first task.
+    /// Never overwrites an existing (e.g. hand-edited) title. Returns the
+    /// session id when a title was written.
+    pub fn name_live_session_if_untitled(
+        &self,
+        workspace_id: &str,
+        terminal_session_id: &str,
+        title: &str,
+    ) -> SessionResult<Option<String>> {
+        let Some((gto_session_id, existing)) =
+            self.live_session_for_terminal(workspace_id, terminal_session_id)?
+        else {
+            return Ok(None);
+        };
+        if existing.is_some_and(|value| !value.trim().is_empty()) {
+            return Ok(None);
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| SessionError::Storage(e.to_string()))?;
+        let changed = conn.execute(
+            "UPDATE gto_sessions SET title = ?1, updated_at_ms = ?2 WHERE gto_session_id = ?3 AND (title IS NULL OR TRIM(title) = '')",
+            params![title, now_ms(), gto_session_id],
+        )?;
+        Ok((changed > 0).then_some(gto_session_id))
+    }
+
     pub fn update_stats(&self, stats: &SessionStats) -> SessionResult<()> {
         let conn = self
             .conn
@@ -1045,6 +1095,42 @@ mod tests {
         assert_eq!(
             r.get("s1").unwrap().unwrap().title.as_deref(),
             Some("new title")
+        );
+    }
+
+    #[test]
+    fn test_name_live_session_if_untitled_only_fills_empty_live_titles() {
+        let r = temp_registry();
+        let id = r
+            .launch_session(
+                "ws1",
+                "st1",
+                "ag1",
+                Provider::Codex,
+                "/tmp",
+                Some("term:ws1:1"),
+            )
+            .unwrap();
+        assert_eq!(
+            r.name_live_session_if_untitled("ws1", "term:ws1:1", "Fix login bug")
+                .unwrap()
+                .as_deref(),
+            Some(id.as_str())
+        );
+        // A second task never renames it, nor does a hand-edited title get replaced.
+        assert_eq!(
+            r.name_live_session_if_untitled("ws1", "term:ws1:1", "Other")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            r.live_session_for_terminal("ws1", "term:ws1:1").unwrap(),
+            Some((id.clone(), Some("Fix login bug".to_string())))
+        );
+        assert_eq!(
+            r.name_live_session_if_untitled("ws2", "term:ws1:1", "x")
+                .unwrap(),
+            None
         );
     }
 

@@ -93,7 +93,9 @@ import {
   resolveStationCliLaunchCommand,
 } from '@features/workspace-hub/station-agent-runtime-model'
 import {
+  appendTypedTaskInput,
   buildSessionRelaunchLaunchCommand,
+  isTypedTaskCandidate,
   resolveStationSessionProvider,
   type SessionRelaunchRequest,
 } from '@features/session'
@@ -490,6 +492,10 @@ export function useShellTerminalController({
   const stationTerminalRestoreStateRef = useRef<Record<string, SessionOwnedRestoreState>>({})
   const stationTerminalInputControllerRef = useRef<BufferedStationInputController | null>(null)
   const stationSubmitSequenceRef = useRef<Record<string, string>>({})
+  // Line being typed per station, and terminal sessions already offered a
+  // first-task title (see nameSessionFromTypedTask).
+  const stationTypedTaskBufferRef = useRef<Record<string, string>>({})
+  const namedTypedTaskSessionsRef = useRef<Set<string>>(new Set())
   const renderedScreenReportRevisionRef = useRef<Map<string, number>>(new Map())
   const agentExecutionObservationRef = useRef<Record<string, AgentExecutionObservation>>({})
   const agentExecutionSnapshotRef = useRef<
@@ -3941,12 +3947,44 @@ export function useShellTerminalController({
   )
 
   // ── Handle station terminal input ──────────────────────────────────────
+  // Names the station's live session after the first prompt typed into it.
+  // Dispatched tasks are named server-side from their task title; the backend
+  // never overwrites a title, so this only fills sessions still untitled.
+  const nameSessionFromTypedTask = useCallback((stationId: string, line: string) => {
+    const workspaceId = activeWorkspaceIdRef.current
+    const sessionId = stationTerminalsRef.current[stationId]?.sessionId ?? null
+    const toolKind = stationsRef.current.find((entry) => entry.id === stationId)?.toolKind
+    if (
+      !workspaceId ||
+      !sessionId ||
+      (toolKind !== 'claude' && toolKind !== 'codex') ||
+      namedTypedTaskSessionsRef.current.has(sessionId) ||
+      !isTypedTaskCandidate(line)
+    ) {
+      return
+    }
+    namedTypedTaskSessionsRef.current.add(sessionId)
+    void desktopApi.sessionNameFromTask(workspaceId, sessionId, line).catch(() => {
+      namedTypedTaskSessionsRef.current.delete(sessionId)
+    })
+  }, [activeWorkspaceIdRef, stationsRef])
+
   const handleStationTerminalInput = useCallback(
     (stationId: string, data: string) => {
       const submitSequence = normalizeSubmitSequence(data)
       const focusReportInput = isStationTerminalFocusReportInput(data)
       if (focusReportInput) {
         return
+      }
+      if (submitSequence) {
+        const typedLine = stationTypedTaskBufferRef.current[stationId] ?? ''
+        stationTypedTaskBufferRef.current[stationId] = ''
+        nameSessionFromTypedTask(stationId, typedLine)
+      } else {
+        stationTypedTaskBufferRef.current[stationId] = appendTypedTaskInput(
+          stationTypedTaskBufferRef.current[stationId] ?? '',
+          data,
+        )
       }
       if (submitSequence) {
         stationSubmitSequenceRef.current[stationId] = submitSequence
@@ -3980,7 +4018,7 @@ export function useShellTerminalController({
       }
       sendStationTerminalInput(stationId, data)
     },
-    [reconcileStationRuntimeRegistration, sendStationTerminalInput],
+    [nameSessionFromTypedTask, reconcileStationRuntimeRegistration, sendStationTerminalInput],
   )
 
   // ── Resize station terminal ────────────────────────────────────────────

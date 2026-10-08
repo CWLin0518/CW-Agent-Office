@@ -191,9 +191,49 @@ pub fn truncate_title(text: &str, max_len: usize) -> String {
     }
 }
 
+const TASK_TITLE_MAX_CHARS: usize = 40;
+
+/// Turns a first task (dispatch title or typed prompt) into a short session
+/// title: first meaningful line, markdown heading/bullet markers stripped,
+/// whitespace collapsed, capped at 40 characters. `None` for empty input and
+/// CLI slash commands (`/model`), which aren't tasks.
+pub fn derive_session_title_from_task(task: &str) -> Option<String> {
+    let line = task.lines().map(str::trim).find(|line| !line.is_empty())?;
+    if line.starts_with('/') {
+        return None;
+    }
+    let line = line.trim_start_matches(['#', '>', '-', '*', ' ']);
+    let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    if collapsed.chars().count() <= TASK_TITLE_MAX_CHARS {
+        return Some(collapsed);
+    }
+    let truncated = collapsed
+        .chars()
+        .take(TASK_TITLE_MAX_CHARS)
+        .collect::<String>();
+    Some(format!("{}…", truncated.trim_end()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derives_task_titles() {
+        assert_eq!(
+            derive_session_title_from_task("\n## Fix   login\nmore").as_deref(),
+            Some("Fix login")
+        );
+        assert_eq!(derive_session_title_from_task("/model"), None);
+        assert_eq!(derive_session_title_from_task("   \n "), None);
+        let long = "修".repeat(50);
+        let title = derive_session_title_from_task(&long).unwrap_or_default();
+        assert_eq!(title.chars().count(), 41);
+        assert!(title.ends_with('…'));
+    }
     use std::fs;
 
     fn write_jsonl(path: &Path, content: &str) {
