@@ -592,6 +592,8 @@ export interface TerminalStatePayload {
   from: string
   to: string
   tsMs: number
+  /** Why a session ended on its own (pty EOF/read error, exit code). */
+  detail?: string | null
 }
 
 export interface TerminalMetaPayload {

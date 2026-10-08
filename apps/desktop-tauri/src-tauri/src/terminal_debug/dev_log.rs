@@ -13,6 +13,9 @@ pub enum TerminalDebugLogKind {
     Raw,
     Parsed,
     FrontendFocus,
+    /// Session exits and ConPTY selection — written in every build so a
+    /// silently closing agent can be diagnosed from a user's machine.
+    SessionLifecycle,
 }
 
 impl TerminalDebugLogKind {
@@ -21,6 +24,7 @@ impl TerminalDebugLogKind {
             Self::Raw => "raw.log",
             Self::Parsed => "parsed.log",
             Self::FrontendFocus => "frontend-focus.log",
+            Self::SessionLifecycle => "session-lifecycle.log",
         }
     }
 }
@@ -31,7 +35,7 @@ pub fn should_write_terminal_debug_log_for_build(
 ) -> bool {
     match kind {
         TerminalDebugLogKind::Raw | TerminalDebugLogKind::Parsed => debug_assertions,
-        TerminalDebugLogKind::FrontendFocus => true,
+        TerminalDebugLogKind::FrontendFocus | TerminalDebugLogKind::SessionLifecycle => true,
     }
 }
 

@@ -57,8 +57,21 @@ pub fn run() {
             // is spawned (see gt_terminal::conpty_sideload).
             if cfg!(windows) {
                 if let Ok(resource_dir) = app.path().resource_dir() {
-                    gt_terminal::conpty_sideload::preload_sideloaded_conpty(
-                        &resource_dir.join("resources").join("conpty"),
+                    let conpty_dir = resource_dir.join("resources").join("conpty");
+                    let bundled =
+                        gt_terminal::conpty_sideload::preload_sideloaded_conpty(&conpty_dir);
+                    let _ = terminal_debug::dev_log::append_dev_log(
+                        app.handle(),
+                        terminal_debug::dev_log::TerminalDebugLogKind::SessionLifecycle,
+                        &format!(
+                            "[{}] conpty: {} ({})\n",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|duration| duration.as_millis())
+                                .unwrap_or_default(),
+                            if bundled { "bundled" } else { "in-box (bundled not loaded)" },
+                            conpty_dir.display()
+                        ),
                     );
                 }
             }
@@ -107,6 +120,23 @@ pub fn run() {
                             );
                         }
                         TerminalRuntimeEvent::StateChanged(terminal_state) => {
+                            if terminal_state.to != "running" {
+                                let detail = terminal_state
+                                    .detail
+                                    .as_deref()
+                                    .unwrap_or("ended by GT Office (kill request)");
+                                terminal_debug::dev_log::append_dev_log_async(
+                                    app_handle.clone(),
+                                    terminal_debug::dev_log::TerminalDebugLogKind::SessionLifecycle,
+                                    format!(
+                                        "[{}] session {} {} -> {}: {detail}\n",
+                                        terminal_state.ts_ms,
+                                        terminal_state.session_id,
+                                        terminal_state.from,
+                                        terminal_state.to
+                                    ),
+                                );
+                            }
                             tool_adapter::ingest_external_reply_terminal_state(
                                 &relay_state,
                                 &terminal_state.session_id,
@@ -121,6 +151,7 @@ pub fn run() {
                                     "from": terminal_state.from,
                                     "to": terminal_state.to,
                                     "tsMs": terminal_state.ts_ms,
+                                    "detail": terminal_state.detail,
                                 }),
                             );
                         }
