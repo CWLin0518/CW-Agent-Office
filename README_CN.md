@@ -1,170 +1,126 @@
 <div align="center">
 
-# 🏢 GT Office
+# GT Office · CW-Agent-Office
 
-### 面向 Claude Code 与 Codex CLI 的 AI Agent 桌面应用
+### 面向 Claude Code 與 Codex CLI 的視覺化桌面工作台
 
-**告别终端 Tab 乱战，一个桌面 App 统一调度所有 AI Agent。**
+在同一個工作區管理 Agent、連接協作者、掛載能力、查看交付成果，並操作終端、檔案與 Git。
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Latest Release](https://img.shields.io/github/v/release/Laplace-bit/GT-Office?color=green&label=下载)](https://github.com/Laplace-bit/GT-Office/releases)
-[![Stars](https://img.shields.io/github/stars/Laplace-bit/GT-Office?style=social)](https://github.com/Laplace-bit/GT-Office/stargazers)
 
-[下载 macOS 版](https://github.com/Laplace-bit/GT-Office/releases) · [下载 Windows 版](https://github.com/Laplace-bit/GT-Office/releases) · [下载 Linux 版](https://github.com/Laplace-bit/GT-Office/releases) · [文档](docs/README.md) · [English](README.md)
+[下載](https://github.com/CWLin0518/CW-Agent-Office/releases) · [文件](docs/README.md) · [English](README.md)
 
 </div>
 
----
+本儲存庫是 **[GT Office](https://github.com/Laplace-bit/GT-Office) 的 CW-Agent-Office fork**，使用 Tauri、React 與 Rust，將終端型 AI Agent 整合到可保存設定、以工作區為範圍的桌面環境。現有原始碼版本：**0.7.6**。
 
-## GT Office 是什么？
+## Agent Canvas 協作畫布
 
-GT Office 是一个**跨平台 AI Agent 桌面应用**，也是一个面向开发者的**多智能体协同工作台**。它把 **Claude Code** 与 **Codex CLI**、终端、文件、Git、任务和消息通道整合进一个原生 **Tauri + React + Rust** 应用里。
+![Agent Canvas：協作連線、能力掛載與輸出節點](docs/assets/agent-canvas.jpg)
 
-如果你在找 **AI 编程 Agent IDE**、**AI Agent 桌面客户端**、**Claude Code 图形界面**、**Codex CLI 桌面工作台** 或 **多 Agent 编排工作区**，GT Office 面向的就是这类使用场景。
+- 從待命 Agent 清單拖曳到畫布；同一個 Agent 可以有多個視覺實例。
+- 手動畫出協作連線，定義哪些 Agent 能互相派發任務、回報進度及交接工作。
+- 查看掛載的 **MCP 伺服器、Skills 與 Hooks**，切換 MCP 開關並查看啟用的 Skill 數量。
+- 展開 **Output 輸出節點**，查看收集的交付檔案並開啟預覽。
+- 使用框選、對齊、顏色、縮放及復原整理節點；重開工作區時還原保存的佈局。
 
-## 为什么需要 GT Office？
+連線代表通訊授權，不會自動執行整套工作流程。自己派發與「允許與所有 Agent 通訊」設定可豁免連線要求，但明確禁止通訊的設定仍優先生效。
 
-如果你在用 **Claude Code 或 Codex CLI**，这些痛点你一定懂：
+## 現有功能
 
-- 😫 十几个终端 Tab，每个跑一个 Agent
-- 😫 Agent 之间无法互通
-- 😫 关掉终端，状态全丢
-- 😫 无法查看每个 Agent 的实时进展
-- 😫 在手机上完全无法监控 Agent 运行
-
-**GT Office 解决了所有这些问题。** 它是一个原生桌面应用，把零散的 CLI 工具变成统一的多 Agent 协同工作台。
-
-| 没有 GT Office | 有 GT Office |
+| 領域 | 已提供的能力 |
 |---|---|
-| 散落的终端 Tab | 统一工作台视图 |
-| Agent 之间无法通信 | Agent 间任务总线（`gto`） |
-| 关闭即丢失状态 | 工作区 & Agent 状态持久化 |
-| 无远程可见性 | 支持 Telegram / 微信 / 飞书通道 |
-| 手动编排 CLI 命令 | 一键启动 & 管理 Agent |
+| 工作區 | 開啟專案目錄、切換工作區分頁，保存 Agent 設定與佈局。 |
+| Agent 工位 | 在內嵌終端啟動 Claude Code 或 Codex CLI；設定提示詞、模型與啟動命令；安裝或更新支援的 CLI。 |
+| Session 管理 | 查看歷史 Session、重新命名，並延續或分叉支援的 CLI Session。 |
+| 能力掛載 | 為 Claude 與 Codex 設定各 Agent 的 MCP、Skills、Hooks。Claude 另支援排除全域 Skill／Hook 來源；Codex 沒有對應的全域來源開關。 |
+| Agent 協作 | 使用內建 `gto` CLI 探索 Agent、派發任務、回覆進度、交接工作，以及查看收件匣與任務對話串。 |
+| 任務與變更動態 | 查看任務進度、協作訊息與工作區變更。 |
+| 檔案 | 瀏覽及搜尋檔案，使用 Monaco 編輯文字，預覽 Markdown、圖片、PDF、音訊與影片。 |
+| Git | 查看狀態與差異、瀏覽提交圖、管理分支與 stash，以及操作提交歷史。 |
+| 外部通道 | 設定 Telegram、微信與飛書轉接器，將 Agent 綁定到外部通道；需要完成服務憑證與連線設定。 |
+| Business Designer | 以具型別的 Block 整理需求，查看推導關係與驗證缺口，審閱 Agent 提出的修改。 |
+| 桌面設定 | 中英文介面、明暗主題、快捷鍵，以及工作區與視窗佈局控制。 |
 
----
+活動狀態依近期終端輸出與 Session 生命週期事件呈現，無法可靠區分靜默思考與等待輸入。保存設定與 Session 歷史，也不代表已結束的程序會持續執行。
 
-## ✨ 核心功能
+## 快速上手
 
-| 🖥️ Agent 工位 | 📡 通道 |
-|:---:|:---:|
-| ![Agents View](docs/assets/agents-view.png) | ![Channel View](docs/assets/channel-view.png) |
-| 在一个工作区启动 & 管理多个 AI Agent | 将 Agent 输出推送到 Telegram、微信、飞书 |
+### 安裝桌面版本
 
-| ✅ 任务 | 📁 文件浏览 | 🔀 Git |
-|:---:|:---:|:---:|
-| ![Task View](docs/assets/task-view.png) | ![Explorer View](docs/assets/explorer-view.png) | ![Git View](docs/assets/git-view.png) |
-| 追踪 Agent 任务与进度 | 浏览 & 编辑项目文件 | 一键 Git 操作 |
+從[本 fork 的 Releases](https://github.com/CWLin0518/CW-Agent-Office/releases) 選擇可用安裝檔。建置流程涵蓋 **Windows、macOS 與 Linux**；實際產物依各次發布而定。各版本打包資訊請查看[發布紀錄](docs/releases/)。
 
-### GT Office 的差异化
+Claude Code 與 Codex CLI 需要各自安裝及登入。可使用應用程式內的 provider 設定，或既有 CLI 安裝，再登入要使用的服務。
 
-- 🏠 **工作区持久化** — 创建一次 Agent，跨会话保持状态，无需重启
-- 🔌 **100% 原生集成** — 直接嵌入官方 CLI，无抽象层，无能力损耗
-- 🔄 **Agent 间通信** — 内置 `gto` CLI，Agent 自动派发任务、共享上下文、交接工作
-- 📡 **外部通道代理** — 手机上的 Telegram、微信、飞书即可监控和指挥 Agent
-- ⚔️ **对抗推理架构** — 预设 生成者-评审者 角色，交付前自动内部审核
-- ⚙️ **可视化模型切换** — 随时切换 LLM 后端，零配置文件修改
+### 從原始碼啟動
 
-## 适合谁使用
-
-- 同时运行多个 AI 编程 Agent 的开发者
-- 使用 Claude Code 与 Codex CLI 或其他终端型 Agent 工具的团队
-- 希望把终端、文件、Git、任务和 Agent 交接放在同一个原生桌面工作区里的用户
-- 需要持久化多 Agent 会话，而不是一次性 terminal tab 的构建者
-
----
-
-## 🚀 快速上手
-
-### 直接安装
-
-下载适合你平台的最新版本：
-
-👉 **[GitHub Releases](https://github.com/Laplace-bit/GT-Office/releases)**
-
-### 从源码构建
+前置條件：**Node.js 20+**、**Rust stable**、Git，以及 Tauri 2 的平台建置環境。Windows 需要 MSVC C++ 建置工具與 WebView2；macOS 需要 Xcode command-line tools；Linux 需要 WebKitGTK 及[發布工作流程](.github/workflows/release.yml)列出的桌面函式庫。
 
 ```bash
-# 前置条件：Node.js 20+、Rust stable、平台 Tauri 依赖
-git clone https://github.com/Laplace-bit/GT-Office.git
-cd GT-Office
-npm install
+git clone https://github.com/CWLin0518/CW-Agent-Office.git
+cd CW-Agent-Office
+npm ci
 npm run dev:tauri
 ```
 
-macOS 提示：未签名构建首次运行需执行 `xattr -dr com.apple.quarantine /Applications/GT\ Office.app`。代码签名已在[路线图](#-路线图)中。
+`npm run dev:web` 只啟動前端；終端、檔案系統等原生能力需要桌面後端。
 
----
+### 建立協作工作區
 
-## 🏗️ 架构
+1. 開啟專案目錄作為工作區。
+2. 新增 Claude 或 Codex Agent，設定提示詞與模型。
+3. 掛載各 Agent 需要的 MCP 伺服器、Skills 與 Hooks。
+4. 將 Agent 放到畫布，連接需要協作的對象。
+5. 啟動終端、派發任務，查看回覆與 Output 輸出節點。
 
+### 使用 `gto` 通訊
+
+桌面應用程式與本機 bridge 運作時，在 Agent 終端執行：
+
+```bash
+gto directory snapshot --json
+gto agent send-task --target-agent-id <agent-id> --title "Review changes" --markdown "Review the diff and report findings." --json
+gto agent task-thread --task-id <returned-task-id> --json
 ```
-GT-Office/
-├── apps/desktop-web     # React + Vite 界面
-├── apps/desktop-tauri   # Tauri 壳（Rust ↔ JS 桥接）
-├── crates/              # Rust 领域模块
-│   ├── gt-terminal/     #   终端仿真
-│   ├── gt-git/          #   Git 操作
-│   ├── gt-workspace/    #   工作区管理
-│   ├── gt-task/         #   任务追踪
-│   └── ...
-├── packages/shared-types # 共享 TS/RS 契约
-├── tools/gto/           # Agent 通信 CLI
-└── docs/                # 架构 & 工作流文档
+
+Agent 終端會取得 `GTO_WORKSPACE_ID` 與 `GTO_AGENT_ID`。在其他環境執行時，請提供對應的工作區與 Agent 參數。保留回傳的 `taskId`，後續回報與交接使用相同 ID。若 PATH 找不到 `gto`，可在儲存庫根目錄使用 `node tools/gto/bin/gto.mjs`。完整命令與限制請見 [CLI 說明](tools/gto/README.md)。
+
+## 功能範圍與已知限制
+
+- 目前支援的編程 Agent provider 為 **Claude Code 與 Codex CLI**；Gemini CLI 支援已移除。
+- 部分政策欄位目前僅保存設定，包括 Git／VCS 政策、執行逾時與最大步數，尚未在執行時強制套用。
+- 延續 Session 時的協作上下文刷新，以及前端測試基礎設施，仍有工程追蹤項目。
+- Provider Descriptor／版本鎖重構與進一步的權限控制仍屬規劃事項。
+
+目前缺口與驗收紀錄請見[專案待辦與驗證依據](docs/TODO.md)。設計文件描述的目標可能超出現有實作範圍。
+
+## 開發與驗證
+
+```bash
+npm run typecheck
+cargo check --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+npm run build:tauri
 ```
 
-技术栈：**Rust** 后端 + **React** 前端 + **Tauri** 壳 = 快速、轻量、跨平台
+```text
+apps/desktop-web/       React 介面與 feature controllers
+apps/desktop-tauri/     Tauri shell 與按 feature 分類的 commands
+crates/                Rust 領域能力與基礎設施
+packages/shared-types/ 共用契約
+tools/gto/             Agent 通訊 CLI
+docs/                  架構、工作流程、驗收與發布紀錄
+```
 
----
+## 文件與參與開發
 
-## 🗺️ 路线图
+- [文件索引](docs/README.md)
+- [系統架構](docs/ARCHITECTURE.md) · [核心工作流程](docs/WORKFLOWS.md)
+- [API 契約](docs/API_CONTRACTS.md) · [依賴政策](docs/DEPENDENCIES.md)
+- [目前進度](docs/TODO.md) · [發布流程](docs/release-process.md)
+- [貢獻指南](CONTRIBUTING.md) · [儲存庫規則](AGENTS.md)
 
-- [x] 工作区级 Agent 管理
-- [x] Agent 间通信（`gto`）
-- [x] 外部通道代理（Telegram、微信、飞书）
-- [x] 跨平台构建（macOS, Windows, Linux）
-- [ ] 代码签名 & 公证（macOS + Windows）
-- [ ] 工具适配器插件系统
-- [ ] SSH 远程工作区
-- [ ] Homebrew / Winget / Scoop 分发
+依[議題追蹤政策](docs/agents/issue-tracker.md)，上游議題使用 [Laplace-bit/GT-Office Issues](https://github.com/Laplace-bit/GT-Office/issues)。回報問題時請區分上游行為與本 fork 的專屬變更。
 
----
-
-## 🤝 参与贡献
-
-欢迎贡献！详见 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发环境、代码风格和 PR 流程。
-
-**第一次参与？** 搜索 [`good first issue`](https://github.com/Laplace-bit/GT-Office/labels/good%20first%20issue) 标签快速上手。
-
----
-
-## 📖 文档
-
-| 文档 | 内容 |
-|-----|------|
-| [架构设计](docs/ARCHITECTURE.md) | 系统设计、目录结构、数据流 |
-| [工作流](docs/WORKFLOWS.md) | 核心用户工作流 & 多工作站协同 |
-| [API 契约](docs/API_CONTRACTS.md) | Tauri 命令、事件、共享类型 |
-| [依赖策略](docs/DEPENDENCIES.md) | 依赖白名单 & 添加规则 |
-| [发布流程](docs/release-process.md) | 标签、CI、产物发布 |
-
----
-
-## ⭐ 支持项目
-
-如果 GT Office 对你有用：
-
-- 给个 **Star** ⭐ — 帮助更多人发现它
-- 分享给你的团队
-- [提交 Issue](https://github.com/Laplace-bit/GT-Office/issues) 反馈 Bug 或需求
-- 加入社区讨论（即将开放）
-
----
-
-<div align="center">
-
-**为每天和 AI Agent 打交道的开发者而造 ❤️**
-
-[Apache License 2.0](LICENSE) · [GitHub](https://github.com/Laplace-bit/GT-Office) · [Releases](https://github.com/Laplace-bit/GT-Office/releases)
-
-</div>
+採用 [Apache 2.0 授權](LICENSE)。

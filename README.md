@@ -1,170 +1,126 @@
 <div align="center">
 
-# 🏢 GT Office
+# GT Office · CW-Agent-Office
 
-### AI Agent Desktop App for Claude Code and Codex CLI
+### A visual desktop workspace for Claude Code and Codex CLI
 
-**Stop juggling terminal tabs. Orchestrate all your AI agents in one desktop app.**
+Manage agents, connect collaborators, mount capabilities, and inspect deliverables alongside terminals, files, and Git.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Latest Release](https://img.shields.io/github/v/release/Laplace-bit/GT-Office?color=green&label=Download)](https://github.com/Laplace-bit/GT-Office/releases)
-[![Stars](https://img.shields.io/github/stars/Laplace-bit/GT-Office?style=social)](https://github.com/Laplace-bit/GT-Office/stargazers)
 
-[Download for macOS](https://github.com/Laplace-bit/GT-Office/releases) · [Download for Windows](https://github.com/Laplace-bit/GT-Office/releases) · [Download for Linux](https://github.com/Laplace-bit/GT-Office/releases) · [Documentation](docs/README.md) · [中文说明](README_CN.md)
+[Downloads](https://github.com/CWLin0518/CW-Agent-Office/releases) · [Documentation](docs/README.md) · [繁體中文](README_CN.md)
 
 </div>
 
----
+This repository is the **CW-Agent-Office fork of [GT Office](https://github.com/Laplace-bit/GT-Office)**. Built with Tauri, React, and Rust, it brings terminal-based AI agents into a persistent, workspace-scoped desktop environment. Current source version: **0.7.6**.
 
-## What Is GT Office?
+## Agent Canvas
 
-GT Office is a **cross-platform AI agent desktop app** and **multi-agent workspace** for developers. It brings **Claude Code** and **Codex CLI**, terminal sessions, files, Git, tasks, and channel notifications into one native **Tauri + React + Rust** application.
+![Agent Canvas with collaboration links, capability mounts, and output nodes](docs/assets/agent-canvas.jpg)
 
-If you are searching for an **AI coding agent IDE**, **desktop app for AI agents**, **Claude Code GUI**, **Codex CLI desktop client**, or a **multi-agent orchestration workspace**, this repository is built for that workflow.
+- Drag standby agents onto the canvas; one agent can have multiple visual instances.
+- Draw collaboration connections to define which agents can dispatch tasks, report progress, and hand over work.
+- Inspect mounted **MCP servers, Skills, and Hooks**, toggle MCP servers, and view enabled skill counts.
+- Expand **Output** nodes to browse collected deliverables and open previews.
+- Organize nodes with selection, alignment, colors, zoom, and undo; restore saved layouts when reopening the workspace.
 
-## Why GT Office?
+Connections define communication permissions; they do not automatically execute a workflow. Self-messages and **communicate with all** are exceptions to the connection requirement, while explicit communication denial still takes precedence.
 
-If you use **Claude Code or Codex CLI**, you know the pain:
+## Current features
 
-- 😫 A dozen terminal tabs, each running a different agent
-- 😫 No way for agents to talk to each other
-- 😫 State disappears when you close the terminal
-- 😫 No visibility into what each agent is doing
-- 😫 Can't monitor agents from your phone or chat apps
-
-**GT Office fixes all of this.** It's a native desktop app that turns isolated CLI tools into a coordinated multi-agent workspace.
-
-| Without GT Office | With GT Office |
+| Area | Available capabilities |
 |---|---|
-| Scattered terminal tabs | Unified workspace view |
-| Agents can't communicate | Agent-to-Agent task bus (`gto`) |
-| State lost on close | Persistent workspace & agent state |
-| No remote visibility | Telegram / WeChat / Feishu channels |
-| Manual CLI orchestration | One-click agent launch & management |
+| Workspaces | Open project directories, switch workspace tabs, and persist agent configuration and layout. |
+| Agent workstations | Launch Claude Code or Codex CLI in embedded terminals; configure prompts, models, and launch commands; install or update supported CLIs. |
+| Sessions | Browse session history, rename sessions, and continue or fork supported CLI sessions. |
+| Capability mounts | Configure agent-specific MCP, Skills, and Hooks for Claude and Codex. Claude additionally supports excluding global Skill/Hook sources; Codex has no equivalent global-source switch. |
+| Collaboration | Use the bundled `gto` CLI for discovery, task dispatch, progress replies, handovers, inboxes, and task threads. |
+| Tasks and change feed | Inspect task progress, collaboration messages, and workspace changes. |
+| Files | Browse and search files, edit text with Monaco, and preview Markdown, images, PDFs, audio, and video. |
+| Git | Inspect status and diffs, browse the commit graph, manage branches and stashes, and use commit-history actions. |
+| Channels | Configure Telegram, WeChat, and Feishu adapters and bind agents to external channels; service credentials and setup are required. |
+| Business Designer | Structure requirements as typed blocks, inspect derived relationships and validation gaps, and review proposed agent patches. |
+| Desktop settings | Chinese/English UI, light/dark themes, keyboard shortcuts, and workspace/window layout controls. |
 
----
+Activity indicators reflect recent terminal output and session lifecycle events. They do not reliably distinguish silent reasoning from waiting for input. Saved configuration and session history do not mean a terminated process keeps running.
 
-## ✨ Core Features
+## Quick start
 
-| 🖥️ Agent Workstations | 📡 Channels |
-|:---:|:---:|
-| ![Agents View](docs/assets/agents-view.png) | ![Channel View](docs/assets/channel-view.png) |
-| Launch & manage multiple AI agents in one workspace | Route agent output to Telegram, WeChat, Feishu |
+### Install a desktop build
 
-| ✅ Tasks | 📁 Explorer | 🔀 Git |
-|:---:|:---:|:---:|
-| ![Task View](docs/assets/task-view.png) | ![Explorer View](docs/assets/explorer-view.png) | ![Git View](docs/assets/git-view.png) |
-| Track agent tasks & progress | Browse & edit project files | Git operations in one click |
+Choose an available asset from [this fork’s releases](https://github.com/CWLin0518/CW-Agent-Office/releases). The build workflow targets **Windows, macOS, and Linux**; available assets depend on each release. See [release notes](docs/releases/) for packaging details.
 
-### What Makes GT Office Different
+Claude Code and Codex CLI require their own installation and authentication. Use the app’s provider setup or an existing CLI installation, then authenticate with your chosen provider.
 
-- 🏠 **Workspace-Centric Persistence** — Create agents once, they persist across sessions. No more restarting from scratch.
-- 🔌 **100% Native Integration** — Wraps official CLIs directly. No abstraction, no capability loss. Claude Code stays Claude Code.
-- 🔄 **Agent-to-Agent Communication** — Built-in `gto` CLI lets agents dispatch tasks, share context, and hand off work — automatically.
-- 📡 **External Channel Proxy** — Monitor and instruct agents from Telegram, WeChat, or Feishu on your phone.
-- ⚔️ **Adversarial Reasoning** — Pre-configured Generator-Evaluator roles for auto-review before delivery.
-- ⚙️ **Visual Model Switching** — Change backing LLMs on the fly, zero config file editing.
+### Run from source
 
-## Who GT Office Is For
-
-- Developers running multiple AI coding agents in parallel
-- Teams using Claude Code, Codex CLI, or other terminal-first agent tools
-- Users who want a native desktop workspace for terminals, files, Git, tasks, and agent handoffs
-- Builders who need persistent multi-agent sessions instead of disposable terminal tabs
-
----
-
-## 🚀 Quick Start
-
-### Install (Binary)
-
-Download the latest release for your platform:
-
-👉 **[GitHub Releases](https://github.com/Laplace-bit/GT-Office/releases)**
-
-### Install (From Source)
+Prerequisites: **Node.js 20+**, **Rust stable**, Git, and the platform build environment for Tauri 2. Windows needs MSVC C++ build tools and WebView2; macOS needs Xcode command-line tools; Linux needs WebKitGTK and the desktop libraries listed in the [release workflow](.github/workflows/release.yml).
 
 ```bash
-# Prerequisites: Node.js 20+, Rust stable, platform Tauri deps
-git clone https://github.com/Laplace-bit/GT-Office.git
-cd GT-Office
-npm install
+git clone https://github.com/CWLin0518/CW-Agent-Office.git
+cd CW-Agent-Office
+npm ci
 npm run dev:tauri
 ```
 
-macOS Gatekeeper note:unsigned builds need `xattr -dr com.apple.quarantine /Applications/GT\ Office.app` on first run. Code signing is on the [roadmap](#roadmap).
+`npm run dev:web` starts the frontend alone; terminals, filesystem access, and other native capabilities require the desktop backend.
 
----
+### Set up a collaboration workspace
 
-## 🏗️ Architecture
+1. Open a project directory as a workspace.
+2. Add Claude or Codex agents and configure their prompts and models.
+3. Mount the MCP servers, Skills, and Hooks each agent needs.
+4. Place agents on the canvas and connect collaborators.
+5. Launch their terminals, dispatch tasks, and inspect replies and Output nodes.
 
+### Communicate with `gto`
+
+With the desktop app and local bridge running, execute in an agent terminal:
+
+```bash
+gto directory snapshot --json
+gto agent send-task --target-agent-id <agent-id> --title "Review changes" --markdown "Review the diff and report findings." --json
+gto agent task-thread --task-id <returned-task-id> --json
 ```
-GT-Office/
-├── apps/desktop-web     # React + Vite UI
-├── apps/desktop-tauri   # Tauri shell (Rust ↔ JS bridge)
-├── crates/              # Rust domain modules
-│   ├── gt-terminal/     #   Terminal emulation
-│   ├── gt-git/          #   Git operations
-│   ├── gt-workspace/    #   Workspace management
-│   ├── gt-task/         #   Task tracking
-│   └── ...
-├── packages/shared-types # Shared TS/RS contracts
-├── tools/gto/           # Agent communication CLI
-└── docs/                # Architecture & workflow docs
+
+Agent terminals receive `GTO_WORKSPACE_ID` and `GTO_AGENT_ID`. Elsewhere, provide the appropriate workspace and agent flags. Keep the returned `taskId` for progress replies and handovers. If `gto` is not on PATH, use `node tools/gto/bin/gto.mjs` from the repository root. See the [CLI guide](tools/gto/README.md) for commands and limitations.
+
+## Scope and known limitations
+
+- Supported coding-agent providers are **Claude Code and Codex CLI**; Gemini CLI support was removed.
+- Some saved policy fields, including Git/VCS policy, execution timeout, and maximum steps, are not yet enforced at runtime.
+- Collaboration context refresh on resumed sessions and frontend test infrastructure still have engineering follow-ups.
+- Provider Descriptor/version-lock refactoring and further permission controls remain planned work.
+
+See [current status and evidence](docs/TODO.md) for tracked gaps and acceptance records. Design proposals may describe capabilities beyond the current implementation.
+
+## Development
+
+```bash
+npm run typecheck
+cargo check --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+npm run build:tauri
 ```
 
-Built with **Rust** backend + **React** frontend + **Tauri** shell = fast, lightweight, cross-platform.
+```text
+apps/desktop-web/       React UI and feature controllers
+apps/desktop-tauri/     Tauri shell and feature-aligned commands
+crates/                Rust domain and infrastructure modules
+packages/shared-types/ Shared contracts
+tools/gto/             Agent communication CLI
+docs/                  Architecture, workflows, QA, and release notes
+```
 
----
+## Documentation and contributions
 
-## 🗺️ Roadmap
+- [Documentation index](docs/README.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Workflows](docs/WORKFLOWS.md)
+- [API contracts](docs/API_CONTRACTS.md) · [Dependency policy](docs/DEPENDENCIES.md)
+- [Current status](docs/TODO.md) · [Release process](docs/release-process.md)
+- [Contributing](CONTRIBUTING.md) · [Repository instructions](AGENTS.md)
 
-- [x] Workspace-centric agent management
-- [x] Agent-to-Agent communication (`gto`)
-- [x] External channel proxy (Telegram, WeChat, Feishu)
-- [x] Cross-platform builds (macOS, Windows, Linux)
-- [ ] Code signing & notarization (macOS + Windows)
-- [ ] Plugin system for tool adapters
-- [ ] Remote workspace over SSH
-- [ ] Homebrew / Winget / Scoop distribution
+Upstream issues are tracked at [Laplace-bit/GT-Office](https://github.com/Laplace-bit/GT-Office/issues), as specified in the [issue-tracker policy](docs/agents/issue-tracker.md). Distinguish upstream behavior from fork-specific changes when reporting problems.
 
----
-
-## 🤝 Contributing
-
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, and PR process.
-
-**New to the project?** Look for [`good first issue`](https://github.com/Laplace-bit/GT-Office/labels/good%20first%20issue) labels to get started.
-
----
-
-## 📖 Documentation
-
-| Doc | Content |
-|-----|---------|
-| [Architecture](docs/ARCHITECTURE.md) | System design, monorepo layout, data flow |
-| [Workflows](docs/WORKFLOWS.md) | Core user workflows & multi-station collaboration |
-| [API Contracts](docs/API_CONTRACTS.md) | Tauri commands, events, shared types |
-| [Dependencies](docs/DEPENDENCIES.md) | Dependency policy & allowlist |
-| [Release Process](docs/release-process.md) | Tagging, CI, artifact publishing |
-
----
-
-## ⭐ Show Your Support
-
-If GT Office sounds useful to you:
-
-- Drop a **Star** ⭐ on this repo — it helps others discover it
-- Share it with your team
-- [Open an issue](https://github.com/Laplace-bit/GT-Office/issues) for bugs or feature requests
-- Join the discussion (coming soon!)
-
----
-
-<div align="center">
-
-**Made with ❤️ for developers who work with AI agents every day**
-
-[Apache License 2.0](LICENSE) · [GitHub](https://github.com/Laplace-bit/GT-Office) · [Releases](https://github.com/Laplace-bit/GT-Office/releases)
-
-</div>
+Licensed under [Apache 2.0](LICENSE).
