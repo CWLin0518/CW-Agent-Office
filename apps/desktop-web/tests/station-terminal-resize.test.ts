@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  createStationTerminalResizeCoalescer,
   normalizeStationTerminalResizeDimensions,
   scheduleStationTerminalFitRetryFrame,
 } from '../src/features/terminal/station-terminal-resize.js'
@@ -123,4 +124,96 @@ test('terminal fit retry frame cancellation clears pending callbacks', () => {
   assert.equal(retry.handle, null)
   assert.deepEqual(fake.cancelledFrames, [1])
   assert.deepEqual(fake.clearedTimeouts, [2])
+})
+
+function createFakeResizeTimers() {
+  let nextId = 1
+  const callbacks = new Map<number, () => void>()
+  return {
+    timers: {
+      setTimeout: (callback: () => void) => {
+        const id = nextId
+        nextId += 1
+        callbacks.set(id, callback)
+        return id
+      },
+      clearTimeout: (id: number) => {
+        callbacks.delete(id)
+      },
+    },
+    runAll: () => {
+      const pending = [...callbacks.entries()]
+      callbacks.clear()
+      for (const [, callback] of pending) {
+        callback()
+      }
+    },
+    pendingCount: () => callbacks.size,
+  }
+}
+
+const flushMicrotasks = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+test('resize coalescer only sends the last size requested within the settle window', async () => {
+  const { timers, runAll } = createFakeResizeTimers()
+  const coalescer = createStationTerminalResizeCoalescer(timers)
+  const sent: Array<[number, number]> = []
+  const send = async (cols: number, rows: number) => {
+    sent.push([cols, rows])
+  }
+  coalescer.request('ws::s1', 80, 24, send)
+  coalescer.request('ws::s1', 100, 30, send)
+  coalescer.request('ws::s1', 120, 40, send)
+  runAll()
+  await flushMicrotasks()
+  assert.deepEqual(sent, [[120, 40]])
+})
+
+test('resize coalescer keeps one request in flight and sends the latest size after it settles', async () => {
+  const { timers, runAll } = createFakeResizeTimers()
+  const coalescer = createStationTerminalResizeCoalescer(timers)
+  const sent: Array<[number, number]> = []
+  let releaseFirst: (() => void) | null = null
+  const send = (cols: number, rows: number) => {
+    sent.push([cols, rows])
+    if (sent.length === 1) {
+      return new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+    }
+    return Promise.resolve()
+  }
+  coalescer.request('ws::s1', 80, 24, send)
+  runAll()
+  await flushMicrotasks()
+  coalescer.request('ws::s1', 90, 24, send)
+  coalescer.request('ws::s1', 132, 43, send)
+  runAll()
+  await flushMicrotasks()
+  assert.deepEqual(sent, [[80, 24]])
+  releaseFirst!()
+  await flushMicrotasks()
+  assert.deepEqual(sent, [[80, 24], [132, 43]])
+})
+
+test('resize coalescer survives failed sends and dispose', async () => {
+  const { timers, runAll, pendingCount } = createFakeResizeTimers()
+  const coalescer = createStationTerminalResizeCoalescer(timers)
+  const sent: Array<[number, number]> = []
+  coalescer.request('ws::s1', 80, 24, async () => {
+    throw new Error('boom')
+  })
+  runAll()
+  await flushMicrotasks()
+  coalescer.request('ws::s2', 70, 20, async (cols, rows) => {
+    sent.push([cols, rows])
+  })
+  coalescer.dispose()
+  assert.equal(pendingCount(), 0)
+  coalescer.request('ws::s1', 100, 30, async (cols, rows) => {
+    sent.push([cols, rows])
+  })
+  runAll()
+  await flushMicrotasks()
+  assert.deepEqual(sent, [[100, 30]])
 })
