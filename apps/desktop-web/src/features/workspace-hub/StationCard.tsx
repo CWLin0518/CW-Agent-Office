@@ -44,7 +44,12 @@ import type {
   ToolCommandSummary,
 } from '@shell/integration/desktop-api'
 import type { TerminalFileDropPayload } from '@shell/utils/terminal-file-drop'
-import { SessionHistoryList, useSessionHistory, resolveStationSessionProvider } from '@features/session'
+import {
+  SessionHistoryList,
+  SessionTitleCard,
+  useSessionHistory,
+  resolveStationSessionProvider,
+} from '@features/session'
 import { resolveAgentWorkdirAbs } from '@features/workspace/station-workdir-model'
 import './StationCard.scss'
 
@@ -531,6 +536,14 @@ function StationCardView({
                   </span>
                 ))}
               </div>
+              {workspaceId && runtime?.sessionId && sessionProvider ? (
+                <SessionTitleCard
+                  key={runtime.sessionId}
+                  locale={locale}
+                  workspaceId={workspaceId}
+                  terminalSessionId={runtime.sessionId}
+                />
+              ) : null}
             </div>
           </div>
           <div className="station-window-action-group station-window-controls">

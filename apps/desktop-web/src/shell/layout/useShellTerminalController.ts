@@ -4548,8 +4548,9 @@ export function useShellTerminalController({
                 cwd: sessionCwd,
                 terminalSessionId,
               })
-              .catch(() => {
-                // Session registry is best-effort; terminal launch already succeeded.
+              .catch((error) => {
+                // Best-effort; terminal launch already succeeded.
+                console.warn('session registry launch failed', error)
               })
           }
         }
@@ -4768,6 +4769,28 @@ export function useShellTerminalController({
         return
       }
       protectStationAgentSession(stationId, currentSessionId)
+      // A CLI started inside an already-open terminal is a new agent session
+      // too; register it like launchToolProfileForStation does so it gets a
+      // session record (title card, history).
+      const workspaceId = activeWorkspaceIdRef.current
+      if (workspaceId && (station.toolKind === 'claude' || station.toolKind === 'codex')) {
+        const sessionCwd =
+          stationTerminalsRef.current[stationId]?.resolvedCwd ?? (await resolveWorkspaceRoot(workspaceId))
+        if (sessionCwd) {
+          void desktopApi
+            .sessionLaunch({
+              workspaceId,
+              stationId,
+              agentId: stationId,
+              provider: station.toolKind,
+              cwd: sessionCwd,
+              terminalSessionId: currentSessionId,
+            })
+            .catch((error) => {
+              console.warn('session registry launch failed', error)
+            })
+        }
+      }
       await focusStationTerminal(stationId)
     },
     [
@@ -4776,6 +4799,7 @@ export function useShellTerminalController({
       launchToolProfileForStation,
       protectStationAgentSession,
       resetStationTerminalToAgentWorkdir,
+      resolveWorkspaceRoot,
       runStationTerminalCommand,
       setActiveStationId,
     ],
