@@ -266,6 +266,48 @@ fn pty_provider_denies_shell_command_matching_agent_policy() {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn pty_provider_reports_why_a_session_exited_on_its_own() {
+    let workspace_dir = TempDir::create("gtoffice-terminal-pty-exit");
+    let workspace_service = InMemoryWorkspaceService::new();
+    let workspace = workspace_service
+        .open(&workspace_dir.path)
+        .expect("open workspace");
+    let provider = PtyTerminalProvider::new(workspace_service, AllowAllPolicyEvaluator);
+    let receiver = provider
+        .take_event_receiver()
+        .expect("take terminal event receiver");
+    let session = provider
+        .create_session(TerminalCreateRequest {
+            workspace_id: workspace.workspace_id.clone(),
+            shell: Some("/bin/bash".to_string()),
+            cwd: None,
+            cwd_mode: TerminalCwdMode::WorkspaceRoot,
+            env: BTreeMap::new(),
+            agent_tool_kind: None,
+            login_shell: None,
+        })
+        .expect("create pty session");
+    provider
+        .write_session(&session.session_id, "exit 7\n")
+        .expect("write exit");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut detail = None;
+    while std::time::Instant::now() < deadline && detail.is_none() {
+        if let Ok(TerminalRuntimeEvent::StateChanged(state)) =
+            receiver.recv_timeout(Duration::from_millis(300))
+        {
+            if state.session_id == session.session_id && state.to == "exited" {
+                detail = Some(state.detail.unwrap_or_default());
+            }
+        }
+    }
+    let detail = detail.expect("exited event");
+    assert!(detail.contains("exit code 7"), "unexpected detail: {detail}");
+}
+
 #[test]
 fn pty_provider_emits_output_event_after_write() {
     let workspace_dir = TempDir::create("gtoffice-terminal-pty-ws");

@@ -2509,6 +2509,11 @@ export const messages = {
   },
   'aiConfig.progress.title.install': { 'zh-CN': '正在安装 {name}', 'en-US': 'Installing {name}' },
   'aiConfig.progress.title.uninstall': { 'zh-CN': '正在卸载 {name}', 'en-US': 'Uninstalling {name}' },
+  'aiConfig.progress.title.update': { 'zh-CN': '正在更新 {name}', 'en-US': 'Updating {name}' },
+  'aiConfig.card.updateCli': { 'zh-CN': '更新到最新版本', 'en-US': 'Update to latest version' },
+  'aiConfig.card.updating': { 'zh-CN': '正在更新…', 'en-US': 'Updating…' },
+  'aiConfig.card.updateAvailable': { 'zh-CN': '有新版本 v{version}，点击更新', 'en-US': 'v{version} available — click to update' },
+  'aiConfig.card.latestVersion': { 'zh-CN': '最新版本：v{version}', 'en-US': 'Latest version: v{version}' },
   'aiConfig.progress.waiting': { 'zh-CN': '等待执行...', 'en-US': 'Waiting to start...' },
   'aiConfig.progress.running': { 'zh-CN': '执行中...', 'en-US': 'Running...' },
   'aiConfig.progress.success': { 'zh-CN': '操作成功', 'en-US': 'Operation completed successfully' },
@@ -3067,6 +3072,11 @@ export const messages = {
   'agentCanvas.port.output': {
     'zh-CN': '输出端点（右键可管理这条连线；按住 Ctrl+Shift 拖曳可重新接线）',
     'en-US': 'Output (right-click to manage this connection; Ctrl+Shift-drag to rewire)',
+  },
+  'agentCanvas.node.allBadge': { 'zh-CN': '全体', 'en-US': 'All' },
+  'agentCanvas.node.communicateWithAll': {
+    'zh-CN': '此 Agent 可与专案内所有 Agent 沟通，无需连线',
+    'en-US': 'This agent can communicate with every agent in the project without wires',
   },
   'agentCanvas.port.addInput': { 'zh-CN': '新增输入连线（拖曳以连线）', 'en-US': 'Add input connection (drag to connect)' },
   'agentCanvas.port.addOutput': { 'zh-CN': '新增输出连线（拖曳以连线）', 'en-US': 'Add output connection (drag to connect)' },

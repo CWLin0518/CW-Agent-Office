@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": [
+      "../../../tools/gto/bin/gto.mjs",
+      "resources/gto-agent-communication",
+      "resources/conpty/conpty.dll",
+      "resources/conpty/OpenConsole.exe"
+    ]
+  }
+}

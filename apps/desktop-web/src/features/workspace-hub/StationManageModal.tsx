@@ -39,6 +39,7 @@ import type {
 } from './station-delete-binding-cleanup-model'
 import { resolveStationManageModalCopy } from './station-manage-copy'
 import { scheduleStationModalFocusFrame } from './station-modal-focus-frame'
+import { useAgentModelOptions } from './useAgentModelOptions'
 
 import './StationManageModal.scss'
 
@@ -103,6 +104,7 @@ export function StationManageModal({
   const [name, setName] = useState('')
   const [provider, setProvider] = useState<ManagedAgentProvider>('codex')
   const [model, setModel] = useState('')
+  const discoveredModelOptions = useAgentModelOptions(provider, open)
   const [workdir, setWorkdir] = useState('')
   const [launchCommand, setLaunchCommand] = useState('')
   const [promptContent, setPromptContent] = useState('')
@@ -110,6 +112,7 @@ export function StationManageModal({
   const [promptEnabled, setPromptEnabled] = useState(false)
   const [outputCollectionEnabled, setOutputCollectionEnabled] = useState(false)
   const [sessionBoundaryAutoSplitEnabled, setSessionBoundaryAutoSplitEnabled] = useState(false)
+  const [communicateWithAll, setCommunicateWithAll] = useState(false)
   const [promptDraftMode, setPromptDraftMode] = useState<'auto' | 'manual'>('auto')
   const [promptPrefillLoading, setPromptPrefillLoading] = useState(false)
   const [externalTemplatePath, setExternalTemplatePath] = useState('')
@@ -160,6 +163,7 @@ export function StationManageModal({
     setPromptEnabled(editingStation?.promptEnabled ?? false)
     setOutputCollectionEnabled(editingStation?.outputCollectionEnabled ?? false)
     setSessionBoundaryAutoSplitEnabled(editingStation?.sessionBoundaryAutoSplitEnabled ?? false)
+    setCommunicateWithAll(editingStation?.communicateWithAll ?? false)
     setPromptDraftMode(editingStation ? 'manual' : 'auto')
     setPromptPrefillLoading(false)
     setExternalTemplatePath('')
@@ -593,7 +597,7 @@ export function StationManageModal({
                 }}
               >
                 <option value="">{locale === 'zh-CN' ? '预设' : 'Default'}</option>
-                {resolveModelOptionsForProvider(provider).map((item) => (
+                {resolveModelOptionsForProvider(provider, discoveredModelOptions, model).map((item) => (
                   <option key={item.value} value={item.value}>
                     {item.label}
                   </option>
@@ -851,6 +855,18 @@ export function StationManageModal({
                     ? '启用后会把这套判断规则写进 Agent 的提示词文件；Agent 自行判断到达边界并写出交接讯号后，GT Office 会自动终止（kill）这张卡片当下存活的终端机会话，并重新启动一个乾净的新会话——这是有副作用的自动化行为，不会有确认对话框。'
                     : 'When enabled, this writes the boundary-detection rules into the agent’s prompt file. Once the agent decides a boundary is reached and writes the handoff signal, GT Office automatically kills this card’s currently running terminal session and restarts a fresh one — this is an automated action with a real side effect (no confirmation dialog).'}
                 </p>
+                <label className="station-form-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={communicateWithAll}
+                    disabled={saving || deleting || promptPrefillLoading}
+                    onChange={(event) => {
+                      setCommunicateWithAll(event.target.checked)
+                    }}
+                  />
+                  <span>{copy.communicateWithAllLabel}</span>
+                </label>
+                <p>{copy.communicateWithAllHint}</p>
               </div>
               <div className="station-form-heading-row">
                 <span>{locale === 'zh-CN' ? '系统提示词' : 'System Prompt'}</span>
@@ -1115,6 +1131,7 @@ export function StationManageModal({
                     promptContent: promptEnabled ? promptContent : '',
                     outputCollectionEnabled,
                     sessionBoundaryAutoSplitEnabled,
+                    communicateWithAll,
                     launchCommand: launchCommand.trim() || null,
                     externalTemplatePath: !isEdit && externalTemplatePath.trim() ? externalTemplatePath.trim() : null,
                     parentAgentId: !isEdit ? initialParentAgentId ?? null : null,

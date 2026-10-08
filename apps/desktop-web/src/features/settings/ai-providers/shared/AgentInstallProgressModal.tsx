@@ -15,7 +15,7 @@ interface AgentInstallProgressModalProps {
   locale: Locale
   agentId: AiConfigAgent
   agentName: string
-  operation: 'install' | 'uninstall'
+  operation: 'install' | 'uninstall' | 'update'
   operationPromise: Promise<void>
   onClose: () => void
   onCompleted: (success: boolean) => void
@@ -112,7 +112,9 @@ export function AgentInstallProgressModal({
 
   const titleKey = operation === 'install'
     ? 'aiConfig.progress.title.install' as const
-    : 'aiConfig.progress.title.uninstall' as const
+    : operation === 'update'
+      ? 'aiConfig.progress.title.update' as const
+      : 'aiConfig.progress.title.uninstall' as const
 
   return (
     <div className="agent-install-progress-overlay" onClick={onClose}>

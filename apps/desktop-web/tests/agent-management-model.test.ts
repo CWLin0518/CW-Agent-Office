@@ -4,8 +4,11 @@ import assert from 'node:assert/strict'
 import {
   buildDefaultAgentWorkdir,
   isWorkspaceRootAgentWorkdir,
+  resolveAgentModelDisplayLabel,
   resolveAvailableAgentProviders,
+  resolveInitialAgentModel,
   resolveManagedProviderKey,
+  resolveModelOptionsForProvider,
   resolvePromptFileRelativePathForProvider,
   resolvePromptFileNameForProvider,
 } from '../src/features/workspace-hub/agent-management-model.js'
@@ -65,4 +68,18 @@ test('only exposes configured or installed providers for the agent form', () => 
     providers.map((item) => item.key),
     ['claude', 'codex'],
   )
+})
+
+test('prefers CLI-discovered models and falls back to version-tracking aliases', () => {
+  const discovered = [{ value: 'gpt-9-codex', label: 'GPT-9 Codex (gpt-9-codex)', shortLabel: 'GPT-9 Codex' }]
+  assert.deepEqual(resolveModelOptionsForProvider('codex', discovered), discovered)
+  assert.equal(resolveModelOptionsForProvider('claude', null)[0].value, 'opus')
+  assert.equal(resolveModelOptionsForProvider('claude', [])[0].value, 'opus')
+})
+
+test('keeps an existing agent model selectable even when the CLI no longer lists it', () => {
+  assert.equal(resolveInitialAgentModel('claude', 'claude --model claude-opus-5'), 'claude-opus-5')
+  const options = resolveModelOptionsForProvider('claude', null, 'claude-opus-5')
+  assert.equal(options[options.length - 1].shortLabel, 'Opus 5')
+  assert.equal(resolveAgentModelDisplayLabel('claude', 'claude --model sonnet'), 'Sonnet')
 })

@@ -60,6 +60,7 @@ import {
   focusStationTerminalSinkWithFrameRetry,
   queueStationTerminalOutputFlush,
   normalizeStationTerminalResizeDimensions,
+  createStationTerminalResizeCoalescer,
   scheduleStationTerminalFrameFlush,
   shouldReportRenderedScreenSnapshot,
   submitStationTerminalWithFrameRetry,
@@ -2789,7 +2790,9 @@ export function useShellTerminalController({
             if (payload.to !== 'running') {
               owner.document.outputCache[owner.stationId] = appendDetachedTerminalOutput(
                 owner.document.outputCache[owner.stationId],
-                `\n[terminal:${payload.to}]\n`,
+                payload.detail
+                  ? `\n[terminal:${payload.to}] ${payload.detail}\n`
+                  : `\n[terminal:${payload.to}]\n`,
               )
               owner.document.outputRevision[owner.stationId] =
                 (owner.document.outputRevision[owner.stationId] ?? 0) + 1
@@ -2866,7 +2869,12 @@ export function useShellTerminalController({
             setStationTerminalState(stationId, { stateRaw: payload.to })
           }
           if (payload.to !== 'running') {
-            appendStationTerminalOutput(stationId, `\n[terminal:${payload.to}]\n`)
+            appendStationTerminalOutput(
+              stationId,
+              payload.detail
+                ? `\n[terminal:${payload.to}] ${payload.detail}\n`
+                : `\n[terminal:${payload.to}]\n`,
+            )
           }
           if (payload.to === 'exited' || payload.to === 'killed' || payload.to === 'failed') {
             delete terminalSessionSeqRef.current[payload.sessionId]
@@ -3976,6 +3984,15 @@ export function useShellTerminalController({
   )
 
   // ── Resize station terminal ────────────────────────────────────────────
+  const resizeCoalescer = useMemo(
+    () =>
+      createStationTerminalResizeCoalescer({
+        setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+        clearTimeout: (id) => window.clearTimeout(id),
+      }),
+    [],
+  )
+  useEffect(() => () => resizeCoalescer.dispose(), [resizeCoalescer])
   const resizeStationTerminal = useMemo(
     () => (stationId: string, cols: number, rows: number) => {
       if (!desktopApi.isTauriRuntime()) {
@@ -3993,14 +4010,15 @@ export function useShellTerminalController({
       ) {
         return
       }
-      // Fire and forget - resize is best effort
-      void desktopApi
-        .terminalResize(workspaceId, sessionId, resizeDimensions.cols, resizeDimensions.rows)
-        .catch(() => {
-          // Resize failures are non-critical
-        })
+      // Coalesced per session so the PTY always ends at the latest size.
+      resizeCoalescer.request(
+        `${workspaceId}::${sessionId}`,
+        resizeDimensions.cols,
+        resizeDimensions.rows,
+        (nextCols, nextRows) => desktopApi.terminalResize(workspaceId, sessionId, nextCols, nextRows),
+      )
     },
-    [],
+    [resizeCoalescer],
   )
 
   // ── Detached bridge helpers ─────────────────────────────────────────────

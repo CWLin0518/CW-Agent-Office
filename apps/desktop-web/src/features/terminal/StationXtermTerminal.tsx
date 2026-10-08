@@ -23,7 +23,14 @@ import {
   resolveDeferredMacOsTextInputHandling,
   shouldBypassXtermTextKeyEvent,
 } from './macos-webkit-ime-workaround'
-import { shouldUseStationTerminalWebglRenderer } from './station-terminal-renderer-policy'
+import {
+  isWindowsWebViewEnvironment,
+  shouldUseStationTerminalWebglRenderer,
+} from './station-terminal-renderer-policy'
+import {
+  buildStationTerminalWindowsPty,
+  detectStationTerminalWindowsPty,
+} from './station-terminal-windows-pty'
 import {
   installStationTerminalWindowDiagnostics,
   recordStationTerminalFocusDiagnostic,
@@ -312,20 +319,12 @@ function readRootFontSizePx(doc: Document): number {
   return value
 }
 
+// Font size follows the app's root font size only. Stepping it by pane size made
+// cell metrics change mid-resize, so cols/rows jumped and TUI redraws landed on a
+// grid that no longer matched what the PTY was told.
 function resolveTerminalFontSize(host?: HTMLElement | null): number {
   const doc = resolveTerminalDocument(host, document)
-  const baseSize = Math.max(10, Math.round(readRootFontSizePx(doc) - 1))
-  if (!host) {
-    return baseSize
-  }
-  const { clientWidth, clientHeight } = host
-  if (clientWidth <= 320 || clientHeight <= 220) {
-    return Math.max(10, baseSize - 2)
-  }
-  if (clientWidth <= 420 || clientHeight <= 300) {
-    return Math.max(10, baseSize - 1)
-  }
-  return baseSize
+  return Math.max(10, Math.round(readRootFontSizePx(doc) - 1))
 }
 
 function resolveTerminalFontFamily(host?: HTMLElement | null): string {
@@ -956,7 +955,11 @@ function StationXtermTerminalView({
         } else {
           hostSurface = createStationTerminalHostSurface(resolveTerminalDocument(host, document))
           host.appendChild(hostSurface)
+          const isWindowsWebView = isWindowsWebViewEnvironment(window.navigator.userAgent)
           terminal = new xtermModule.Terminal({
+            // Start with the conservative ConPTY heuristics (no reflow) and relax them
+            // once the Windows build is known.
+            windowsPty: isWindowsWebView ? buildStationTerminalWindowsPty() : undefined,
             convertEol: false,
             fontFamily: resolveTerminalFontFamily(host),
             fontSize: resolveTerminalFontSize(host),
@@ -982,6 +985,17 @@ function StationXtermTerminalView({
             altClickMovesCursor: true,
             rightClickSelectsWord: true,
           })
+          if (isWindowsWebView) {
+            const createdTerminal = terminal
+            void detectStationTerminalWindowsPty(
+              (window.navigator as Navigator & { userAgentData?: Parameters<typeof detectStationTerminalWindowsPty>[0] })
+                .userAgentData,
+            ).then((windowsPty) => {
+              if (active && terminalRef.current === createdTerminal) {
+                createdTerminal.options.windowsPty = windowsPty
+              }
+            })
+          }
           fitAddon = new fitModule.FitAddon()
           const nextSerializeAddon = new serializeModule.SerializeAddon()
           serializeAddon = nextSerializeAddon
@@ -992,9 +1006,12 @@ function StationXtermTerminalView({
           terminal.unicode.activeVersion = '11'
           terminal.open(hostSurface)
 
-          // WKWebView can retain a corrupt WebGL glyph texture atlas after compositor
-          // changes. Its default canvas renderer avoids that GPU-only failure mode.
-          if (shouldUseStationTerminalWebglRenderer(isMacOsWebKitEnvironmentRef.current)) {
+          if (
+            shouldUseStationTerminalWebglRenderer({
+              isMacOsWebKit: isMacOsWebKitEnvironmentRef.current,
+              isWindowsWebView,
+            })
+          ) {
             try {
               webglAddon = new webglModule.WebglAddon(false)
               // loadAddon wires the WebGL surface as the active renderer after open();

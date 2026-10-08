@@ -441,6 +441,50 @@
   }
 }
 
+// "Communicate with all" agents need no wires — a glowing outline marks them
+// instead. The glow lives on a pseudo-element so the selected-state ring and
+// per-agent border color on the card itself keep working unchanged.
+.agent-canvas-node--broadcast {
+  &::after {
+    content: '';
+    position: absolute;
+    inset: calc(-1 * var(--vb-border-width));
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow:
+      0 0 0 #{rem(1)} color-mix(in srgb, var(--agent-canvas-node-color, var(--vb-accent)) 70%, transparent),
+      0 0 #{rem(14)} #{rem(2)} color-mix(in srgb, var(--agent-canvas-node-color, var(--vb-accent)) 45%, transparent);
+    animation: agent-canvas-broadcast-glow 2.4s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    &::after {
+      animation: none;
+    }
+  }
+}
+
+@keyframes agent-canvas-broadcast-glow {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.agent-canvas-node-broadcast-badge {
+  flex: none;
+  padding: 0 #{rem(5)};
+  border-radius: #{rem(6)};
+  font-size: #{rem(10)};
+  line-height: 1.6;
+  color: var(--vb-accent);
+  background: color-mix(in srgb, var(--vb-accent) 14%, transparent);
+}
+
 .agent-canvas-node-header {
   display: flex;
   align-items: center;

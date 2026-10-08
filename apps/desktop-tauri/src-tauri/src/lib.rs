@@ -53,6 +53,49 @@ pub fn run() {
             // transparent only when this succeeds, so a failure degrades gracefully.
             let _ = native_window::apply_native_vibrancy(&main_window);
 
+            // Windows only: switch PTYs to the bundled ConPTY before any terminal
+            // is spawned (see gt_terminal::conpty_sideload).
+            if cfg!(windows) {
+                // Dev builds also look in the source staging dir, so they don't
+                // depend on tauri-build having copied the resources yet.
+                let mut conpty_dirs = Vec::new();
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    conpty_dirs.push(resource_dir.join("resources").join("conpty"));
+                }
+                if cfg!(debug_assertions) {
+                    conpty_dirs.push(
+                        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("resources")
+                            .join("conpty"),
+                    );
+                }
+                let mut attempts = Vec::new();
+                for dir in &conpty_dirs {
+                    match gt_terminal::conpty_sideload::preload_sideloaded_conpty(dir) {
+                        Ok(path) => {
+                            attempts.push(format!("bundled ({})", path.display()));
+                            break;
+                        }
+                        Err(reason) => attempts.push(reason),
+                    }
+                }
+                let status = if attempts.iter().any(|item| item.starts_with("bundled")) {
+                    attempts.last().cloned().unwrap_or_default()
+                } else {
+                    format!("in-box, bundled not used: {}", attempts.join(" | "))
+                };
+                let _ = terminal_debug::dev_log::append_dev_log(
+                    app.handle(),
+                    terminal_debug::dev_log::TerminalDebugLogKind::SessionLifecycle,
+                    &format!(
+                        "[{}] conpty: {status}\n",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_millis())
+                            .unwrap_or_default(),
+                    ),
+                );
+            }
             let app_handle = app.handle().clone();
             let state = app.state::<app_state::AppState>();
             // AppState::default() constructs terminal_provider/task_service before an
@@ -98,6 +141,23 @@ pub fn run() {
                             );
                         }
                         TerminalRuntimeEvent::StateChanged(terminal_state) => {
+                            if terminal_state.to != "running" {
+                                let detail = terminal_state
+                                    .detail
+                                    .as_deref()
+                                    .unwrap_or("ended by GT Office (kill request)");
+                                terminal_debug::dev_log::append_dev_log_async(
+                                    app_handle.clone(),
+                                    terminal_debug::dev_log::TerminalDebugLogKind::SessionLifecycle,
+                                    format!(
+                                        "[{}] session {} {} -> {}: {detail}\n",
+                                        terminal_state.ts_ms,
+                                        terminal_state.session_id,
+                                        terminal_state.from,
+                                        terminal_state.to
+                                    ),
+                                );
+                            }
                             tool_adapter::ingest_external_reply_terminal_state(
                                 &relay_state,
                                 &terminal_state.session_id,
@@ -112,6 +172,7 @@ pub fn run() {
                                     "from": terminal_state.from,
                                     "to": terminal_state.to,
                                     "tsMs": terminal_state.ts_ms,
+                                    "detail": terminal_state.detail,
                                 }),
                             );
                         }
@@ -179,6 +240,9 @@ pub fn run() {
             agentic_one::agent_install_status,
             agentic_one::install_agent,
             agentic_one::uninstall_agent,
+            agentic_one::update_agent,
+            agentic_one::agent_version_info,
+            agentic_one::agent_model_options,
             file_explorer::fs_list_dir,
             file_explorer::fs_read_file,
             file_explorer::fs_read_file_full,

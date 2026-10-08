@@ -592,6 +592,8 @@ export interface TerminalStatePayload {
   from: string
   to: string
   tsMs: number
+  /** Why a session ended on its own (pty EOF/read error, exit code). */
+  detail?: string | null
 }
 
 export interface TerminalMetaPayload {
@@ -1909,6 +1911,9 @@ export interface AgentProfile {
   launchCommand?: string | null
   outputCollectionEnabled: boolean
   sessionBoundaryAutoSplitEnabled: boolean
+  /** Talks to every other workspace agent without canvas wires; rendered
+   * with a glowing outline on agent-canvas. */
+  communicateWithAll?: boolean
   orderIndex: number
   parentAgentId?: string | null
   externalTemplatePath?: string | null
@@ -1961,6 +1966,24 @@ export interface AgentCanvasRuntimeStatusResponse {
   statuses: AgentRuntimeStatus[]
 }
 
+/** Installed vs latest CLI version (`agent_version_info`). `latestVersion`
+ * is null when the npm registry could not be reached. */
+export interface AgentVersionInfo {
+  installed: boolean
+  installedVersion: string | null
+  latestVersion: string | null
+  updateAvailable: boolean
+}
+
+/** A model the installed CLI can run (`agent_model_options`), discovered from
+ * the CLI's own model cache / aliases so it follows CLI upgrades. */
+export interface AgentCliModelOption {
+  value: string
+  label: string
+  shortLabel: string
+  source: 'alias' | 'cache' | 'config' | 'builtin'
+}
+
 export interface AgentCreateRequest {
   workspaceId: string
   agentId?: string | null
@@ -1975,6 +1998,7 @@ export interface AgentCreateRequest {
   promptContent?: string | null
   outputCollectionEnabled?: boolean
   sessionBoundaryAutoSplitEnabled?: boolean
+  communicateWithAll?: boolean
   launchCommand?: string | null
   externalTemplatePath?: string | null
   /** Set when creating a subagent from agent-canvas's "new subagent" context
@@ -2008,6 +2032,7 @@ export interface AgentUpdateRequest {
   promptContent?: string | null
   outputCollectionEnabled?: boolean
   sessionBoundaryAutoSplitEnabled?: boolean
+  communicateWithAll?: boolean
   launchCommand?: string | null
 }
 
@@ -4216,6 +4241,15 @@ export const desktopApi = {
   uninstallAgent(agent: 'ClaudeCode' | 'Codex') {
     return invokeCommand<void>('uninstall_agent', { agent })
   },
+  updateAgent(agent: 'ClaudeCode' | 'Codex') {
+    return invokeCommand<void>('update_agent', { agent })
+  },
+  agentVersionInfo(agent: 'ClaudeCode' | 'Codex') {
+    return invokeCommand<AgentVersionInfo>('agent_version_info', { agent })
+  },
+  agentModelOptions(agent: 'ClaudeCode' | 'Codex') {
+    return invokeCommand<AgentCliModelOption[]>('agent_model_options', { agent })
+  },
   surfaceOpenDetachedWindow(payload: SurfaceOpenDetachedWindowRequest) {
     return invokeCommand<SurfaceOpenDetachedWindowResponse>('surface_open_detached_window', {
       payload,
@@ -4682,6 +4716,7 @@ export const desktopApi = {
         promptContent: request.promptContent ?? null,
         outputCollectionEnabled: request.outputCollectionEnabled ?? false,
         sessionBoundaryAutoSplitEnabled: request.sessionBoundaryAutoSplitEnabled ?? false,
+        communicateWithAll: request.communicateWithAll ?? false,
         launchCommand: request.launchCommand ?? null,
         externalTemplatePath: request.externalTemplatePath ?? null,
         parentAgentId: request.parentAgentId ?? null,
@@ -4758,6 +4793,7 @@ export const desktopApi = {
         promptContent: request.promptContent ?? null,
         outputCollectionEnabled: request.outputCollectionEnabled ?? false,
         sessionBoundaryAutoSplitEnabled: request.sessionBoundaryAutoSplitEnabled ?? false,
+        communicateWithAll: request.communicateWithAll ?? null,
         launchCommand: request.launchCommand ?? null,
       },
     })

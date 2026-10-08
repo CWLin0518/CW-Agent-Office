@@ -27,6 +27,17 @@ pub fn build_collaboration_context(
         })
         .collect::<Vec<_>>();
 
+    // A "communicate with all" agent reaches every other workspace agent, and
+    // every agent reaches it, without any authored edge.
+    let self_broadcasts = agents.iter().any(|agent| {
+        agent.workspace_id == workspace_id && agent.id == agent_id && agent.communicate_with_all
+    });
+    collaborators.extend(agents.iter().filter(|agent| {
+        agent.workspace_id == workspace_id
+            && agent.id != agent_id
+            && (self_broadcasts || agent.communicate_with_all)
+    }));
+
     collaborators.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     collaborators.dedup_by(|left, right| left.id == right.id);
     if collaborators.is_empty() {
@@ -67,6 +78,7 @@ mod tests {
             launch_command: None,
             output_collection_enabled: false,
             session_boundary_auto_split_enabled: false,
+            communicate_with_all: false,
             order_index: 0,
             parent_agent_id: None,
             external_template_path: None,
@@ -109,5 +121,32 @@ mod tests {
         assert!(context.contains("b — Builder; tool: codex"));
         assert!(!context.contains("missing"));
         assert!(!context.contains("Other"));
+    }
+
+    #[test]
+    fn communicate_with_all_agent_sees_every_workspace_agent_without_edges() {
+        let mut hub = agent("ws", "hub", "Hub");
+        hub.communicate_with_all = true;
+        let agents = vec![
+            hub,
+            agent("ws", "a", "Alpha"),
+            agent("ws", "b", "Builder"),
+            agent("other", "c", "Other"),
+        ];
+        let context = build_collaboration_context("ws", "hub", &agents, &[]).expect("context");
+        assert!(context.contains("a — Alpha"));
+        assert!(context.contains("b — Builder"));
+        assert!(!context.contains("Other"));
+    }
+
+    #[test]
+    fn regular_agents_see_communicate_with_all_agents_once() {
+        let mut hub = agent("ws", "hub", "Hub");
+        hub.communicate_with_all = true;
+        let agents = vec![hub, agent("ws", "a", "Alpha"), agent("ws", "b", "Builder")];
+        let links = vec![link("ws", "a", "hub", AgentLinkKind::Authored)];
+        let context = build_collaboration_context("ws", "a", &agents, &links).expect("context");
+        assert_eq!(context.matches("hub — Hub").count(), 1);
+        assert!(!context.contains("Builder"));
     }
 }

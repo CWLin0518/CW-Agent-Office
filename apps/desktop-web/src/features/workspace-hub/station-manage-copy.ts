@@ -7,6 +7,8 @@ export interface StationManageModalCopy {
   deleteLabel: string
   defaultName: string
   namePlaceholder: string
+  communicateWithAllLabel: string
+  communicateWithAllHint: string
 }
 
 export function resolveStationManageModalCopy(
@@ -30,5 +32,15 @@ export function resolveStationManageModalCopy(
     deleteLabel: t(locale, '删除agent', 'Delete Agent'),
     defaultName: t(locale, '新agent', 'New Agent'),
     namePlaceholder: t(locale, '例如：产品agent-09', 'e.g. Product-Agent-09'),
+    communicateWithAllLabel: t(
+      locale,
+      '允许与专案内所有其他 Agent 沟通',
+      'Communicate with all other agents in this project',
+    ),
+    communicateWithAllHint: t(
+      locale,
+      '启用后，此 Agent 无需在 Agent Canvas 上连线即可与专案内所有 Agent 互相派发任务，并会以发光外框显示。',
+      'When enabled, this agent can exchange tasks with every agent in the project without canvas wires, and is shown with a glowing outline on Agent Canvas.',
+    ),
   }
 }

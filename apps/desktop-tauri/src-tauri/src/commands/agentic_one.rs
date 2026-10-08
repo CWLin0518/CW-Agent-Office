@@ -8,9 +8,12 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 use gt_tools::agent_installer::{
-    AgentInstallAttempt, AgentInstallDiagnosticCode, AgentInstallProgressEvent,
+    AgentInstallAttempt, AgentInstallDiagnosticCode, AgentInstallPlan, AgentInstallProgressEvent,
     AgentInstallProgressPhase, AgentInstallStatus, AgentInstaller, AgentType, AgentUninstallAction,
 };
+
+use gt_tools::agent_models::{self, AgentModelOption};
+use gt_tools::agent_version::{self, AgentVersionInfo};
 
 use crate::process_utils::configure_std_command;
 
@@ -74,99 +77,7 @@ pub async fn install_agent(window: tauri::Window, agent: AgentType) -> Result<()
     );
 
     let plan = AgentInstaller::build_install_plan(agent);
-    let mut install_succeeded = false;
-
-    for (index, attempt) in plan.attempts.iter().enumerate() {
-        emit_progress(
-            &window,
-            &progress_event,
-            attempt.phase,
-            attempt.label.clone(),
-            None,
-            Some(attempt.id.clone()),
-            None,
-        );
-
-        let execution = match run_progress_command(attempt) {
-            Ok(result) => result,
-            Err(error) => {
-                let diagnostic = AgentInstaller::classify_install_failure(&error, false);
-                let message = AgentInstaller::install_failure_message(agent, diagnostic);
-                emit_progress(
-                    &window,
-                    &progress_event,
-                    AgentInstallProgressPhase::Failed,
-                    message.clone(),
-                    Some(error),
-                    Some(attempt.id.clone()),
-                    Some(diagnostic),
-                );
-                return Err(message);
-            }
-        };
-
-        if execution.success() {
-            install_succeeded = true;
-            break;
-        }
-
-        let diagnostic = AgentInstaller::classify_install_failure(
-            &execution.combined_output,
-            execution.timed_out,
-        );
-        let should_retry = plan.attempts.get(index + 1).is_some()
-            && attempt
-                .retryable_diagnostics
-                .iter()
-                .any(|candidate| candidate == &diagnostic);
-
-        tracing::warn!(
-            agent = ?agent,
-            attempt = %attempt.id,
-            diagnostic = ?diagnostic,
-            "agent install attempt failed"
-        );
-
-        if should_retry {
-            emit_progress(
-                &window,
-                &progress_event,
-                AgentInstallProgressPhase::Installing,
-                format!("Continuing {name} installation..."),
-                None,
-                Some(attempt.id.clone()),
-                Some(diagnostic),
-            );
-            continue;
-        }
-
-        let message = AgentInstaller::install_failure_message(agent, diagnostic);
-        emit_progress(
-            &window,
-            &progress_event,
-            AgentInstallProgressPhase::Failed,
-            message.clone(),
-            None,
-            Some(attempt.id.clone()),
-            Some(diagnostic),
-        );
-        return Err(message);
-    }
-
-    if !install_succeeded {
-        let diagnostic = default_install_failure_code(&status);
-        let message = AgentInstaller::install_failure_message(agent, diagnostic);
-        emit_progress(
-            &window,
-            &progress_event,
-            AgentInstallProgressPhase::Failed,
-            message.clone(),
-            None,
-            None,
-            Some(diagnostic),
-        );
-        return Err(message);
-    }
+    run_install_plan(&window, &progress_event, agent, &status, &plan, false)?;
 
     emit_progress(
         &window,
@@ -309,6 +220,203 @@ pub async fn uninstall_agent(window: tauri::Window, agent: AgentType) -> Result<
         &progress_event,
         AgentInstallProgressPhase::Completed,
         format!("{name} removed."),
+        None,
+        None,
+        None,
+    );
+    Ok(())
+}
+
+/// Runs `plan`'s attempts in order until one succeeds, emitting progress on
+/// `progress_event`. A failed attempt falls through to the next one when its
+/// diagnostic is retryable, or always when `continue_on_any_failure` is set
+/// (updates, whose self-update attempt should fall back to npm on any error).
+fn run_install_plan(
+    window: &tauri::Window,
+    progress_event: &str,
+    agent: AgentType,
+    status: &AgentInstallStatus,
+    plan: &AgentInstallPlan,
+    continue_on_any_failure: bool,
+) -> Result<(), String> {
+    let mut install_succeeded = false;
+
+    for (index, attempt) in plan.attempts.iter().enumerate() {
+        emit_progress(
+            window,
+            progress_event,
+            attempt.phase,
+            attempt.label.clone(),
+            None,
+            Some(attempt.id.clone()),
+            None,
+        );
+
+        let execution = match run_progress_command(attempt) {
+            Ok(result) => result,
+            Err(error) if continue_on_any_failure && plan.attempts.get(index + 1).is_some() => {
+                tracing::warn!(agent = ?agent, attempt = %attempt.id, %error, "agent update attempt could not start");
+                continue;
+            }
+            Err(error) => {
+                let diagnostic = AgentInstaller::classify_install_failure(&error, false);
+                let message = AgentInstaller::install_failure_message(agent, diagnostic);
+                emit_progress(
+                    window,
+                    progress_event,
+                    AgentInstallProgressPhase::Failed,
+                    message.clone(),
+                    Some(error),
+                    Some(attempt.id.clone()),
+                    Some(diagnostic),
+                );
+                return Err(message);
+            }
+        };
+
+        if execution.success() {
+            install_succeeded = true;
+            break;
+        }
+
+        let diagnostic = AgentInstaller::classify_install_failure(
+            &execution.combined_output,
+            execution.timed_out,
+        );
+        let should_retry = plan.attempts.get(index + 1).is_some()
+            && (continue_on_any_failure
+                || attempt
+                    .retryable_diagnostics
+                    .iter()
+                    .any(|candidate| candidate == &diagnostic));
+
+        tracing::warn!(
+            agent = ?agent,
+            attempt = %attempt.id,
+            diagnostic = ?diagnostic,
+            "agent install attempt failed"
+        );
+
+        if should_retry {
+            emit_progress(
+                window,
+                progress_event,
+                AgentInstallProgressPhase::Installing,
+                format!(
+                    "Continuing {} installation...",
+                    AgentInstaller::agent_name(agent)
+                ),
+                None,
+                Some(attempt.id.clone()),
+                Some(diagnostic),
+            );
+            continue;
+        }
+
+        let message = AgentInstaller::install_failure_message(agent, diagnostic);
+        emit_progress(
+            window,
+            progress_event,
+            AgentInstallProgressPhase::Failed,
+            message.clone(),
+            None,
+            Some(attempt.id.clone()),
+            Some(diagnostic),
+        );
+        return Err(message);
+    }
+
+    if !install_succeeded {
+        let diagnostic = default_install_failure_code(status);
+        let message = AgentInstaller::install_failure_message(agent, diagnostic);
+        emit_progress(
+            window,
+            progress_event,
+            AgentInstallProgressPhase::Failed,
+            message.clone(),
+            None,
+            None,
+            Some(diagnostic),
+        );
+        return Err(message);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn agent_version_info(agent: AgentType) -> Result<AgentVersionInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(agent_version::agent_version_info(agent)))
+        .await
+        .map_err(|error| format!("AGENT_VERSION_INFO_TASK_FAILED: {error}"))?
+}
+
+#[tauri::command]
+pub async fn agent_model_options(agent: AgentType) -> Result<Vec<AgentModelOption>, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(agent_models::discover_agent_models(agent)))
+        .await
+        .map_err(|error| format!("AGENT_MODEL_OPTIONS_TASK_FAILED: {error}"))?
+}
+
+/// Upgrades an installed CLI to its latest release, reporting progress on the
+/// same `install-progress:<agent>` event as install/uninstall.
+#[tauri::command]
+pub async fn update_agent(window: tauri::Window, agent: AgentType) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || update_agent_blocking(&window, agent))
+        .await
+        .map_err(|error| format!("AGENT_UPDATE_TASK_FAILED: {error}"))?
+}
+
+fn update_agent_blocking(window: &tauri::Window, agent: AgentType) -> Result<(), String> {
+    let status = AgentInstaller::install_status_fresh(agent);
+    let name = AgentInstaller::agent_name(agent);
+    if !status.installed {
+        return Err(format!("{name} is not installed."));
+    }
+    let event_id = match agent {
+        AgentType::ClaudeCode => "claude",
+        AgentType::Codex => "codex",
+    };
+    let progress_event = format!("install-progress:{event_id}");
+    emit_progress(
+        window,
+        &progress_event,
+        AgentInstallProgressPhase::Preparing,
+        format!("Preparing {name} update..."),
+        None,
+        None,
+        None,
+    );
+
+    let plan = AgentInstaller::build_update_plan(agent);
+    if plan.attempts.is_empty() {
+        return Err(format!(
+            "GT Office cannot update {name} automatically: npm is not available."
+        ));
+    }
+    tracing::info!(agent = ?agent, attempts = plan.attempts.len(), "updating agent cli");
+    run_install_plan(window, &progress_event, agent, &status, &plan, true)?;
+
+    emit_progress(
+        window,
+        &progress_event,
+        AgentInstallProgressPhase::Verifying,
+        format!("Verifying {name} update..."),
+        None,
+        None,
+        None,
+    );
+    AgentInstaller::invalidate_install_status_cache(Some(agent));
+    AgentInstaller::invalidate_capability_support_cache(Some(agent));
+    let version = agent_version::agent_version_info(agent);
+    let message = match version.installed_version.as_deref() {
+        Some(installed) => format!("{name} is now {installed}."),
+        None => format!("{name} updated."),
+    };
+    emit_progress(
+        window,
+        &progress_event,
+        AgentInstallProgressPhase::Completed,
+        message,
         None,
         None,
         None,

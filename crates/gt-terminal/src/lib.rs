@@ -1,3 +1,5 @@
+pub mod conpty_sideload;
+
 use gt_abstractions::{
     AbstractionError, AbstractionResult, AgentPolicyProvider, AllowAllAgentPolicyProvider,
     CommandPolicyEvaluator, TerminalCreateRequest, TerminalCwdMode, TerminalProvider,
@@ -57,6 +59,9 @@ pub struct TerminalStateChangedEvent {
     pub from: String,
     pub to: String,
     pub ts_ms: u64,
+    /// Why the session left `running` (read EOF/error, child exit code), when
+    /// known. Diagnostic only — `None` for ordinary transitions.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1065,6 +1070,7 @@ where
                 from: from.to_string(),
                 to: to.to_string(),
                 ts_ms: now_ts_ms(),
+                detail: None,
             },
         ));
     }
@@ -1640,9 +1646,9 @@ where
         let session_workspace_id = session.workspace_id.clone();
         thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
-            loop {
+            let end_reason = loop {
                 match reader.read(&mut buffer) {
-                    Ok(0) => break,
+                    Ok(0) => break "pty output closed (EOF)".to_string(),
                     Ok(read) => {
                         if mux_sender
                             .blocking_send(MuxCommand::OutputChunk {
@@ -1651,17 +1657,26 @@ where
                             })
                             .is_err()
                         {
-                            break;
+                            break "output pipeline closed".to_string();
                         }
                     }
-                    Err(_) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => break format!("pty read error ({:?}): {error}", error.kind()),
                 }
-            }
+            };
             let _ = mux_sender.blocking_send(MuxCommand::UnregisterSession {
                 session_id: session_id.clone(),
             });
-            if let Ok(mut sessions) = sessions_state.lock() {
-                sessions.remove(&session_id);
+            let runtime = sessions_state
+                .lock()
+                .ok()
+                .and_then(|mut sessions| sessions.remove(&session_id));
+            // `None` runtime means kill_session already took it (and emitted
+            // `killed`); only report why a session ended on its own.
+            let detail = runtime
+                .map(|runtime| format!("{end_reason}; {}", describe_child_exit(runtime.child)));
+            if let Some(detail) = detail.as_deref() {
+                tracing::warn!(session_id = %session_id, detail, "terminal session ended");
             }
             let _ = event_sender.send(TerminalRuntimeEvent::StateChanged(
                 TerminalStateChangedEvent {
@@ -1670,6 +1685,7 @@ where
                     from: "running".to_string(),
                     to: "exited".to_string(),
                     ts_ms: now_ts_ms(),
+                    detail,
                 },
             ));
         });
@@ -1691,6 +1707,18 @@ where
         );
         Ok(session)
     }
+}
+
+/// Waits briefly for the child to be reaped and describes how it exited.
+fn describe_child_exit(mut child: Box<dyn portable_pty::Child + Send>) -> String {
+    for _ in 0..20 {
+        match child.try_wait() {
+            Ok(Some(status)) => return format!("process exit code {}", status.exit_code()),
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(error) => return format!("process status unavailable: {error}"),
+        }
+    }
+    "process still running after pty closed".to_string()
 }
 
 #[cfg(not(target_os = "windows"))]
