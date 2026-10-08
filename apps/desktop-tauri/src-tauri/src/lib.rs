@@ -53,6 +53,15 @@ pub fn run() {
             // transparent only when this succeeds, so a failure degrades gracefully.
             let _ = native_window::apply_native_vibrancy(&main_window);
 
+            // Windows only: switch PTYs to the bundled ConPTY before any terminal
+            // is spawned (see gt_terminal::conpty_sideload).
+            if cfg!(windows) {
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    gt_terminal::conpty_sideload::preload_sideloaded_conpty(
+                        &resource_dir.join("resources").join("conpty"),
+                    );
+                }
+            }
             let app_handle = app.handle().clone();
             let state = app.state::<app_state::AppState>();
             // AppState::default() constructs terminal_provider/task_service before an

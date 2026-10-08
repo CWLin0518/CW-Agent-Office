@@ -1,3 +1,5 @@
+pub mod conpty_sideload;
+
 use gt_abstractions::{
     AbstractionError, AbstractionResult, AgentPolicyProvider, AllowAllAgentPolicyProvider,
     CommandPolicyEvaluator, TerminalCreateRequest, TerminalCwdMode, TerminalProvider,

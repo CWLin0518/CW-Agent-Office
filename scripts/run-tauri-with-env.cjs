@@ -20,6 +20,7 @@ const repoRoot = path.resolve(__dirname, '..')
 const workspacePath = path.join(repoRoot, 'apps', 'desktop-tauri')
 const ensureScriptPath = path.join(__dirname, 'ensure-tauri-cli-binding.cjs')
 const sidecarBuildScriptPath = path.join(__dirname, 'build-mcp-sidecar.cjs')
+const conptyScriptPath = path.join(__dirname, 'ensure-windows-conpty.cjs')
 const frontendPortDefault = 5173
 const frontendPortScanMax = 50
 
@@ -844,6 +845,12 @@ async function main() {
     const sidecarResult = runNodeScript(sidecarBuildScriptPath, passthroughArgs, cargoEnv)
     if (sidecarResult.status !== 0) {
       process.exit(sidecarResult.status ?? 1)
+      return
+    }
+
+    const conptyResult = runNodeScript(conptyScriptPath, [], cargoEnv)
+    if (conptyResult.status !== 0) {
+      process.exit(conptyResult.status ?? 1)
       return
     }
 
