@@ -23,12 +23,7 @@ import { shouldRenderStationTerminal } from '@features/terminal/station-terminal
 import { recordStationTerminalFocusDiagnostic } from '@features/terminal/station-terminal-focus-diagnostics'
 import type { StationChannelBotBindingSummary } from '@features/tool-adapter'
 import type { RenderedScreenSnapshot, ToolCommandSummary } from '@shell/integration/desktop-api'
-import {
-  SessionHistoryList,
-  SessionTitleCard,
-  useSessionHistory,
-  resolveStationSessionProvider,
-} from '@features/session'
+import { SessionHistoryList, useSessionHistory, resolveStationSessionProvider } from '@features/session'
 import { resolveAgentWorkdirAbs } from '@features/workspace/station-workdir-model'
 import './TerminalStationPane.scss'
 
@@ -219,14 +214,6 @@ function TerminalStationPaneView({
           >
             <strong>{station.name}</strong>
           </button>
-          {workspaceId && runtime?.sessionId && sessionProvider ? (
-            <SessionTitleCard
-              key={runtime.sessionId}
-              locale={locale}
-              workspaceId={workspaceId}
-              terminalSessionId={runtime.sessionId}
-            />
-          ) : null}
           {activitySignal ? (
             <StationActivityComet
               locale={locale}
