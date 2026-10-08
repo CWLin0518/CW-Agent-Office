@@ -411,6 +411,8 @@ pub fn run() {
             session::session_resume_check,
             session::session_resume_bind,
             session::session_update_title,
+            session::session_current_for_terminal,
+            session::session_name_from_task,
             session::session_changefeed_query,
             session::session_changefeed_push,
         ])

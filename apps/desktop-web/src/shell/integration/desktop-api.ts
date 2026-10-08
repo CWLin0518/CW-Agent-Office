@@ -586,6 +586,20 @@ export interface TerminalOutputPayload {
   tsMs: number
 }
 
+/** The live GT Office session behind a station terminal (`session_current_for_terminal`). */
+export interface SessionCurrentForTerminal {
+  gtoSessionId: string
+  title: string | null
+}
+
+/** `session/updated`: a session was launched, rebound, renamed or auto-named. */
+export interface SessionUpdatedPayload {
+  workspaceId: string
+  gtoSessionId: string
+  terminalSessionId: string | null
+  title: string | null
+}
+
 export interface TerminalStatePayload {
   sessionId: string
   workspaceId: string
@@ -5138,6 +5152,19 @@ export const desktopApi = {
     )
     return createSafeAsyncCleanup([unlistenChanged])
   },
+  async subscribeSessionUpdated(
+    onUpdated: (payload: SessionUpdatedPayload) => void,
+  ): Promise<() => void> {
+    if (!isTauriRuntime()) {
+      return () => {}
+    }
+
+    const eventApi = await import('@tauri-apps/api/event')
+    const unlisten = await eventApi.listen<SessionUpdatedPayload>('session/updated', (event) =>
+      onUpdated(event.payload),
+    )
+    return createSafeAsyncCleanup([unlisten])
+  },
   async subscribeFilesystemWatchErrors(
     onError: (payload: FilesystemWatchErrorPayload) => void,
   ): Promise<() => void> {
@@ -5396,6 +5423,19 @@ export const desktopApi = {
       workspaceId,
       gtoSessionId,
       title,
+    })
+  },
+  sessionCurrentForTerminal(workspaceId: string, terminalSessionId: string) {
+    return invokeCommand<SessionCurrentForTerminal | null>('session_current_for_terminal', {
+      workspaceId,
+      terminalSessionId,
+    })
+  },
+  sessionNameFromTask(workspaceId: string, terminalSessionId: string, task: string) {
+    return invokeCommand<{ named: boolean }>('session_name_from_task', {
+      workspaceId,
+      terminalSessionId,
+      task,
     })
   },
   sessionChangefeedQuery(workspaceId: string) {
