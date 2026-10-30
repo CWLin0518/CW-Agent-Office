@@ -16,3 +16,6 @@ export * from './station-terminal-resize'
 export * from './station-terminal-host-pool'
 export * from './SessionTabBar'
 export * from './session-tab-model'
+
+export { submitSessionResume } from './submit-session-resume'
+export { hasIdleCliPrompt } from './wait-for-terminal-output-quiet'

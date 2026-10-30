@@ -24,6 +24,14 @@ export function hasCliPromptMarker(terminalText: string): boolean {
   return CLI_PROMPT_MARKERS.some((marker) => compact.includes(marker))
 }
 
+/** Startup automation must see an input prompt, not just a persistent footer. */
+export function hasIdleCliPrompt(terminalText: string): boolean {
+  const text = stripAnsiSequences(terminalText)
+  return hasCliPromptMarker(text) &&
+    /^\s*[›❯>]\s*/m.test(text) &&
+    !/esc\s+to\s+(?:interrupt|cancel|stop)|connecting\s+to|starting\s+mcp|trust\s+(?:this|the)\s+(?:folder|directory)/i.test(text)
+}
+
 export interface TerminalOutputProbe {
   /** Output sequence number of the session (counts output frames). */
   seq: number
@@ -53,6 +61,8 @@ export interface WaitForTerminalOutputQuietOptions {
   /** Give up waiting (and let the caller proceed anyway) after this long. */
   maxWaitMs: number
   pollMs: number
+  /** Disable the heuristic quiet fallback for automatic prompt injection. */
+  requirePrompt?: boolean
 }
 
 /**
@@ -73,6 +83,7 @@ export async function waitForTerminalOutputQuiet({
   minFramesForQuiet,
   maxWaitMs,
   pollMs,
+  requirePrompt = false,
 }: WaitForTerminalOutputQuietOptions): Promise<TerminalOutputQuietOutcome> {
   const startedAt = now()
   const first = await probe()
@@ -99,6 +110,7 @@ export async function waitForTerminalOutputQuiet({
       return 'prompt'
     }
     if (
+      !requirePrompt &&
       lastSeq - baselineSeq >= minFramesForQuiet &&
       at - startedAt >= minWaitMs &&
       quietFor >= quietMs

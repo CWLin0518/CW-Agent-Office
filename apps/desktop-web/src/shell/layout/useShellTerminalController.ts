@@ -1,3 +1,4 @@
+import { submitSessionResume, hasIdleCliPrompt } from '@features/terminal'
 import {
   useCallback,
   useEffect,
@@ -70,7 +71,6 @@ import {
   transitionAgentExecutionState,
   waitForStationTerminalFrameFlush,
   waitForTerminalOutputQuiet,
-  hasCliPromptMarker,
   peekParkedStationTerminalHost,
   disposeParkedStationTerminalHost,
   disposeAllParkedStationTerminalHosts,
@@ -220,12 +220,11 @@ const SESSION_BOUNDARY_RECONCILIATION_POLL_MS = 5000
 // e.g. with several MCP servers to connect) wait for the session's output to
 // show the CLI's prompt (or, failing that, enough output to rule out the
 // launching shell) and then settle — see waitForTerminalOutputQuiet.
-const SESSION_BOUNDARY_RESTART_PROMPT_PROBE_BYTES = 8192
 const SESSION_BOUNDARY_RESTART_NUDGE_PROMPT_SETTLE_MS = 500
 const SESSION_BOUNDARY_RESTART_NUDGE_MIN_WAIT_MS = 2000
 const SESSION_BOUNDARY_RESTART_NUDGE_QUIET_MS = 3000
 const SESSION_BOUNDARY_RESTART_NUDGE_MIN_FRAMES = 5
-const SESSION_BOUNDARY_RESTART_NUDGE_MAX_WAIT_MS = 30000
+const SESSION_BOUNDARY_RESTART_NUDGE_MAX_WAIT_MS = 120000
 const SESSION_BOUNDARY_RESTART_NUDGE_POLL_MS = 250
 
 function isTerminalSessionBindingInvalid(detail: string): boolean {
@@ -5266,20 +5265,23 @@ export function useShellTerminalController({
                   ) {
                     return null
                   }
-                  const snapshot = await desktopApi
-                    .terminalReadSnapshot(workspaceId, launchedSessionId, SESSION_BOUNDARY_RESTART_PROMPT_PROBE_BYTES)
+                  const output = await desktopApi
+                    .terminalReadSnapshot(workspaceId, launchedSessionId, 8192)
                     .catch(() => null)
-                  if (
-                    !snapshot ||
-                    !isMatchingTerminalWorkspaceSessionResponse(snapshot, workspaceId, launchedSessionId)
-                  ) {
+                  if (!output || !isMatchingTerminalWorkspaceSessionResponse(output, workspaceId, launchedSessionId)) {
                     return null
                   }
-                  const tail = decodeTerminalBase64Chunk(createTerminalChunkDecoder(), snapshot.chunk, false)
-                  return { seq: snapshot.currentSeq, promptVisible: hasCliPromptMarker(tail) }
+                  // Prefer the viewport. Background terminals may not report
+                  // rendered screens, so inspect this new session's output then.
+                  const snapshot = agentExecutionSnapshotRef.current[stationId]?.snapshot
+                  const screen = snapshot?.sessionId === launchedSessionId
+                    ? snapshot.rows.map((row) => row.trimmedText).join('\n')
+                    : decodeTerminalBase64Chunk(createTerminalChunkDecoder(), output.chunk, false)
+                  return { seq: output.currentSeq, promptVisible: hasIdleCliPrompt(screen) }
                 },
                 sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
                 now: () => Date.now(),
+                requirePrompt: true,
                 promptSettleMs: SESSION_BOUNDARY_RESTART_NUDGE_PROMPT_SETTLE_MS,
                 minWaitMs: SESSION_BOUNDARY_RESTART_NUDGE_MIN_WAIT_MS,
                 quietMs: SESSION_BOUNDARY_RESTART_NUDGE_QUIET_MS,
@@ -5288,33 +5290,33 @@ export function useShellTerminalController({
                 pollMs: SESSION_BOUNDARY_RESTART_NUDGE_POLL_MS,
               })
             : 'unavailable'
-        // Only type into the exact session that was just launched: with no
-        // launched session, writeStationTerminalWithSubmit would open a bare
-        // shell and run the prompt as a command; after a tab/workspace switch
-        // it would land in whatever session is current now.
+        // Only inject into the captured session once its input prompt is ready.
         let nudgeSent = false
         if (
-          readiness !== 'unavailable' &&
+          readiness === 'prompt' &&
           activeWorkspaceIdRef.current === workspaceId &&
           stationTerminalsRef.current[stationId]?.sessionId === launchedSessionId
         ) {
           console.debug('[session-boundary] sending resume nudge', { stationId, readiness })
-          nudgeSent = await writeStationTerminalWithSubmit(
-            stationId,
-            t(locale, 'system.sessionBoundaryResumePrompt'),
-          )
+          nudgeSent = await submitSessionResume({
+            prompt: t(locale, 'system.sessionBoundaryResumePrompt'),
+            isCurrentSession: () => activeWorkspaceIdRef.current === workspaceId &&
+              stationTerminalsRef.current[stationId]?.sessionId === launchedSessionId &&
+              stationsRef.current.some((entry) => entry.id === stationId),
+            write: async (input) => {
+              const response = await desktopApi.terminalWrite(workspaceId!, launchedSessionId!, input)
+              return response.accepted &&
+                isMatchingTerminalWorkspaceSessionResponse(response, workspaceId!, launchedSessionId!)
+            },
+            sleep: (ms) => new Promise((resolve) => window.setTimeout(resolve, ms)),
+          })
         }
         if (!nudgeSent) {
-          // Not thrown by writeStationTerminalWithSubmit (e.g. the relaunch
-          // above silently no-op'd and the terminal runtime isn't live) —
-          // without this, the session sits idle with no first turn and the
-          // unconditional log below would misleadingly read as success.
-          // Surface it in the card too: a DevTools-only warning is invisible
-          // to the user, who otherwise just sees an idle fresh session.
+          // Timeouts and changed sessions need a visible failure, not just a log.
           console.warn('[session-boundary] resume nudge not delivered', { stationId, readiness })
           appendStationTerminalOutput(stationId, t(locale, 'system.sessionBoundaryResumeNudgeFailed'))
         }
-        console.debug('[session-boundary] restart completed', { stationId })
+        console.debug('[session-boundary] restart completed', { stationId, nudgeSent })
       } catch (error) {
         console.warn('[session-boundary] restart failed', { stationId, error })
         appendStationTerminalOutput(
@@ -5325,7 +5327,7 @@ export function useShellTerminalController({
         sessionBoundaryRestartInFlightRef.current.delete(stationId)
       }
     },
-    [appendStationTerminalOutput, forceCloseStationTerminalById, locale, writeStationTerminalWithSubmit],
+    [appendStationTerminalOutput, forceCloseStationTerminalById, locale],
   )
 
   // Persists across effect re-subscribes (see the useEffect below) so a

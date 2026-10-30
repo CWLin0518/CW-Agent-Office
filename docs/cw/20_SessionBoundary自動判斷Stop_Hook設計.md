@@ -115,3 +115,24 @@ Claude Code 的 `Stop` hook 在 Agent 每輪回覆結束、準備停止時觸發
 - `node --check ~/.claude/hooks/session-boundary-checklist.js` — 通過。
 - **腳本層級 dry-run**（code-reviewer 建議補上的低成本驗證）：合成 `{"stop_hook_active": false, "cwd": "<臨時目錄>"}` 當 stdin，帶上 `GTO_WORKSPACE_ID`/`GTO_AGENT_ID`/`GTO_STATION_ID` 三個環境變數，並在該臨時目錄放一份含 `SESSION_BOUNDARY_GUIDANCE_MARKER` 的 `CLAUDE.md`，實際跑一次 `node session-boundary-checklist.js`，確認輸出是合法 JSON、`decision` 為 `"block"`、`reason` 裡完整含有 `restart_in_place` 訊號、「第一步」「第二步」「唯一例外」等新版關鍵措辭——確認兩層 guard 通過時的攔截路徑本身沒有壞掉。過程中踩到一個純屬測試工具的坑：用 PowerShell `[System.IO.File]::WriteAllText` 搭配 `Encoding]::UTF8` 寫 stdin 檔案預設會帶 BOM，Node 的 `JSON.parse` 遇到開頭 BOM 直接拋例外、被腳本的 catch 吞掉靜默放行（誤以為 guard 沒過），改用不帶 BOM 的 `UTF8Encoding($false)` 才解決——這純粹是這次 dry-run 腳本本身的編碼細節，跟 hook 邏輯無關，記錄下來避免以後重工。
 - ⚠️ 未做：實機驗證新版清單真的能讓 Agent 在問題 1/2 的情境下正確判斷（dry-run 只能確認攔截路徑的 JSON 輸出正確，不能驗證 Agent 讀到這段文字後實際的判斷行為）；問題 3 的三項前提（provider、全域開關、`session_boundary_auto_split_enabled`）也未在使用者「其他專案」裡實際確認，需要使用者自行檢查。
+
+## 9. 第三輪修正：勾選後不需額外指令即自動生效（2026-10-31）
+
+> 現象：勾選「Auto-detect task boundaries and restart this agent's terminal session」後，仍要另外對 agent 說「若達到任務自動 commit 並開新 session」才會動作。
+
+### 9.1 根因
+
+1. **規則根本沒寫進去**：`agent_create_with_repo` / `agent_update_with_repo` 只在「提示詞檔案」開關（`prompt_enabled`）也開啟時才會寫 CLAUDE.md/AGENTS.md。只勾任務邊界、沒開提示詞檔案的站台（例如 REVIT_MCP_study 的 `tool-create-engineer`、`revit-mcp-controller`），工作目錄裡根本沒有提示詞檔案，agent 看不到規則；第 2.2 節的第 2 層 guard 也因為找不到標記而讓 Stop hook 直接放行。
+2. **規則沒有 commit 步驟**：使用者期待的是「commit + 開新 session」，原規則只有開新 session。
+
+### 9.2 修正
+
+- `agent.rs`：勾選任務邊界時，不論提示詞檔案開關，一律確保工作目錄下的提示詞檔案存在且含有規則區塊；提示詞開關關閉時保留檔案既有內容（例如專案根目錄的 CLAUDE.md），只附加/移除受管理的區塊。兩項都關閉時維持原本「刪除提示詞檔案」的行為。
+- `session_boundary_guidance_block()` 與全域 hook 的 `CHECKLIST_REASON` 同步加入「到達邊界時不需等使用者指令，先 commit 本階段自己改的檔案（不 push、不 `--no-verify`、不 `add -A`），再寫交接訊號」。
+
+### 9.3 驗證
+
+- 新增 `session_boundary_prompt_file_tests`（4 個）＋既有 5 個 guidance 測試全部通過。因 lib test 目標有既有、與本次無關的編譯錯誤（舊 `role` API 測試），驗證時暫時停用那幾個測試模組，並用 `mt.exe` 為測試執行檔嵌入 comctl32 v6 manifest（否則 Windows 上 `STATUS_ENTRYPOINT_NOT_FOUND`），驗證後已還原。
+- `cargo clippy`、`cargo fmt --check`：`agent.rs` 無警告。
+- hook 腳本 dry-run：`decision=block`，`reason` 含 commit 步驟與 `restart_in_place` 訊號。
+- ⚠️ 既有站台需要在 GT Office 裡打開站台設定、按一次儲存，才會把新規則寫進提示詞檔案。

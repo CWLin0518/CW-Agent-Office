@@ -421,7 +421,17 @@ Session 啟動時，先用 `ls -la .claude/session-handoff/` 檢查你目前的�
 GT Office 重啟這個 session，對方會一直以為你還在做，除非派工訊息明講\n\
 「完成後留著、不用交接、我會接著丟下一批給你」。\n\
 \n\
-判定已到達邊界、且目前階段的工作已經穩定完成時，用 Write 工具把交接內容\n\
+判定已到達邊界、且目前階段的工作已經穩定完成時，不需要等使用者另外下指令，\n\
+直接依序完成下面兩件事。\n\
+\n\
+1. 先 commit 這個階段的成果：工作目錄位於 git repo 內、且這個階段有改動時，\n\
+只 `git add` 這個階段你自己修改/新增的檔案（不要用 `git add -A` 或 `git add .`\n\
+把無關或別人的改動一起帶進去，也不要加入 `.claude/session-handoff/` 下的檔案），\n\
+用一句描述這個階段成果的訊息 commit；不要 push、不要改寫既有 commit、不要用\n\
+`--no-verify` 跳過 hook。沒有改動或不在 git repo 內就跳過；commit 失敗就把\n\
+原因寫進交接內容的「未解決問題」，照樣進行第 2 步。\n\
+\n\
+2. 再開新 session：用 Write 工具把交接內容\n\
 寫到**你目前的工作目錄**（這個 session 啟動時所在的資料夾，不是整個專案／\n\
 repo 的最上層目錄）下的固定相對路徑 `.claude/session-handoff/<phase-slug>-handoff.md`\n\
 （`<phase-slug>` 用當前階段的簡短 kebab-case 名稱；目錄不存在就建立），\n\
@@ -429,7 +439,8 @@ repo 的最上層目錄）下的固定相對路徑 `.claude/session-handoff/<pha
 \n\
 `<SESSION_CONTROL action=\"restart_in_place\" />`\n\
 \n\
-訊號下面接著寫：已完成工作、決策、修改的檔案、未解決問題、測試結果、下一\n\
+訊號下面接著寫：已完成工作、commit hash（有 commit 的話）、決策、修改的檔案、\n\
+未解決問題、測試結果、下一\n\
 階段目標、限制條件——不要複製對話歷史，只寫下一階段真正需要的資訊。寫出\n\
 這個訊號會讓 GT Office 自動終止並重啟這個 agent 的終端機 session，所以只在\n\
 真的到達邊界、且交接內容已經確定可信賴時才寫出訊號；單純草擬 handoff 內容\n\
@@ -479,6 +490,26 @@ fn delete_prompt_file(workspace_root: &Path, relative_path: &str) -> Result<(), 
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!("AGENT_PROMPT_DELETE_FAILED: {error}")),
+    }
+}
+
+/// Reads the exact file `write_prompt_file` would write for these inputs;
+/// `None` when it doesn't exist yet.
+fn read_target_prompt_file(
+    workspace_root: &Path,
+    workdir: &str,
+    tool: &str,
+    prompt_file_name: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(file_name) = resolve_prompt_file_name(tool, prompt_file_name)? else {
+        return Ok(None);
+    };
+    let relative_path = resolve_prompt_relative_path(workdir, &file_name);
+    let absolute_path = ensure_path_within_workspace(workspace_root, &relative_path)?;
+    match std::fs::read_to_string(&absolute_path) {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("AGENT_PROMPT_READ_FAILED: {error}")),
     }
 }
 
@@ -657,9 +688,30 @@ pub(crate) fn agent_create_with_repo(
     };
 
     let agent = repo.create_agent(input).map_err(to_command_error)?;
-    if prompt_enabled {
+    // The boundary guidance only reaches the agent through its prompt file, so
+    // the checkbox must write that file even when the user left custom prompt
+    // content off — otherwise ticking it silently does nothing.
+    if prompt_enabled || session_boundary_auto_split_enabled {
+        let base_content = if prompt_enabled {
+            prompt_content
+        } else {
+            // Keep any prompt file already sitting in the workdir (e.g. a
+            // project-root CLAUDE.md) instead of overwriting it.
+            match read_target_prompt_file(
+                workspace_root,
+                workdir.as_str(),
+                tool.as_str(),
+                request.prompt_file_name.as_deref(),
+            ) {
+                Ok(existing_content) => existing_content,
+                Err(error) => {
+                    let _ = repo.delete_agent(&request.workspace_id, &agent.id);
+                    return Err(error);
+                }
+            }
+        };
         let prompt_content =
-            apply_session_boundary_guidance(prompt_content, session_boundary_auto_split_enabled);
+            apply_session_boundary_guidance(base_content, session_boundary_auto_split_enabled);
         if let Err(error) = write_prompt_file(
             workspace_root,
             workdir.as_str(),
@@ -799,16 +851,22 @@ pub(crate) fn agent_update_with_repo(
     };
 
     let agent = repo.update_agent(input).map_err(to_command_error)?;
-    if !prompt_enabled {
+    if !prompt_enabled && !session_boundary_auto_split_enabled {
         if let Some(existing_relative_path) = existing_prompt_file_relative_path.as_deref() {
             delete_prompt_file(workspace_root, existing_relative_path)?;
         }
-    } else if should_write_prompt {
-        let prompt_content = strip_managed_output_guidance(
-            &request
+    } else if !prompt_enabled || should_write_prompt {
+        // Custom prompt off but boundary auto-restart on: the prompt file is
+        // the only channel the guidance reaches the agent through, so keep it
+        // (with whatever content it already had) instead of deleting it.
+        let base_content = if prompt_enabled {
+            request
                 .prompt_content
-                .unwrap_or_else(|| existing_prompt_content.clone()),
-        );
+                .unwrap_or_else(|| existing_prompt_content.clone())
+        } else {
+            existing_prompt_content.clone()
+        };
+        let prompt_content = strip_managed_output_guidance(&base_content);
         let prompt_content = apply_session_boundary_guidance(
             Some(prompt_content),
             session_boundary_auto_split_enabled,
@@ -1415,6 +1473,144 @@ mod subagent_creation_tests {
         )
         .expect_err("subagent creation should fail for an unknown parent");
         assert_eq!(error, "AGENT_NOT_FOUND");
+    }
+}
+
+#[cfg(test)]
+mod session_boundary_prompt_file_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct Scratch {
+        db_path: PathBuf,
+        workspace_root: PathBuf,
+        repo: SqliteAgentRepository,
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.db_path.display()));
+            }
+            let _ = std::fs::remove_dir_all(&self.workspace_root);
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
+        let unique = format!("{name}-{}", uuid::Uuid::new_v4());
+        let db_path = std::env::temp_dir().join(format!("gt-sb-prompt-test-{unique}.db"));
+        let workspace_root = std::env::temp_dir().join(format!("gt-sb-prompt-test-ws-{unique}"));
+        std::fs::create_dir_all(&workspace_root).expect("create scratch workspace root");
+        let repo = SqliteAgentRepository::new(SqliteStorage::new(&db_path).expect("open storage"));
+        repo.ensure_schema().expect("ensure_schema");
+        Scratch {
+            db_path,
+            workspace_root,
+            repo,
+        }
+    }
+
+    fn create_request(workdir: &str, session_boundary: bool) -> AgentCreateRequest {
+        AgentCreateRequest {
+            workspace_id: "ws-1".to_string(),
+            agent_id: Some("agent-1".to_string()),
+            name: "Agent".to_string(),
+            tool: Some("claude".to_string()),
+            workdir: Some(workdir.to_string()),
+            custom_workdir: Some(true),
+            scope: None,
+            employee_no: None,
+            state: None,
+            prompt_enabled: Some(false),
+            prompt_file_name: None,
+            prompt_content: None,
+            output_collection_enabled: None,
+            session_boundary_auto_split_enabled: Some(session_boundary),
+            communicate_with_all: None,
+            launch_command: None,
+            external_template_path: None,
+            parent_agent_id: None,
+        }
+    }
+
+    fn update_request(workdir: &str, session_boundary: bool) -> AgentUpdateRequest {
+        AgentUpdateRequest {
+            workspace_id: "ws-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            name: "Agent".to_string(),
+            tool: Some("claude".to_string()),
+            workdir: Some(workdir.to_string()),
+            custom_workdir: Some(true),
+            employee_no: None,
+            state: None,
+            prompt_enabled: Some(false),
+            prompt_file_name: None,
+            prompt_content: Some(String::new()),
+            output_collection_enabled: None,
+            session_boundary_auto_split_enabled: Some(session_boundary),
+            communicate_with_all: None,
+            launch_command: None,
+        }
+    }
+
+    fn read(path: PathBuf) -> String {
+        std::fs::read_to_string(path).expect("prompt file should exist")
+    }
+
+    #[test]
+    fn create_writes_guidance_even_when_custom_prompt_is_off() {
+        let s = scratch("create");
+        agent_create_with_repo(create_request("agents/a", true), &s.repo, &s.workspace_root)
+            .expect("create");
+        let content = read(s.workspace_root.join("agents/a/CLAUDE.md"));
+        assert!(content.contains(SESSION_BOUNDARY_GUIDANCE_START));
+    }
+
+    #[test]
+    fn create_keeps_existing_prompt_file_content() {
+        let s = scratch("create-keep");
+        std::fs::write(s.workspace_root.join("CLAUDE.md"), "# Project rules\n").expect("seed");
+        agent_create_with_repo(create_request(".", true), &s.repo, &s.workspace_root)
+            .expect("create");
+        let content = read(s.workspace_root.join("CLAUDE.md"));
+        assert!(content.starts_with("# Project rules"));
+        assert!(content.contains(SESSION_BOUNDARY_GUIDANCE_START));
+    }
+
+    #[test]
+    fn create_without_either_option_writes_no_file() {
+        let s = scratch("create-none");
+        agent_create_with_repo(
+            create_request("agents/a", false),
+            &s.repo,
+            &s.workspace_root,
+        )
+        .expect("create");
+        assert!(!s.workspace_root.join("agents/a/CLAUDE.md").exists());
+    }
+
+    #[test]
+    fn update_toggling_checkbox_writes_then_removes_guidance() {
+        let s = scratch("update");
+        agent_create_with_repo(
+            create_request("agents/a", false),
+            &s.repo,
+            &s.workspace_root,
+        )
+        .expect("create");
+        let prompt_path = s.workspace_root.join("agents/a/CLAUDE.md");
+
+        agent_update_with_repo(update_request("agents/a", true), &s.repo, &s.workspace_root)
+            .expect("enable");
+        assert!(read(prompt_path.clone()).contains(SESSION_BOUNDARY_GUIDANCE_START));
+
+        agent_update_with_repo(
+            update_request("agents/a", false),
+            &s.repo,
+            &s.workspace_root,
+        )
+        .expect("disable");
+        assert!(!prompt_path.exists());
     }
 }
 
